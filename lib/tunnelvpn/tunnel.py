@@ -52,6 +52,9 @@ TRIAL_PREFIX = "trial"
 # через selector не меряет и отвечает таймаутом даже живому туннелю.
 DELAY_URL = "http://cp.cloudflare.com/generate_204"
 
+# Ответ start, брошенного по cancel: «Выключить» пришло посреди включения.
+CANCELLED = "отменено: выключаю"
+
 # Сколько ждём реальный адрес от запуска запроса. Обычно он приходит за
 # секунду, но на плохой сети запрос висел до 15 с и держал всё включение.
 REAL_IP_WAIT = 6
@@ -137,6 +140,10 @@ class Tunnel:
         # записанный сюда.
         self._trials = set()
         self._trials_lock = threading.Lock()
+        # «Выключить» посреди start: включение идёт до 30 с, и без отмены
+        # человек ждал бы его конца, чтобы выключить. start бросает на
+        # следующем шаге с CANCELLED, уборка — у вызывающего, как при ошибке.
+        self.cancel = threading.Event()
 
     @property
     def main(self):
@@ -274,7 +281,8 @@ class Tunnel:
     # -------------------------------------------------------------- старт
 
     def start(self, profile=""):
-        """Поднимает туннель. Возвращает '' или текст ошибки.
+        """Поднимает туннель. Возвращает '' или текст ошибки; CANCELLED —
+        выставили cancel. Уборка после ошибки — у вызывающего (stop).
 
         profile — конфиг основного туннеля: становится его active в
         tunnels.json. Пустой — тот, что там уже выбран.
@@ -321,6 +329,8 @@ class Tunnel:
             self.log("→ вижу следы прошлого запуска, сначала убираю")
             self.stop()
             self.log("")
+        if self.cancel.is_set():
+            return CANCELLED
 
         if profile:
             if main["active"] != profile:
@@ -353,6 +363,8 @@ class Tunnel:
         except SystemExit as exc:
             # buildconfig сообщает об ошибках через sys.exit с текстом.
             return str(exc) or "не удалось собрать конфиг — проверьте conf\\*.conf"
+        if self.cancel.is_set():
+            return CANCELLED
         self.profile = want
         self.main_id = buildconfig.main_id(buildconfig.read_json(paths.CONFIG_JSON))
         self.sides = [Side(tid, name) for tid, name in built]
@@ -380,6 +392,8 @@ class Tunnel:
             if check.returncode != 0:
                 return (f"конфиг {os.path.basename(cfg_path)} не прошёл "
                         f"проверку: {(check.stderr or '').strip()}")
+            if self.cancel.is_set():
+                return CANCELLED
 
         # Шлюз по умолчанию определяем ДО старта, пока туннель не перебил
         # маршруты. Ничего не захардкожено: работает и на Wi-Fi, и на раздаче.
@@ -424,6 +438,8 @@ class Tunnel:
             self.log(f"→ реальный адрес не узнал за {REAL_IP_WAIT}с — "
                      f"утечку сравнить будет не с чем")
         self._save_real_ip(real_ip[0] if real_ip else "")
+        if self.cancel.is_set():
+            return CANCELLED
 
         # Туннели — до основного: тот сразу начнёт отдавать им трафик
         # и DNS в socks. Упал туннель — включение идёт дальше: без туннеля
@@ -436,6 +452,8 @@ class Tunnel:
                                 pool.map(self._start_side, self.sides)))
         for side in self.sides:
             self._report_side(side, side_err[side.tid])
+        if self.cancel.is_set():
+            return CANCELLED
 
         self.logfile = self.open_log()
         log_path = self.logfile.name
@@ -454,7 +472,8 @@ class Tunnel:
         tun_idx = None
         deadline = time.time() + 30
         while time.time() < deadline:
-            time.sleep(0.25)
+            if self.cancel.wait(0.25):
+                return CANCELLED
             if self.proc.poll() is not None:
                 # Туннели без основного никому не нужны: в socks никто не зайдёт.
                 for side in self.sides:
@@ -497,6 +516,8 @@ class Tunnel:
         # socks без процесса за ним отказывал бы каждому соединению.
         if self.main and side_err[self.main.tid]:
             self.set_out(buildconfig.DIRECT_TAG)
+        if self.cancel.is_set():
+            return CANCELLED
 
         self._keep_awake(True)
         self.uplink = (up_idx, gw)

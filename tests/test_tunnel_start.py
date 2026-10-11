@@ -230,6 +230,16 @@ def test_адрес_спрашивается_пока_собирается_ко�
     assert seen["real_ip"] == "198.51.100.7"
 
 
+def test_отмена_посреди_включения_не_запускает_sing_box(env):
+    """«Выключить» во время сборки: проверка и запуск уже не нужны."""
+    tun, build, seen = env
+    build.on_main = tun.cancel.set
+
+    assert tun.start() == tunnel.CANCELLED
+
+    assert seen["checked"] == [] and seen["started"] == []
+
+
 def test_медленная_сеть_не_держит_включение(env, monkeypatch):
     tun, _build, seen = env
     ifconfig = FakeIfconfig("198.51.100.7")

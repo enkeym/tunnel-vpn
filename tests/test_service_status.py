@@ -15,6 +15,7 @@ class _Tunnel:
 
     def __init__(self, net):
         self.net = net
+        self.cancel = threading.Event()
 
     def start(self, _profile):
         self.net.up = True

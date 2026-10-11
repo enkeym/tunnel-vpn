@@ -514,6 +514,7 @@ class _Up:
         self.seen = []
         self.uplink = None
         self.err = ""
+        self.cancel = threading.Event()
 
     def start(self, _profile):
         self.seen.append({t["id"]: (t["mode"], t["enabled"])

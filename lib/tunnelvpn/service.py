@@ -277,6 +277,11 @@ class Core:
     # после него уже не в силе.
     _human = 0
     _round_human = 0
+    # Номер последней start/stop человека (_command) и та, что выполняется сейчас:
+    # {key, done, reply} — повтор той же ждёт её итога.
+    _cmd = 0
+    _cmd_lock = threading.Lock()
+    _running = None
 
     # Таймауты (время, тег, адрес) за DEAD_WINDOW.
     _dead_hits = ()
@@ -331,6 +336,8 @@ class Core:
         self.log("=== служба останавливается ===")
         self.prober.stop_event.set()
         self.server.stop_event.set()
+        # Идущее включение бросает на следующем шаге, а не держит остановку до 30 с.
+        self.tunnel.cancel.set()
         with self.lock:
             self._flush_paths()
             self.tunnel.stop()
@@ -706,17 +713,72 @@ class Core:
         return cls._singbox_cached
 
     def _do_start(self, profile="", reconnect=False, retries=0, wake=False, only=""):
-        """Поднимает туннель. reconnect — сначала снять текущий: без этого
-        start принял бы живой процесс за «уже работает» и ничего не сделал.
-        retries — сколько повторов взвести, если не поднимется. Взводим под
-        замком: иначе переподключение, заставшее «Выключить» человека, потом
-        включило бы VPN обратно. wake — «Включить» человека или автозапуск:
-        ничего не включено — включить всё (_wake_all). apply его не ставит:
-        выключенный последним туннель включился бы обратно. only — ⏻ плитки
-        при выключенном VPN: включён один этот туннель (_only), не поднялся —
-        флаги как были."""
+        """Поднимает туннель (_start_locked). Переподключение сторожа берёт
+        замок без ожидания: занято — значит, человек или правка уже делают своё.
+        Команда человека и автозапуск — через _command."""
+        if not reconnect:
+            return self._command(
+                ("start", profile, wake, only),
+                lambda: self._start_locked(profile, retries=retries, wake=wake, only=only))
         if not self.lock.acquire(blocking=False):
             return {"ok": False, "error": f"уже идёт: {self.busy or 'операция'}"}
+        try:
+            return self._start_locked(profile, reconnect=True, retries=retries)
+        finally:
+            self.lock.release()
+
+    def _command(self, key, run):
+        """start/stop человека: run() под замком, ответ — его.
+
+        Идущую операцию ждёт (APPLY_WAIT), а не отказывает «уже идёт»: правка
+        конфига на лету или прошлый щелчок не должны съедать команду. Та же
+        команда (key), что уже идёт, — её итог: двойной «Включить» не собирает
+        второй раз. stop ставит Tunnel.cancel — идущее включение бросает на
+        следующем шаге. Замок отдаётся не по очереди: выполняется последняя
+        пришедшая, а та, что дождалась замка после неё, отвечает cancelled. Отмена —
+        не ошибка (ok): трей и окно не показывают её и сразу берут статус."""
+        cur = self._running
+        if cur is not None and cur["key"] == key:
+            if cur["done"].wait(APPLY_WAIT):
+                return cur["reply"]
+            return {"ok": False, "error": f"уже идёт: {self.busy or 'операция'}"}
+        # Решение человека — с момента, как оно пришло: круг сторожа, начатый
+        # раньше, уже не в силе, даже пока команда ждёт замка.
+        with self._cmd_lock:
+            self._human += 1
+            self._cmd += 1
+            mine = self._cmd
+        if key[0] == "stop":
+            self.tunnel.cancel.set()
+        if not self.lock.acquire(timeout=APPLY_WAIT):
+            return {"ok": False, "error": f"уже идёт: {self.busy or 'операция'}"}
+        rec = {"key": key, "done": threading.Event(),
+               "reply": {"ok": True, "cancelled": True}}
+        try:
+            if mine == self._cmd:
+                self.tunnel.cancel.clear()
+                self._running = rec
+                rec["reply"] = run()
+            return rec["reply"]
+        finally:
+            # Отмена отработала или опоздала: старая не должна сорвать переподключение
+            # сторожа или перезапуск правки.
+            self.tunnel.cancel.clear()
+            self._running = None
+            rec["done"].set()
+            self.lock.release()
+
+    def _start_locked(self, profile="", reconnect=False, retries=0, wake=False, only=""):
+        """Поднимает туннель; замок уже взят. reconnect — сначала снять текущий:
+        без этого start принял бы живой процесс за «уже работает» и ничего не
+        сделал. retries — сколько повторов взвести, если не поднимется. Взводим
+        под замком: иначе переподключение, заставшее «Выключить» человека,
+        потом включило бы VPN обратно. wake — «Включить» человека или
+        автозапуск: ничего не включено — включить всё (_wake_all). apply его не
+        ставит: выключенный последним туннель включился бы обратно. only —
+        ⏻ плитки при выключенном VPN: включён один этот туннель (_only), не
+        поднялся — флаги как были. Отмена (Tunnel.CANCELLED) — уборка как
+        при ошибке, но без last_error и повторов."""
         try:
             # Круг сторожа мог начаться до остановки службы и дождаться замка
             # после неё: поднятый тогда туннель уже некому было бы снять.
@@ -725,7 +787,6 @@ class Core:
             if reconnect and self._round_human != self._human:
                 return {"ok": False, "error": "человек уже решил сам"}
             if not reconnect:
-                self._human += 1
                 self._retry_left = 0
             self.busy = "переподключаю" if reconnect else "включаю"
             if reconnect:
@@ -739,6 +800,12 @@ class Core:
                 err = self._wake_all() if wake else ""
             err = err or self.tunnel.start(profile)
             took = time.monotonic() - began
+            if err == tunnel.CANCELLED:
+                self.log(f"→ включение отменено через {took:.1f} с — убираю")
+                self.tunnel.stop()
+                if was:
+                    self._restore_flags(was)
+                return {"ok": True, "cancelled": True}
             self.last_error = err
             if err:
                 self.log(f"!! {err} (за {took:.1f} с)")
@@ -765,7 +832,6 @@ class Core:
         finally:
             self._probe_now()
             self.busy = ""
-            self.lock.release()
 
     def _only(self, tunnel):
         """Включён только tunnel, остальные выключены — одной записью: общая
@@ -839,7 +905,9 @@ class Core:
         applied "ask": окно спрашивает человека и повторяет без ask, правка
         уже записана. Выключенный VPN не включаем: правка подхватится на
         включении. Идущую операцию ждёт (APPLY_WAIT): правка уже на диске, и
-        после неё собирается заново — подряд несколько правок не теряются."""
+        после неё собирается заново — подряд несколько правок не теряются.
+        Полный перезапуск — под тем же замком: иначе вторая правка между stop и
+        start видела выключенный VPN («off»), а start сторожа или человека — отказ."""
         if not self.lock.acquire(timeout=APPLY_WAIT):
             return {"ok": False, "error": f"уже идёт: {self.busy or 'операция'}"}
         try:
@@ -866,13 +934,11 @@ class Core:
                 return {"ok": not errs, "applied": "sides",
                         "restarted": [side.tid for side, _ in done],
                         **({"error": "; ".join(errs)} if errs else {})}
+            self.log("→ сменилось то, что держит основной процесс, — перезапускаю VPN")
+            self._stop_locked()
+            return {**self._start_locked(), "applied": "full"}
         finally:
             self.lock.release()
-        self.log("→ сменилось то, что держит основной процесс, — перезапускаю VPN")
-        reply = self._do_stop()
-        if not reply.get("ok"):
-            return reply
-        return {**self._do_start(), "applied": "full"}
 
     def _forget_side(self, side):
         """Таймауты и пауза перезапуска процесса — от старого конфига."""
@@ -882,10 +948,12 @@ class Core:
         self._side_said.discard(side.tid)
 
     def _do_stop(self):
-        if not self.lock.acquire(blocking=False):
-            return {"ok": False, "error": f"уже идёт: {self.busy or 'операция'}"}
+        """«Выключить» человека: идущее включение отменяет (_command)."""
+        return self._command(("stop",), self._stop_locked)
+
+    def _stop_locked(self):
+        """Снимает туннель; замок уже взят."""
         try:
-            self._human += 1
             self._retry_left = 0
             self.busy = "выключаю"
             self._flush_paths()
@@ -895,7 +963,6 @@ class Core:
         finally:
             self._probe_now()
             self.busy = ""
-            self.lock.release()
 
     # ------------------------------------------------------------ сторож
 

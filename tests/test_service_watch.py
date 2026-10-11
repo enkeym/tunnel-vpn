@@ -69,6 +69,7 @@ class _Tunnel:
         self.side_fail = ""
         self.delay_ms = None     # что ответит проверка через основной
         self.mends = 0           # сверок маршрутов к пирам
+        self.cancel = threading.Event()
 
     def start(self, _profile):
         self.starts += 1
@@ -297,7 +298,8 @@ def test_автоподключение_без_сети_ждёт_шлюз_и_п�
         return types.SimpleNamespace(
             start=lambda: started.append((target, kwargs or {})))
 
-    monkeypatch.setattr(service, "threading", types.SimpleNamespace(Thread=thread))
+    monkeypatch.setattr(service, "threading",
+                        types.SimpleNamespace(Thread=thread, Event=threading.Event))
     monkeypatch.setattr(service.winnet, "on_error", None)
     monkeypatch.setattr(core, "_migrate", lambda: None)
     monkeypatch.setattr(service.Core, "autostart_enabled", staticmethod(lambda: True))
@@ -342,6 +344,89 @@ def test_выключение_посреди_круга_новую_сеть_не
 
     assert core.tunnel.starts == 0
     assert core.tunnel.uplink is None
+
+
+def _in_thread(fn, **kwargs):
+    """fn в потоке; ответ ляжет в список, когда она закончится."""
+    out = []
+    t = threading.Thread(target=lambda: out.append(fn(**kwargs)), daemon=True)
+    t.start()
+    return t, out
+
+
+def _held_start(core):
+    """start туннеля ждёт, пока его отпустят; entered — он уже идёт."""
+    entered, release = threading.Event(), threading.Event()
+    start = core.tunnel.start
+
+    def held(profile):
+        entered.set()
+        release.wait(5)
+        return start(profile)
+
+    core.tunnel.start = held
+    return entered, release
+
+
+def test_правка_во_время_полного_перезапуска_ждёт_его(monkeypatch):
+    """Перезапуск правки отдавал замок между stop и start: вторая правка видела
+    выключенный VPN («off»), а start, заставший её под замком, отказывал —
+    и VPN оставался выключенным."""
+    core = _core(monkeypatch)
+    core.tunnel.live_plan = lambda: None
+    entered, release = _held_start(core)
+    first, first_out = _in_thread(core._apply)
+    assert entered.wait(5)
+
+    second, second_out = _in_thread(core._apply)
+    second.join(0.2)
+    assert second.is_alive()
+    release.set()
+    first.join(5)
+    second.join(5)
+
+    assert [first_out[0]["applied"], second_out[0]["applied"]] == ["full", "full"]
+    assert core.tunnel.uplink == OFFICE
+
+
+def test_повторное_включение_ждёт_идущее_и_отдаёт_его_итог(monkeypatch):
+    core = _core(monkeypatch)
+    core.tunnel.uplink = None
+    entered, release = _held_start(core)
+    first, first_out = _in_thread(core._do_start)
+    assert entered.wait(5)
+
+    second, second_out = _in_thread(core._do_start)
+    second.join(0.2)
+    assert second.is_alive()
+    release.set()
+    first.join(5)
+    second.join(5)
+
+    assert first_out == second_out == [{"ok": True}]
+    assert core.tunnel.starts == 1
+
+
+def test_выключение_посреди_включения_отменяет_его(monkeypatch):
+    """Включение идёт до 30 с, а «Выключить» отвечало «уже идёт»."""
+    core = _core(monkeypatch)
+    core.tunnel.uplink = None
+    entered = threading.Event()
+
+    def start(_profile):
+        entered.set()
+        return tunnel.CANCELLED if core.tunnel.cancel.wait(5) else ""
+
+    core.tunnel.start = start
+    began, out = _in_thread(core._do_start, retries=service.RECONNECT_TRIES)
+    assert entered.wait(5)
+
+    assert core._do_stop() == {"ok": True}
+    began.join(5)
+
+    assert out == [{"ok": True, "cancelled": True}]
+    assert core.tunnel.uplink is None and core.last_error == ""
+    assert core._retry_left == 0 and not core.tunnel.cancel.is_set()
 
 
 def test_выключение_между_проверкой_и_повтором_повторы_не_зацикливает(monkeypatch):

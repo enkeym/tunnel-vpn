@@ -222,7 +222,8 @@ def main(argv=None):
         if not r.get("ok"):
             print(f"не вышло: {r.get('error')}")
             return 1
-        print("→ включено")
+        # Отмена — не ошибка: «Выключить» пришло посреди включения.
+        print("→ отменено выключением" if r.get("cancelled") else "→ включено")
         return 0
 
     if cmd == "stop":
