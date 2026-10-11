@@ -950,7 +950,9 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True):
         if built or any(not t["enabled"] for t in data["tunnels"]):
             sys.exit("включённого туннеля с конфигом нет — включите туннель или добавьте .conf")
         sys.exit("ни у одного туннеля нет конфига — добавьте .conf")
-    main = next((b for b in built if b[0]["mode"] == "all"), None)
+    # Работающий основной. Выключенный собран, как выключенный «по списку»:
+    # без процесса, остальное — напрямую, как без основного.
+    main = next((b for b in built if b[0]["mode"] == "all" and b[0]["enabled"]), None)
 
     # IPv6 включаем ТОЛЬКО если сервер основного туннеля выдал нам v6-адрес в
     # [Interface] Address. Наличия ::/0 в AllowedIPs недостаточно: конфиги

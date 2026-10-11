@@ -312,9 +312,10 @@ class Prober:
 
     @staticmethod
     def current_profile():
-        """Активный конфиг основного туннеля из tunnels.json; '' — не выбран."""
+        """Активный конфиг работающего основного из tunnels.json; '' — не выбран
+        или основной выключен."""
         try:
-            main = tunnels.main_tunnel(tunnels.load())
+            main = tunnels.main_on(tunnels.load())
         except ValueError:
             return ""
         return main["active"] if main else ""

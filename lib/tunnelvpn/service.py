@@ -751,8 +751,8 @@ class Core:
             self.lock.release()
 
     def _wake_all(self):
-        """Нет включённого туннеля с конфигом — включает все «по списку», кроме
-        пересекающихся с уже включённым (_clashing), а
+        """Нет включённого туннеля с конфигом — включает все: выключенный
+        основной и «по списку», кроме пересекающихся с уже включённым (_clashing), а
         основного нет — им становится первый полный без «пускать» (_promote;
         решение пользователя 10.10.2026). Есть хоть один — флаги как
         сохранены. '' или текст ошибки записи; испорченный файл скажет start."""
@@ -772,7 +772,7 @@ class Core:
         if not woke:
             return ""
         up = self._promote(data)
-        r = self._save_tunnels(data, "включённых туннелей нет — включаю все «по списку»: "
+        r = self._save_tunnels(data, "включённых туннелей нет — включаю: "
                                      + ", ".join(woke))
         if not r["ok"]:
             return f"флаги туннелей не записать: {r['error']}"
@@ -1578,12 +1578,12 @@ class Core:
         return {"ok": True, "tunnel": t["id"], "active": name}
 
     def _set_enabled(self, tunnel, on, replace=False):
-        """Включает или выключает туннель «по списку»: у выключенного нет
-        процесса и rule-set пустой, конфиги и правила остаются. На живой VPN переносит apply
-        отправителя, как после set-active и правки правил. Основной так не
-        выключается: «Всё остальное напрямую».
+        """Включает или выключает туннель: у выключенного нет процесса
+        и rule-set пустой, конфиги и правила остаются. Выключенный основной
+        остаётся основным, весь остальной трафик идёт напрямую. На живой VPN
+        переносит apply отправителя, как после set-active и правки правил.
 
-        Записи включаемого уже забирает включённый (_clashing) — отказ с clash
+        Записи включаемого «по списку» уже забирает включённый (_clashing) — отказ с clash
         [{id, name}]: окно предлагает замену и повторяет с replace: мешающие
         выключаются в той же записи, и reload_sides опустошает их rule-set вместе с
         заполнением нового."""
@@ -1593,12 +1593,10 @@ class Core:
             data, t = self._load_target(tunnel)
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
-        if t["mode"] != "list":
-            return {"ok": False, "error": f"«{t['name']}» — основной: его выключает "
-                                           f"«Всё остальное напрямую»"}
         if t["enabled"] == on:
             return {"ok": True, "tunnel": t["id"], "enabled": on}
-        off = self._clashing(data, t) if on else []
+        # Основной забирает оставшееся после «по списку»: его 0.0.0.0/0 им не мешает.
+        off = self._clashing(data, t) if on and t["mode"] == "list" else []
         if off and not replace:
             names = ", ".join(f"«{o['name']}»" for o in off)
             return {"ok": False, "clash": [{"id": o["id"], "name": o["name"]} for o in off],
@@ -1719,6 +1717,8 @@ class Core:
         changed = [t]
         if payload.get("mode") == "all" and t["mode"] != "all":
             changed += self._make_main(data, t)
+            # «Весь остальной через этот» — чтобы вез, а не стал выключенным основным.
+            t["enabled"] = True
         for key in ("name", "mode"):
             if key in payload:
                 t[key] = payload[key]
@@ -1726,6 +1726,7 @@ class Core:
         idle = "include" in payload and self._idle_full(data, t)
         if idle and main is None:
             t["mode"] = "all"
+            t["enabled"] = True
         spare = idle and main is not None
         problems = self._clash_of(data, changed)
         if spare:
@@ -1785,9 +1786,10 @@ class Core:
         tunnels.json полный конфиг «по списку» без «пускать», кроме skip:
         иначе он так и не вёз бы ничего. Остальные такие — как есть. Вызывать
         до tunnels.save, только если основной был и ушёл этой командой: «Всё
-        остальное напрямую» — выбор человека, его не отменяем. Исключение —
-        _wake_all: «Включить», когда не включено ничего. Новый основной
-        или None — в журнал его пишет вызвавший, после записи файла."""
+        остальное напрямую» (основной в list) — выбор человека, его не отменяем.
+        Исключение — _wake_all: «Включить», когда не включено ничего.
+        Выключенный основной — всё ещё основной: его место не занимаем. Новый
+        основной или None — в журнал его пишет вызвавший, после записи файла."""
         if tunnels.main_tunnel(data) is not None:
             return None
         for t in data["tunnels"]:

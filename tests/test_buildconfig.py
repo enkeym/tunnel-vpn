@@ -685,6 +685,35 @@ def test_выключенный_туннель_собирается_с_пуст�
     assert _load(tmp_path / "names-work.json") == {"version": 3, "rules": []}
 
 
+def test_выключенный_основной_остальное_напрямую(build, tmp_path):
+    """Выключенный основной остаётся основным в tunnels.json, но собран без
+    процесса: out смотрит в direct, «не пускать» пустой, v6 по нему не включается."""
+    texts = dict(CONFS, home=PERSONAL_AWG.replace(
+        "Address = 10.9.0.2/32", "Address = 10.9.0.2/32, fd00::2/128"))
+    items = [*THREE[:2], dict(THREE[2], enabled=False)]
+
+    main, sides = build(items, texts=texts)
+
+    assert list(sides) == ["work", "lab"]
+    assert buildconfig.side_ids(main) == ["work", "lab", "home"]
+    assert _by_tag(main["outbounds"], "out")["default"] == "direct"
+    assert buildconfig.main_id(main) is None
+    assert main["inbounds"][0]["address"] == ["172.19.0.1/30"]
+    assert _load(tmp_path / "bypass.json") == {"version": 3, "rules": []}
+
+
+def test_вкл_выкл_основного_меняет_только_rule_set_и_выход(build, tmp_path):
+    """Без v6-адреса у основного — на лету: основной конфиг тот же, кроме out."""
+    main, _ = build(THREE)
+    items = [*THREE[:2], dict(THREE[2], enabled=False)]
+
+    again, _, sets = _again(main, tmp_path, CONFS, items)
+
+    assert tunnel._fixed(again) == tunnel._fixed(main)
+    assert buildconfig.main_id(again) is None
+    assert sets["bypass"] == {"version": 3, "rules": []}
+
+
 def test_испорченный_конфиг_выключенного_сборку_не_держит(build):
     items = [dict(THREE[0], enabled=False), *THREE[1:]]
 

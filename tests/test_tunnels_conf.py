@@ -191,11 +191,18 @@ def test_флаг_только_true_или_false():
     assert t["enabled"] is False
 
 
-def test_основной_всегда_включён():
-    """Выключенный «по списку» стал основным — он включён: выключает основной
-    «Всё остальное напрямую», а не флаг."""
-    t = tunnels.validate(_data(_tunnel(mode="all", enabled=False)))["tunnels"][0]
-    assert t["enabled"] is True
+def test_выключенный_основной_остаётся_основным():
+    """Слот основного — по режиму, работающий основной — ещё и по флагу."""
+    data = tunnels.validate(_data(_tunnel(mode="all", enabled=False)))
+
+    assert data["tunnels"][0]["enabled"] is False
+    assert tunnels.main_tunnel(data)["id"] == "work"
+    assert tunnels.main_on(data) is None
+
+
+def test_работающий_основной_включён_и_в_режиме_all():
+    assert tunnels.main_on(tunnels.validate(_data(_tunnel(mode="all"))))["id"] == "work"
+    assert tunnels.main_on(tunnels.validate(_data(_tunnel()))) is None
 
 
 def test_лишние_поля_не_сохраняются():

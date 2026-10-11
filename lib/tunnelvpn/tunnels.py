@@ -15,9 +15,10 @@
 Режим list — через туннель идёт только то, что в его списках и AllowedIPs;
 all — весь остальной трафик. all может быть не больше чем у одного.
 
-enabled — выключить туннель «по списку», не теряя его конфигов и правил:
-сборка его пропускает. Основной так не выключается: «Всё остальное
-напрямую» — это его режим list, а запасные — его конфиги, кроме active.
+enabled — выключить туннель, не теряя его конфигов и правил: сборка
+собирает его без процесса. Выключенный основной остаётся основным (метка,
+запасные — его конфиги, кроме active, «не пускать»), а весь остальной
+трафик идёт напрямую, как без основного.
 
 id и имя конфига приходят через канал службы, у которой права SYSTEM, и
 становятся путями на диске. Поэтому всё, что пришло снаружи, проверяется
@@ -139,9 +140,8 @@ def _check_tunnel(raw):
     enabled = raw.get("enabled", True)
     if not isinstance(enabled, bool):
         raise ValueError(f"туннель {tid}: enabled должен быть true или false")
-    # У основного флага нет: стал основным выключенный «по списку» — включён.
     tunnel = {"id": tid, "name": name, "mode": mode, "active": active,
-              "enabled": enabled or mode == "all"}
+              "enabled": enabled}
     tunnel["include"] = _check_list(raw, "include")
     tunnel["exclude"] = _check_list(raw, "exclude")
     return tunnel
@@ -209,8 +209,14 @@ def find(data, tid):
 
 
 def main_tunnel(data):
-    """Туннель, который забирает весь остальной трафик, иначе None."""
+    """Слот основного — туннель в режиме all, включённый или нет, иначе None."""
     return next((t for t in data["tunnels"] if t["mode"] == "all"), None)
+
+
+def main_on(data):
+    """Работающий основной — в режиме all и включённый, иначе None."""
+    t = main_tunnel(data)
+    return t if t is not None and t["enabled"] else None
 
 
 def by_kind(items, kind):

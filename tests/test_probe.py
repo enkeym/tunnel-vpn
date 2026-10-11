@@ -672,6 +672,23 @@ def test_профиль_это_активный_конфиг_основного_
     _tunnels(monkeypatch, _work(active="corp"))
     assert probe.Prober.current_profile() == ""
 
+    _tunnels(monkeypatch, _work(active="corp"), _home(active="nl-1", enabled=False))
+    assert probe.Prober.current_profile() == ""
+
+
+def test_выключенный_основной_выход_напрямую_а_не_утечка(monkeypatch, tmp_path):
+    """Сборка с выключенным основным: out смотрит в direct, тега основного нет —
+    адрес провайдера на выходе ожидаем."""
+    cfg = {"outbounds": [{"type": "selector", "tag": probe.buildconfig.OUT_TAG,
+                          "outbounds": ["socks-work", "socks-home", "direct"],
+                          "default": probe.buildconfig.DIRECT_TAG}]}
+    cfg_file = tmp_path / "config.json"
+    cfg_file.write_text(json.dumps(cfg), encoding="utf-8")
+    monkeypatch.setattr(probe.paths, "CONFIG_JSON", str(cfg_file))
+
+    assert probe.Prober.main_tag() == ""
+    assert _exit(monkeypatch, tmp_path, "5.6.7.8", "5.6.7.8", None) == "direct"
+
 
 def _exit(monkeypatch, tmp_path, ip, real, main_id):
     """Проверка выхода: сервис отвечает ip, без VPN наш адрес real."""

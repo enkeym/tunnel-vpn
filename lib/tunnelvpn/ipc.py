@@ -34,7 +34,7 @@ READ_OPS = frozenset({"status", "list-profiles", "log", "check", "howto"})
 # set-active, как set-profile, только выбирает среди уже лежащих конфигов.
 # apply только применяет уже записанные конфиги к живому VPN, как start.
 # test-config проверяет уже лежащий конфиг, ответ — итог без ключей и адресов.
-# set-enabled включает и выключает туннель «по списку» — не больше, чем stop.
+# set-enabled включает и выключает один туннель, основной тоже, — не больше, чем stop.
 # Списки правил туннелей (get-tunnels) — администратору: в них рабочая сеть.
 USER_OPS = frozenset({"start", "stop", "set-profile", "set-active", "apply",
                       "test-config", "set-enabled"})

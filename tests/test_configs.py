@@ -440,12 +440,41 @@ def test_туннель_по_списку_выключается_и_включа
     assert _tunnel("work")["enabled"] is True
 
 
-def test_основной_флагом_не_выключается(core):
-    """Основной выключает «Всё остальное напрямую» — set-tunnel {mode: list}."""
+def test_основной_выключается_и_остаётся_основным(core):
+    """Выключенный основной — всё ещё основной: режим и запасные на месте."""
+    _put("home", "nl-1.conf", FULL)
+    _put("home", "nl-2.conf", FULL)
+    core._set_active("nl-1", tunnel="home")
+
     r = core._set_enabled("home", False)
 
-    assert not r["ok"] and "напрямую" in r["error"]
-    assert _tunnel("home")["enabled"] is True
+    assert r == {"ok": True, "tunnel": "home", "enabled": False}
+    data = tunnels.load()
+    assert tunnels.main_tunnel(data)["id"] == "home" and tunnels.main_on(data) is None
+    assert _active("home") == "nl-1" and _files("home") == ["nl-1.conf", "nl-2.conf"]
+
+
+def test_основной_включается_при_туннеле_по_списку(core):
+    """0.0.0.0/0 основного — не пересечение с «по списку»: он забирает оставшееся."""
+    tunnels.save({"tunnels": [{**WORK, "include": ["corp.example"]}, *_off(HOME)]})
+    _put("work", "corp.conf")
+    _put("home", "nl.conf", FULL)
+
+    r = core._set_enabled("home", True)
+
+    assert r == {"ok": True, "tunnel": "home", "enabled": True}
+    assert _tunnel("work")["enabled"] is True and _tunnel("home")["enabled"] is True
+
+
+def test_ставший_основным_включается(core):
+    """«Весь остальной через этот» у выключенного «по списку» — чтобы вез."""
+    tunnels.save({"tunnels": [*_off(WORK), HOME]})
+    _put("work", "nl.conf", FULL)
+
+    assert core._set_tunnel("work", {"mode": "all"})["ok"]
+
+    assert _tunnel("work")["mode"] == "all" and _tunnel("work")["enabled"] is True
+    assert _tunnel("home")["mode"] == "list"
 
 
 @pytest.mark.parametrize("on", [None, 0, "false"])
@@ -536,6 +565,19 @@ def test_ничего_не_включено_включить_включает_в
     assert up.tunnel.seen == [{"work": ("list", True), "t1": ("all", True),
                                "t2": ("list", True)}]
     assert any("«nl» без «пускать» стал основным" in x for x in up.logged)
+
+
+def test_ничего_не_включено_включается_и_выключенный_основной(up):
+    """Выключенный основной — всё ещё основной: _promote на его место
+    полный «по списку» без «пускать» не ставит."""
+    nl = {"id": "t1", "name": "nl", "mode": "list"}
+    tunnels.save({"tunnels": _off(HOME, nl)})
+    _put("home", "de.conf", FULL)
+    _put("t1", "nl.conf", FULL)
+
+    assert up.handle("start", {}, is_admin=False) == {"ok": True}
+
+    assert up.tunnel.seen == [{"home": ("all", True), "t1": ("list", True)}]
 
 
 def test_ничего_не_включено_при_основном_без_конфига(up):
