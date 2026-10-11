@@ -708,7 +708,7 @@ def test_вложенный_домен_дубль_по_суффиксу(core):
     # domain_suffix «a.ru» забирает и x.a.ru: ушёл бы в тот туннель, что выше в файле.
     # Одна причина на пересечение: не ещё и «a.ru из «Лаб» … убери его здесь».
     assert not r["ok"] and [p["text"] for p in r["problems"]] == [
-        "«x.a.ru» из «Работа» уже идёт через «Лаб» → убери его здесь или впиши "
+        "«x.a.ru» из «Работа» уже идёт через «Лаб» → уберите его здесь или впишите "
         "туда в «не пускать»"]
     assert _tunnel("work")["include"] == []
 
@@ -811,7 +811,7 @@ def test_все_дубли_полями_а_не_первый(core):
     texts = [p["text"] for p in r["problems"]]
     assert {p["field"] for p in r["problems"]} == {"include"} and len(texts) == 2
     assert texts[0] == ("«a.ru» уже в «Лаб» (конфиг lab) → одна запись — у одного "
-                        "туннеля: удали её там или здесь")
+                        "туннеля: удалите её там или здесь")
     assert "«10.53.1.5/32»" in texts[1] and "«Лаб» (конфиг lab)" in texts[1]
     assert all(t in r["error"] for t in texts)
     assert _tunnel("work")["include"] == []

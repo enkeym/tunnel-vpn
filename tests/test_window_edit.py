@@ -144,7 +144,7 @@ def test_отказ_службы_показан_в_листе_и_ничего_н
 
 def test_проблемы_по_полям_доходят_до_листа_со_строкой_записи(monkeypatch):
     problems = [{"field": "include", "text": "«a.ru» уже в «Лаб»", "entry": "a.ru"},
-                {"field": "include", "text": "очисти и «не пускать»"}]
+                {"field": "include", "text": "очистите и «не пускать»"}]
     _, _, shown = _save_rules(monkeypatch, up=True,
                               reply={"ok": False, "error": "x", "problems": problems})
 
@@ -152,7 +152,7 @@ def test_проблемы_по_полям_доходят_до_листа_со_с
     # у дубля — строка и токен, чтобы выделить запись в поле.
     assert ("rulesFailed", {"error": "x", "problems": [
         {"field": "include", "text": "«a.ru» уже в «Лаб»", "line": 1, "token": "a.ru"},
-        {"field": "include", "text": "очисти и «не пускать»", "line": None, "token": ""},
+        {"field": "include", "text": "очистите и «не пускать»", "line": None, "token": ""},
     ]}) in shown
 
 

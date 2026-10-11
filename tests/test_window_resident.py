@@ -93,7 +93,7 @@ def test_статус_cli_пишет_итог_проверки_у_туннеля
     assert lines[2].endswith("; проверяю…")
     assert lines[3].endswith("— nl-1; молчит")
     assert lines[4].endswith("; отвечает, но «corp.example» через него не открывается "
-                             "— проверь туннелирование")
+                             "— проверьте туннелирование")
     assert lines[5].endswith("— corp")
 
 

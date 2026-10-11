@@ -221,12 +221,12 @@ def _clash(t, other, conf, conf_name=""):
     for entry in t["include"]:
         if entry in other["include"]:
             found.append((entry, f"«{entry}» уже в {where} → одна запись — у одного "
-                                 f"туннеля: удали её там или здесь"))
+                                 f"туннеля: удалите её там или здесь"))
         elif (any(_taken(a, b, out) for a in _nets([entry]) for b in nets)
               or any(_domain_taken(a, b, out_domains)
                      for a in _domains([entry]) for b in domains)):
             found.append((entry, f"«{entry}» из «{t['name']}» уже идёт через "
-                                 f"{where} → убери его здесь или впиши "
+                                 f"{where} → уберите его здесь или впишите "
                                  f"туда в «не пускать»"))
     return found
 
@@ -1757,12 +1757,12 @@ class Core:
         texts = []
         if t["exclude"]:
             texts.append(f"без «пускать» конфиг станет запасным к «{main['name']}», а у "
-                       f"запасного своих списков нет — очисти и «не пускать» или "
-                       f"впиши, что пускать через него")
+                       f"запасного своих списков нет — очистите и «не пускать» или "
+                       f"впишите, что пускать через него")
         if len(tunnels.list_confs(t["id"])) > 1:
             texts.append(f"у «{t['name']}» несколько конфигов — запасным к "
-                       f"«{main['name']}» уходит только единственный: убери лишние "
-                       f"или впиши, что пускать через него")
+                       f"«{main['name']}» уходит только единственный: уберите лишние "
+                       f"или впишите, что пускать через него")
         return out + [{"field": "include", "text": x} for x in texts]
 
     def _to_spare(self, data, t, main):

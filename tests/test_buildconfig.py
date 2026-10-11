@@ -695,7 +695,7 @@ def test_испорченный_конфиг_выключенного_сборк
 
 def test_все_включённые_без_конфига_причина_про_выключенные(tmp_path):
     data = tunnels.validate({"tunnels": [dict(THREE[0], enabled=False), THREE[2]]})
-    with pytest.raises(SystemExit, match="включи туннель"):
+    with pytest.raises(SystemExit, match="включите туннель"):
         buildconfig.build(data, {"work": _write(tmp_path, "w.conf", CORP)},
                           str(tmp_path / "c.json"), log=lambda line: None)
 
@@ -705,7 +705,7 @@ def test_выбор_конфига_выключенного_сборку_не_д
     его туннель собирается без конфига. Выбранный — есть и у выключенного."""
     def active(t):
         if t["id"] == "work":
-            raise ValueError("выбери один")
+            raise ValueError("выберите один")
         return f"{t['id']}.conf"
     data = tunnels.validate({"tunnels": [dict(THREE[0], enabled=False),
                                          dict(THREE[1], enabled=False), THREE[2]]})
@@ -865,7 +865,7 @@ def test_старые_папки_типов_сборка_не_читает(state
 
 def test_несколько_конфигов_без_выбора_это_внятная_ошибка(state, tmp_path):
     _conf(tmp_path, "home", "home-2", PERSONAL_AWG)
-    with pytest.raises(SystemExit, match="выбери один"):
+    with pytest.raises(SystemExit, match="выберите один"):
         buildconfig.main(log=lambda line: None)
 
 

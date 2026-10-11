@@ -240,7 +240,7 @@ def active_conf(tunnel):
         return None
     if len(have) > 1:
         raise ValueError(f"туннель «{tunnel['name']}»: конфигов несколько "
-                         f"({', '.join(have)}) — выбери один")
+                         f"({', '.join(have)}) — выберите один")
     return conf_path(tunnel["id"], have[0])
 
 

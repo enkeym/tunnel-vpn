@@ -53,7 +53,7 @@ def _check_text(t):
         return "проверяю…"
     return {"up": f"отвечает {t.get('answer') or ''}".rstrip(),
             "rules": f"отвечает, но «{t.get('answer') or ''}» через него не открывается "
-                     "— проверь туннелирование",
+                     "— проверьте туннелирование",
             "error": "молчит",
             "none": "не с чем проверить: ни DNS в конфиге, ни домена в «пускать»"
             }.get(t.get("check"), "")
@@ -236,7 +236,7 @@ def main(argv=None):
 
     if cmd == "use":
         if len(argv) < 3:
-            print("укажи туннель и конфиг: tunnelvpn use home nl-1")
+            print("укажите туннель и конфиг: tunnelvpn use home nl-1")
             return 1
         r = _call("set-active", tunnel=argv[1], name=argv[2])
         if not r.get("ok"):
@@ -247,7 +247,7 @@ def main(argv=None):
 
     if cmd in ("enable", "disable"):
         if len(argv) < 2:
-            print(f"укажи туннель: tunnelvpn {cmd} work")
+            print(f"укажите туннель: tunnelvpn {cmd} work")
             return 1
         r = _call("set-enabled", tunnel=argv[1], on=cmd == "enable")
         if not r.get("ok"):
@@ -258,7 +258,7 @@ def main(argv=None):
 
     if cmd == "profile":
         if len(argv) < 2:
-            print("укажи имя: tunnelvpn profile nl-1")
+            print("укажите имя: tunnelvpn profile nl-1")
             return 1
         r = _call("set-profile", profile=argv[1])
         if not r.get("ok"):

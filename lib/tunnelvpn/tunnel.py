@@ -318,7 +318,7 @@ class Tunnel:
             self.log(f"→ профиль «{main['name']}»: {profile}")
 
         if not os.path.isfile(paths.SINGBOX):
-            return f"нет {paths.SINGBOX} — переустанови приложение"
+            return f"нет {paths.SINGBOX} — переустановите приложение"
         if not os.path.isfile(paths.WINTUN):
             return (f"нет {paths.WINTUN}: без wintun.dll sing-box не создаст "
                     f"сетевой адаптер")
@@ -336,7 +336,7 @@ class Tunnel:
             built = buildconfig.main(log=self.log)
         except SystemExit as exc:
             # buildconfig сообщает об ошибках через sys.exit с текстом.
-            return str(exc) or "не удалось собрать конфиг — правь conf\\*.conf"
+            return str(exc) or "не удалось собрать конфиг — проверьте conf\\*.conf"
         self.profile = want
         self.main_id = buildconfig.main_id(buildconfig.read_json(paths.CONFIG_JSON))
         self.sides = [Side(tid, name) for tid, name in built]
@@ -617,7 +617,7 @@ class Tunnel:
             yield None, "конфиг не собирается"
             return
         if not os.path.isfile(paths.SINGBOX):
-            yield None, "нет sing-box — переустанови приложение"
+            yield None, "нет sing-box — переустановите приложение"
             return
         link = buildconfig.new_link()
         path = os.path.join(paths.RUN, f"{TRIAL_PREFIX}-{tid}.json")
@@ -1211,9 +1211,9 @@ def _fatal_line(log_path):
         with open(log_path, encoding="utf-8", errors="replace") as fh:
             lines = fh.read().splitlines()[-40:]
     except OSError:
-        return f"смотри {log_path}"
+        return f"подробности — в {log_path}"
     for word in ("FATAL", "ERROR"):
         for line in reversed(lines):
             if word in line:
                 return line.split(word, 1)[1].strip(" []:")[:200]
-    return f"смотри {log_path}"
+    return f"подробности — в {log_path}"

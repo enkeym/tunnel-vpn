@@ -948,8 +948,8 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True):
         built.append((t, conf, ep))
     if not any(t["enabled"] for t, _, _ in built):
         if built or any(not t["enabled"] for t in data["tunnels"]):
-            sys.exit("включённого туннеля с конфигом нет — включи туннель или добавь .conf")
-        sys.exit("ни у одного туннеля нет конфига — добавь .conf")
+            sys.exit("включённого туннеля с конфигом нет — включите туннель или добавьте .conf")
+        sys.exit("ни у одного туннеля нет конфига — добавьте .conf")
     main = next((b for b in built if b[0]["mode"] == "all"), None)
 
     # IPv6 включаем ТОЛЬКО если сервер основного туннеля выдал нам v6-адрес в
@@ -1144,7 +1144,7 @@ def main(log=print):
     pid = running_pid()
     if pid and "--force" not in sys.argv and "--out" not in sys.argv:
         sys.exit(f"sing-box уже работает (pid {pid}) — конфиг не трогаю.\n"
-                 f"Останови его (`vpn stop`) или пересобери в другой файл:\n"
+                 f"Остановите его (`vpn stop`) или соберите в другой файл:\n"
                  f"  python3 {os.path.relpath(__file__, BASE)} --out /tmp/test.json")
     side_path = set_path = None
     if "--out" in sys.argv:

@@ -516,7 +516,7 @@ class Api:
         updateReady, updateFailed."""
         version = self._offer
         if not version:
-            return {"ok": False, "error": "обновление не предложено → сначала проверь обновления"}
+            return {"ok": False, "error": "обновление не предложено → сначала проверьте обновления"}
         if self._upd_thread is not None and self._upd_thread.is_alive():
             return {"ok": True}
         self._setup = None
@@ -558,7 +558,7 @@ class Api:
         setup снимет и окно, и трей; до того страница держит «Обновляю TunnelVPN…»."""
         if not self._setup or not os.path.isfile(self._setup[0]):
             self._setup = None
-            return {"ok": False, "error": "файла обновления нет → скачай его снова"}
+            return {"ok": False, "error": "файла обновления нет → скачайте его снова"}
         path, version = self._setup
         try:
             update.launch(path, version)
@@ -828,7 +828,7 @@ class Api:
             ["Туннель держит служба Windows — без неё кнопки в окне ничего не "
              "включат: править таблицу маршрутов от обычного пользователя "
              "нельзя.",
-             "Открой командную строку от имени администратора и выполни: "
+             "Откройте командную строку от имени администратора и выполните: "
              "tunnelvpn service install",
              "Установщик делает это сам; вручную нужно только при запуске из "
              "исходников."],

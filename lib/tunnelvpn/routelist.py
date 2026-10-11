@@ -148,8 +148,8 @@ def check(text):
     ips = sum(1 for n in nets if n.num_addresses == 1)
     if len(entries) > MAX_RULES:
         problems.append({"line": None, "token": "",
-                         "text": f"Больше {MAX_RULES} записей → раздели список "
-                                 f"или правь tunnels.json вручную"})
+                         "text": f"Больше {MAX_RULES} записей → разделите список "
+                                 f"или измените tunnels.json вручную"})
     return {"count": len(entries), "domains": len(entries) - len(nets),
             "ips": ips, "nets": len(nets) - ips, "problems": problems}
 
@@ -159,7 +159,7 @@ def explain(token):
     host = _host(token.strip().lower())
     shown = f"«{token}»"
     if not host:
-        return f"{shown} — в ссылке нет сайта → вставь домен, например git.company.ru"
+        return f"{shown} — в ссылке нет сайта → вставьте домен, например git.company.ru"
     if _V4ISH.match(host) or _V6ISH.match(host):
         return f"{shown} — {_explain_ip(host)}"
     name = (host[2:] if host.startswith("*.") else host).rstrip(".")
@@ -169,13 +169,13 @@ def explain(token):
     if bad:
         return f"{shown} — в домене не бывает «{bad}» → только буквы, цифры, дефис и точка"
     if "." not in name:
-        return (f"{shown} — короткое имя не сработает → укажи полный домен, "
+        return (f"{shown} — короткое имя не сработает → укажите полный домен, "
                 f"например {name}.company.ru")
     labels = name.split(".")
     if not all(labels):
-        return f"{shown} — две точки подряд → убери лишнюю"
+        return f"{shown} — две точки подряд → уберите лишнюю"
     if any(x.startswith("-") or x.endswith("-") for x in labels):
-        return f"{shown} — часть домена начинается или кончается дефисом → убери его"
+        return f"{shown} — часть домена начинается или кончается дефисом → уберите его"
     if labels[-1].isdigit():
         return (f"{shown} — домен не кончается цифрами → адрес — четыре числа "
                 f"через точку, у домена зона из букв")
