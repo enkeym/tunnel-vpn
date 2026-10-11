@@ -24,6 +24,14 @@
   #error Нужен Inno Setup 6.7.1 или новее
 #endif
 
+; Тестовая сборка (build.ps1 -TestHooks): /testhook=… на командной строке
+; ломает первую попытку шага — сценарии сбоев проверки в Sandbox (TestHook в
+; [Code]). Отдельное имя файла, метка в ресурсе версии и в заголовке окна;
+; build.ps1 и CI не пускают такую сборку в релиз. Подписанной ей не бывать.
+#if defined(TESTHOOKS) && defined(Sign)
+  #error Тестовая сборка (TESTHOOKS) не подписывается
+#endif
+
 ; Версия без хвоста «-beta»: её показывает мастер, и только числа принимает
 ; VersionInfoVersion.
 #if Pos("-", MyVersion) > 0
@@ -69,7 +77,11 @@ VersionInfoVersion={#MyPlainVersion}
 VersionInfoTextVersion={#MyVersion}
 VersionInfoProductTextVersion={#MyVersion}
 VersionInfoCompany={#MyPublisher}
+#ifdef TESTHOOKS
+VersionInfoDescription=Установка {#MyName} (TESTHOOKS)
+#else
 VersionInfoDescription=Установка {#MyName}
+#endif
 VersionInfoProductName={#MyName}
 ; Папка прошлой установки TunnelVPN — из реестра, см. DefaultAppDir в [Code].
 DefaultDirName={code:DefaultAppDir}
@@ -81,7 +93,11 @@ UsePreviousAppDir=no
 UsePreviousGroup=no
 UninstallDisplayIcon={app}\{#MyExe}
 OutputDir=Output
+#ifdef TESTHOOKS
+OutputBaseFilename={#MyName}-{#MyVersion}-testhooks-setup
+#else
 OutputBaseFilename={#MyName}-{#MyVersion}-setup
+#endif
 SetupIconFile=gen\TunnelVPN.ico
 Compression=lzma2/max
 SolidCompression=yes
@@ -123,7 +139,11 @@ Name: "ru"; MessagesFile: "compiler:Languages\Russian.isl"
 ; Стандартные тексты Inno, которые видны в наших сценариях: тем же языком,
 ; что окно приложения, на «вы». Остальные — из Russian.isl.
 [Messages]
+#ifdef TESTHOOKS
+SetupWindowTitle=Установка — %1 (тестовая сборка)
+#else
 SetupWindowTitle=Установка — %1
+#endif
 UninstallAppTitle=Удаление
 UninstallAppFullTitle=Удаление — %1
 ; Проверки до первой страницы: ArchitecturesAllowed и MinVersion в [Setup].
@@ -342,6 +362,34 @@ var
   FinishedLink: TNewLinkLabel;
   // Удаление: «Удалить навсегда» в вопросе про конфиги.
   PurgeData: Boolean;
+#ifdef TESTHOOKS
+  // Хуки /testhook=…, ещё не сработавшие: «,service,webview2,».
+  TestHooks: String;
+  TestHooksRead: Boolean;
+  // /testhook=webview2: WebView2Installed отвечает «нет» до конца первой попытки.
+  WebView2Hook: Boolean;
+#endif
+
+#ifdef TESTHOOKS
+// Тестовая сборка: /testhook=service,tunnel,webview2 (любые через запятую)
+// ломает первую попытку шага — запуск службы, возвращение туннеля после
+// обновления, установку WebView2. Повтор идёт по-настоящему: видны и
+// страница ошибки, и «Повторить». True — хук Name сработал, второй раз — нет.
+function TestHook(const Name: String): Boolean;
+begin
+  if not TestHooksRead then
+  begin
+    TestHooks := ',' + Lowercase(ExpandConstant('{param:testhook|}')) + ',';
+    TestHooksRead := True;
+  end;
+  Result := Pos(',' + Name + ',', TestHooks) > 0;
+  if Result then
+  begin
+    StringChangeEx(TestHooks, ',' + Name + ',', ',', True);
+    Log('Тестовый хук: ' + Name);
+  end;
+end;
+#endif
 
 // Этап в строке над прогрессом — и установки, и удаления. Он же в журнал:
 // при тихом удалении формы прогресса может не быть.
@@ -646,7 +694,11 @@ var
 begin
   SetStatus('Запускаю службу…');
   // Уже работающая служба отвечает на start ошибкой 1056 — это не сбой.
-  if not RunStep(ExpandConstant('{app}\{#MyCli}'), 'service start') and (ServiceStatus <> SvcRunning) then
+  if
+#ifdef TESTHOOKS
+     TestHook('service') or
+#endif
+     not RunStep(ExpandConstant('{app}\{#MyCli}'), 'service start') and (ServiceStatus <> SvcRunning) then
   begin
     Result := 'Служба установилась, но не запустилась.';
     Exit;
@@ -719,6 +771,9 @@ begin
     begin
       SetStatus('Включаю VPN обратно…');
       Started := False;
+#ifdef TESTHOOKS
+      if not TestHook('tunnel') then
+#endif
       // Канал службы поднимается не сразу после service start.
       for I := 1 to 5 do
       begin
@@ -1471,6 +1526,10 @@ begin
              (Version <> '') and (Version <> '0.0.0.0')) or
             (RegQueryStringValue(HKCU, Key, 'pv', Version) and
              (Version <> '') and (Version <> '0.0.0.0'));
+#ifdef TESTHOOKS
+  if WebView2Hook then
+    Result := False;
+#endif
 end;
 
 // Скачанное запускаем с правами администратора — только с действующей
@@ -1553,6 +1612,9 @@ var
   Reason: String;
   OldMax, OldPosition: Integer;
 begin
+#ifdef TESTHOOKS
+  WebView2Hook := TestHook('webview2');
+#endif
   if WebView2Installed then
     Exit;
   OldMax := WizardForm.ProgressGauge.Max;
@@ -1561,6 +1623,9 @@ begin
   WebView2Note.Visible := True;
   repeat
     Reason := TryWebView2;
+#ifdef TESTHOOKS
+    WebView2Hook := False;
+#endif
     if Reason <> '' then
       Log('WebView2: ' + Reason);
   until (Reason = '') or (SuppressibleTaskDialogMsgBox('Не удалось поставить WebView2',

@@ -9,6 +9,13 @@
 # в отличие от pwsh) без BOM читает скрипт как ANSI: кириллица в строках и
 # комментариях рассыпается, парсер спотыкается на «Missing closing '}'», и
 # сборка падает ещё до первой команды. Не пересохраняй без BOM.
+#
+# -TestHooks — тестовый установщик для проверки в Sandbox:
+# installer\Output\TunnelVPN-<версия>-testhooks-setup.exe, ключ /testhook=…
+# ломает в нём первую попытку шага (TestHook в tunnelvpn.iss). Не в CI, не с
+# подписью и без SHA256SUMS.txt: в релиз такой не уходит.
+
+param([switch]$TestHooks)
 
 $ErrorActionPreference = 'Stop'
 
@@ -25,6 +32,8 @@ Write-Host "-> TunnelVPN $Version, корень: $Root"
 # который CI импортирует из секрета (.github/workflows/build.yml), а пароль не
 # попадает ни в командную строку, ни в журнал ISCC.
 $SignSha1 = "$env:TVPN_SIGN_SHA1".Replace(' ', '')
+if ($TestHooks -and $env:GITHUB_ACTIONS) { throw '-TestHooks — только локально: CI собирает релиз' }
+if ($TestHooks -and $SignSha1) { throw '-TestHooks с подписью: тестовая сборка не подписывается, уберите TVPN_SIGN_SHA1' }
 $SignTool = $null
 if ($SignSha1) {
     if ($SignSha1 -notmatch '^[0-9A-Fa-f]{40}$') { throw "TVPN_SIGN_SHA1: не отпечаток SHA-1: $SignSha1" }
@@ -219,9 +228,14 @@ if ($SignTool) {
     $IsccArgs += '/DSign'
     $IsccArgs += '/Stvpn=$q' + $SignTool + '$q ' + $SignArgs + ' $f'
 }
+$SetupName = "TunnelVPN-$Version-setup.exe"
+if ($TestHooks) {
+    $IsccArgs += '/DTESTHOOKS'
+    $SetupName = "TunnelVPN-$Version-testhooks-setup.exe"
+}
 & $Iscc @IsccArgs (Join-Path $Inst 'tunnelvpn.iss')
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup вернул $LASTEXITCODE" }
-$Setup = Join-Path $Inst "Output\TunnelVPN-$Version-setup.exe"
+$Setup = Join-Path $Inst "Output\$SetupName"
 # Издатель и продукт setup.exe (VersionInfo* в tunnelvpn.iss) — те же, что в
 # ресурсе версии exe (tunnelvpn.spec): окно UAC и «Приложения» не расходятся.
 $SetupInfo = (Get-Item $Setup).VersionInfo
@@ -234,7 +248,17 @@ foreach ($field in 'CompanyName', 'ProductName') {
     }
 }
 if (-not "$($SetupInfo.FileDescription)".Trim()) { throw 'у setup.exe нет FileDescription' }
-Write-Host "-> готово: installer\Output\TunnelVPN-$Version-setup.exe"
+# Метку TESTHOOKS в описание ставит tunnelvpn.iss под тем же define: хуки
+# есть в установщике ровно тогда, когда она есть. Та же проверка — в CI.
+$Hooked = "$($SetupInfo.FileDescription)" -match 'TESTHOOKS'
+if ($Hooked -ne [bool]$TestHooks) {
+    throw "$SetupName — хуки: $Hooked, ждали: $([bool]$TestHooks) (описание «$($SetupInfo.FileDescription)»)"
+}
+Write-Host "-> готово: installer\Output\$SetupName"
+if ($TestHooks) {
+    Write-Host '   тестовая сборка: /testhook=service,tunnel,webview2 — в README, «Сборка установщика»'
+    exit 0
+}
 
 # --- Контрольные суммы к релизу, в формате sha256sum: проверить скачанное —
 # «sha256sum -c SHA256SUMS.txt» или Get-FileHash.
