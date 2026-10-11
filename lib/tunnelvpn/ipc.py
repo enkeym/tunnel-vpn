@@ -21,6 +21,7 @@ OSError: [Errno 22] Invalid argument, хотя сам канал исправе�
 изобретаем второй протокол, идём тем же путём.
 """
 
+import contextlib
 import json
 import threading
 
@@ -286,13 +287,15 @@ def call(op, **payload):
 CHECK_POLL = 0.3
 
 
-def check_by_side(on_side, poll=CHECK_POLL):
+def check_by_side(on_side, poll=CHECK_POLL, lock=None):
     """Команда check, а пока она идёт — статус: каждый туннель отдаём, как
     только проверен он сам, а не все по самому долгому.
 
     on_side(st, pending) — туннель стал свежим; pending — id тех, что ещё
     ждут (из st["tunnels"]). Возвращает ответ check, как call. Раньше рабочий,
     который молчит до таймаута, держал «проверяю» и у работающего личного.
+    lock — статус и on_side под ним: опрос окна не вклинится со своим статусом
+    между ними (window.Api._render_lock).
     """
     st = call("status").get("status") or {}
     # Проверка уже идёт — check дождётся её, и её ответ тоже свежий; нет —
@@ -313,16 +316,17 @@ def check_by_side(on_side, poll=CHECK_POLL):
         worker.join(poll)
         if not worker.is_alive():
             break
-        try:
-            st = call("status").get("status") or {}
-        except NotRunning:
-            continue
-        seqs = {t["id"]: t.get("seq", 0) for t in st.get("tunnels") or []}
-        # Туннель удалили посреди проверки — ждать его нечего.
-        fresh = {tid for tid in pending if seqs.get(tid, need) >= need}
-        if fresh:
-            pending -= fresh
-            on_side(st, frozenset(pending))
+        with lock or contextlib.nullcontext():
+            try:
+                st = call("status").get("status") or {}
+            except NotRunning:
+                continue
+            seqs = {t["id"]: t.get("seq", 0) for t in st.get("tunnels") or []}
+            # Туннель удалили посреди проверки — ждать его нечего.
+            fresh = {tid for tid in pending if seqs.get(tid, need) >= need}
+            if fresh:
+                pending -= fresh
+                on_side(st, frozenset(pending))
     worker.join()
     if "error" in result:
         raise result["error"]

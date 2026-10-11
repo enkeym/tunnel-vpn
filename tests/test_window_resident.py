@@ -31,7 +31,7 @@ def _api(monkeypatch, reply=None):
         return {"ok": True, "status": {}}
     monkeypatch.setattr(ipc, "call", call)
     monkeypatch.setattr(ipc, "check_by_side",
-                        lambda _cb: calls.append(("check", {})) or {})
+                        lambda _cb, lock=None: calls.append(("check", {})) or {})
     api = window.Api({})
     monkeypatch.setattr(api, "js", lambda fn, arg=None: shown.append(fn))
     monkeypatch.setattr(api, "jsn", lambda fn, args: shown.append(fn))
@@ -62,7 +62,7 @@ def test_проверка_окна_отдаёт_странице_ждущие_id
     st = {"tunnels": [{"id": "work", "mode": "list"}, {"id": "lab", "mode": "list"},
                       {"id": "home", "mode": "all"}]}
 
-    def check_by_side(on_side):
+    def check_by_side(on_side, lock=None):
         for pending in ({"lab", "home"}, {"work"}, set()):
             on_side(st, frozenset(pending))
         return {}
@@ -72,6 +72,28 @@ def test_проверка_окна_отдаёт_странице_ждущие_id
 
     assert sent == [("checkSides", ["home", "lab"]), ("checkSides", ["work"]),
                     ("checkSides", [])]
+
+
+def test_проверка_окна_рендерит_итог_свежим_статусом_под_замком(monkeypatch):
+    """Статус из ответа check собран раньше статуса опроса: итог — новым
+    status под тем же замком, что у опроса, и до checkDone."""
+    api, calls, shown = _api(monkeypatch)
+    got = {}
+
+    def check_by_side(_on_side, lock=None):
+        got["lock"] = lock
+        return {"ok": True, "status": {"stale": True}}
+    monkeypatch.setattr(ipc, "check_by_side", check_by_side)
+    held = []
+    monkeypatch.setattr(api, "js",
+                        lambda fn, arg=None: held.append((fn, arg, api._render_lock.locked())))
+
+    api._check()
+
+    assert got["lock"] is api._render_lock
+    assert calls[-1] == ("status", {})
+    assert held == [("checkStart", None, False), ("render", {}, True),
+                    ("checkDone", None, False)]
 
 
 def test_статус_cli_пишет_итог_проверки_у_туннеля(capsys):

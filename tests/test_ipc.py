@@ -152,6 +152,31 @@ def test_check_by_side_прошлый_итог_не_считает_свежим(
     assert all(seq == 4 for seq in seen)
 
 
+def test_check_by_side_статус_и_on_side_под_замком(monkeypatch):
+    """Опрос окна не вклинится между статусом и on_side со своим статусом."""
+    st = _status(3, False, home=3, work=3)
+    release = _fake_service(monkeypatch, st)
+    lock = threading.Lock()
+    fake = ipc.call
+    held = []
+
+    def call(op, **payload):
+        if op == "status":
+            held.append(lock.locked())
+        return fake(op, **payload)
+    monkeypatch.setattr(ipc, "call", call)
+
+    def on_side(_got, _pending):
+        held.append(lock.locked())
+        release.set()
+
+    ipc.check_by_side(on_side, poll=0.01, lock=lock)
+
+    # Первый статус — до запуска check: рендера по нему нет, замок не нужен.
+    assert held[1:] and all(held[1:])
+    assert not lock.locked()
+
+
 def test_check_by_side_удалённый_туннель_не_ждёт(monkeypatch):
     st = _status(3, False, home=3, work=3)
     release = _fake_service(monkeypatch, st, drop_work=True)

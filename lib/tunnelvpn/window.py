@@ -135,6 +135,10 @@ class Api:
         # край — открыто, в панели задач есть, на экране нет.
         self._show_wanted = False
         self._park_lock = threading.Lock()
+        # Статус берут и отдают странице под одним замком: опрос, кнопки и
+        # проверка идут из разных потоков, и статус, взятый раньше, не ляжет
+        # поверх более свежего.
+        self._render_lock = threading.Lock()
         # Файл, про место которого служба спросила (ask): (имя, текст). Ответ
         # человека приходит через place_config — диалог выбора второй раз не нужен.
         self._asked = None
@@ -437,18 +441,19 @@ class Api:
 
     def refresh(self, full=False):
         """Гонит в страницу свежее состояние. Зовётся из потока опроса."""
-        try:
-            st = ipc.call("status").get("status", {})
-        except ipc.NotRunning:
-            # У портативной службы нет и не будет: канал держит её трей, и
-            # «Нужна установка» звала бы ставить то, что ей не нужно.
-            if portable.is_portable():
-                self.js("render", {"up": False, "no_service": True, "portable": True})
-            else:
-                self.js("render", {"up": False, "no_service": True,
-                                    "daemon": _service_installed()})
-            return
-        self.js("render", st)
+        with self._render_lock:
+            try:
+                st = ipc.call("status").get("status", {})
+            except ipc.NotRunning:
+                # У портативной службы нет и не будет: канал держит её трей, и
+                # «Нужна установка» звала бы ставить то, что ей не нужно.
+                if portable.is_portable():
+                    self.js("render", {"up": False, "no_service": True, "portable": True})
+                else:
+                    self.js("render", {"up": False, "no_service": True,
+                                        "daemon": _service_installed()})
+                return
+            self.js("render", st)
         if full:
             self.js("renderVersion", {"app": st.get("version", paths.version()),
                                       "singbox": st.get("singbox", "")})
@@ -463,13 +468,14 @@ class Api:
         def on_side(st, pending):
             self.jsn("checkSides", (st, sorted(pending)))
 
+        # Итог — свежим статусом под замком, а не статусом из ответа check:
+        # тот собран раньше и мог лечь поверх статуса опроса.
         try:
-            st = ipc.check_by_side(on_side).get("status")
-            if st:
-                self.js("render", st)
+            ipc.check_by_side(on_side, lock=self._render_lock)
         except ipc.NotRunning:
-            pass                       # опрос и так покажет «служба не отвечает»
+            pass
         finally:
+            self.refresh()
             self.js("checkDone")
 
     def _test_config(self, arg):
