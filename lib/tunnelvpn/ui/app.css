@@ -224,22 +224,17 @@ body.kbd :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
 .top-exit.vacant { visibility: hidden; }
 .top-actions { display: flex; align-items: center; gap: var(--sp-2); }
 
-/* Кнопка VPN — круг питания без подписи: выключен — серый, значок тусклый;
-   пока включается или выключается — по ободу бежит свет --busy (кольцо на
-   ::before, маской до обода), включён — значок и ровный ореол цвета
-   заголовка на ::after. Ореол — готовая тень, меняется только opacity. */
+/* Кнопка VPN и кнопка питания туннеля (.power, cards.js): пока включается
+   или выключается — по ободу бежит свет --busy (кольцо на ::before, маской
+   до обода), включён — ровный ореол на ::after: у VPN цвета заголовка, у
+   туннеля — --ok. Ореол — готовая тень, меняется только opacity. */
 @property --sweep { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
-#btn-toggle {
-  position: relative; border-radius: 50%;
-  background: var(--raised); border: 1px solid var(--line-strong);
-}
-#btn-toggle:hover:not(:disabled) { background: var(--hover); }
-#btn-toggle.lit { color: var(--st); }
-#btn-toggle::before, #btn-toggle::after {
+#btn-toggle { position: relative; }
+#btn-toggle::before, #btn-toggle::after, .power::before, .power::after {
   content: ""; position: absolute; inset: -1px; border-radius: inherit;
   pointer-events: none; opacity: 0;
 }
-#btn-toggle::before {
+#btn-toggle::before, .power::before {
   padding: 2px;
   background: conic-gradient(from var(--sweep), transparent 0 50%, var(--busy) 92%, transparent);
   mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
@@ -249,19 +244,20 @@ body.kbd :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
   box-shadow: var(--glow) var(--st, transparent);
   transition: opacity var(--t-mid) var(--ease);
 }
-#btn-toggle.working::before { opacity: 1; animation: sweep 1.2s linear infinite; }
+#btn-toggle.working::before, .power.working::before { opacity: 1; animation: sweep 1.2s linear infinite; }
 #btn-toggle.lit::after { opacity: .9; }
-/* Прогресс показывает кольцо: кнопка не тускнеет, значок питания не крутится. */
+/* Прогресс показывает кольцо: кнопка не тускнеет, значок питания на месте. */
 #btn-toggle.working { opacity: 1; }
-#btn-toggle.working .ic { animation: none; }
+#btn-toggle.working .spin { display: none; }
+#btn-toggle.working .ic:not(.spin) { display: block; }
 @keyframes sweep { to { --sweep: 360deg; } }
 @media (prefers-reduced-motion: reduce) {
-  #btn-toggle.working::before { animation: none; background: var(--busy); }
+  #btn-toggle.working::before, .power.working::before { animation: none; background: var(--busy); }
 }
 .top-install code { font-size: var(--fs-m); padding: var(--sp-1) var(--sp-2); }
 
-/* Узкое окно: вспомогательные кнопки — значками с подсказкой; у пилюли —
-   только числа. */
+/* Узкое окно: вспомогательные кнопки — значками с подсказкой, у главной
+   подпись остаётся; у пилюли — только числа. */
 @container top (max-width: 900px) {
   .cbtn { width: var(--hit); padding: 0; }
   .cbtn .lbl { display: none; }
@@ -303,7 +299,7 @@ body.kbd :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
 /* ------------------------------------------------------------- карточки */
 #pane-tunnels { padding: var(--sp-3) var(--sp-4) var(--sp-4); }
 /* 380: три колонки на 1440, две на 1024, одна на 720. Карточки ряда — одной
-   высоты: у основного туннеля нет строки с переключателем. */
+   высоты. */
 .cards { display: grid; gap: var(--sp-3); align-items: stretch;
          grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr)); }
 .card {
@@ -320,7 +316,7 @@ body.kbd :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
   opacity: 0; transition: opacity var(--t-mid) var(--ease);
 }
 .card.live::after { opacity: .9; }
-/* Выключен: пунктир, содержимое приглушено, меню и переключатель — нет. */
+/* Выключен: пунктир, содержимое приглушено, меню и кнопка питания — нет. */
 .card.off { border-style: dashed; border-color: var(--line-strong); }
 .card.off :is(.card-id, .card-lines, .drawer) { opacity: .55; }
 /* «Открыть карточку»: вспышка рамки цветом фокуса. */
@@ -335,7 +331,9 @@ body.kbd :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
 .card-id { display: flex; align-items: center; gap: var(--sp-2); flex: 1; min-width: 0; }
 .card-name { margin: 0; font-size: var(--fs-b); font-weight: 600; flex: 0 1 auto; }
 .card-acts { display: flex; align-items: center; flex: none; margin: calc(-1 * var(--sp-1)) calc(-1 * var(--sp-1)) 0 0; }
-.card-lines { display: grid; gap: 2px; padding-left: calc(16px + var(--sp-2)); }
+/* Строки состояния и роли переносятся по словам; кнопка питания — справа от них. */
+.card-body { display: flex; align-items: center; gap: var(--sp-2); }
+.card-lines { display: grid; gap: 2px; padding-left: calc(16px + var(--sp-2)); flex: 1; min-width: 0; }
 .card-state { font-size: var(--fs-m); }
 .card-role { color: var(--dim); font-size: var(--fs-m); }
 /* Строка проблемы держит место и пустой: карточки не прыгают по высоте. */
@@ -345,8 +343,17 @@ body.kbd :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
 .card-warn.vacant { visibility: hidden; }
 .card-foot { display: flex; align-items: center; gap: var(--sp-2); padding-left: calc(16px + var(--sp-2));
              min-height: var(--hit); }
-.card-foot .grow { flex: 1; }
-.sw-text { color: var(--dim); font-size: var(--fs-s); }
+/* Кнопка питания туннеля: выключен — серый круг, значок тусклый; включён —
+   значок и ореол --ok. Кольцо и ореол — общие с #btn-toggle. */
+.power {
+  position: relative; border-radius: 50%;
+  background: var(--raised); border: 1px solid var(--line-strong);
+}
+.power::after { box-shadow: var(--glow) var(--ok); transition: opacity var(--t-mid) var(--ease); }
+.power[aria-pressed="true"], .power[aria-pressed="true"]:hover:not(:disabled) { color: var(--ok); }
+.power[aria-pressed="true"]:not(.working)::after { opacity: .9; }
+/* Прогресс показывает кольцо: значок питания не крутится. */
+.power.working .ic { animation: none; }
 
 /* Бейдж типа конфига и роль: моно-пилюля и капитель. AWG — с лёгким акцентом. */
 .badge { flex: none; padding: 1px 5px; border-radius: var(--r-xs); border: 1px solid var(--line-strong);
