@@ -119,6 +119,15 @@ def test_status_работающий_основной_на_direct_запасно
     assert "запасной, напрямую: личный не работает" in text
 
 
+def test_status_kill_switch_закрыл_выход():
+    text = _status_text(tunnels=STATUS["tunnels"], out="block", exit_state="blocked",
+                        exit_ip="", kill_switch=True)
+
+    assert "закрыт kill-switch" in text
+    assert "kill-switch: да" in text
+    assert "запасной" not in text
+
+
 def test_disable_без_туннеля_не_зовёт_службу(sent):
     assert cli.main(["disable"]) == 1
     assert sent == []

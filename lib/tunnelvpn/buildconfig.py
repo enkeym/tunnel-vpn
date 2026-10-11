@@ -676,10 +676,16 @@ RULE_SET_VERSION = 3
 
 
 # Выход для всего, что не забрали туннели «по списку» и не локальная сеть:
-# основной туннель, а пока он мёртв — напрямую. Переключает служба через
-# clash_api, без перезапуска.
+# основной туннель, а пока он мёртв — напрямую (с kill-switch — в block).
+# Переключает служба через clash_api, без перезапуска.
 OUT_TAG = "out"
 DIRECT_TAG = "direct"
+# Kill-switch (kill_switch в tunnels.json): пока основной мёртв, out — сюда, а не в
+# direct. Block в selector sing-box 1.14.2-lx.11 принимает без предупреждений.
+# В конфиге он всегда: галочка — выбор selector, не перезапуск.
+BLOCK_TAG = "block"
+# Выходы «мимо основного»: сторож из них пробует вернуть out на основной.
+AWAY_TAGS = (DIRECT_TAG, BLOCK_TAG)
 PUBLIC_DNS_TAG = "dns"
 
 
@@ -1074,7 +1080,8 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True):
     # Связи всех слотов: прежние — если у работающего запуска они все есть.
     links = {t["id"]: _slot_links(links.get(t["id"])) for t, _, _ in built}
     api = api or new_api()
-    outbounds = [{"type": "direct", "tag": DIRECT_TAG}]
+    outbounds = [{"type": "direct", "tag": DIRECT_TAG},
+                 {"type": "block", "tag": BLOCK_TAG}]
     for tid, pair in links.items():
         outbounds += [{"type": "socks", "tag": socks_tag(tid, slot), "version": "5",
                        "server": "127.0.0.1", "server_port": link["port"],
@@ -1091,7 +1098,7 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True):
     # (Tunnel.reload_sides), без перезапуска. Рвать соединения при смене
     # выхода: открытые через мёртвый основной туннель иначе висят до своих таймаутов.
     outbounds.append({"type": "selector", "tag": OUT_TAG,
-                      "outbounds": [via_tag(tid) for tid in links] + [DIRECT_TAG],
+                      "outbounds": [via_tag(tid) for tid in links] + list(AWAY_TAGS),
                       "default": via_tag(main[0]["id"]) if main else DIRECT_TAG,
                       "interrupt_exist_connections": True})
     dns_servers, dns_rules = dns_section(dns_tunnels, OUT_TAG)

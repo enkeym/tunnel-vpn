@@ -15,7 +15,7 @@ import types
 
 import pytest
 
-from tunnelvpn import buildconfig, paths, service, tunnels
+from tunnelvpn import buildconfig, paths, probe, service, tunnel, tunnels
 from tunnelvpn.service import Core
 
 WG = ("[Interface]\nPrivateKey = x\nAddress = 10.0.0.2/32\n\n[Peer]\nPublicKey = y\n"
@@ -1115,6 +1115,62 @@ def test_уровень_журнала(core):
     assert tunnels.load()["log_level"] == "debug"
     assert not core._set_log_level("громко")["ok"]
     assert tunnels.load()["log_level"] == "debug"
+
+
+def test_kill_switch_пишется_и_строго_булев(core):
+    core.tunnel = tunnel.Tunnel(core.log)        # VPN не поднят
+    assert core._set_kill_switch(True)["ok"]
+    assert tunnels.load()["kill_switch"] is True
+    assert not core._set_kill_switch("false")["ok"]
+    assert tunnels.load()["kill_switch"] is True
+
+
+def test_away_block_только_с_основным_и_галочкой(core):
+    core.tunnel = t = tunnel.Tunnel(core.log)
+    assert core._set_kill_switch(True)["ok"]
+    assert t.away() == buildconfig.DIRECT_TAG     # основного нет: напрямую так задумано
+    t.sides, t.main_id = [tunnel.Side("home", "Личный")], "home"
+    assert t.away() == buildconfig.BLOCK_TAG
+    # Испорченный tunnels.json посреди правки — прежнее значение, не напрямую.
+    with open(paths.TUNNELS_JSON, "w", encoding="utf-8") as fh:
+        fh.write("{")
+    assert t.away() == buildconfig.BLOCK_TAG
+
+
+class _Running:
+    @staticmethod
+    def poll():
+        return None
+
+
+def _live_out(core, monkeypatch, out):
+    """Поднятый VPN с основным home и выходом out: [переключения выхода]."""
+    core.tunnel, core.prober = tunnel.Tunnel(core.log), probe.Prober()
+    core.tunnel.proc = _Running()
+    core.tunnel.sides = [tunnel.Side("home", "Личный")]
+    core.tunnel.main_id = "home"
+    outs = []
+    monkeypatch.setattr(core.tunnel, "out_now", lambda: outs[-1] if outs else out)
+    monkeypatch.setattr(core.tunnel, "set_out", lambda tag: outs.append(tag) or True)
+    return outs
+
+
+def test_kill_switch_на_живом_vpn_переводит_запасной_выход_в_block_и_обратно(core, monkeypatch):
+    outs = _live_out(core, monkeypatch, buildconfig.DIRECT_TAG)
+
+    assert core._set_kill_switch(True)["ok"]
+    assert core._set_kill_switch(False)["ok"]
+
+    assert outs == [buildconfig.BLOCK_TAG, buildconfig.DIRECT_TAG]
+    assert core.prober.snapshot()["out"] == buildconfig.DIRECT_TAG
+
+
+def test_kill_switch_не_трогает_выход_через_основной(core, monkeypatch):
+    outs = _live_out(core, monkeypatch, buildconfig.via_tag("home"))
+
+    assert core._set_kill_switch(True)["ok"]
+
+    assert outs == []
 
 
 def test_туннели_со_списками_и_конфигами(core):

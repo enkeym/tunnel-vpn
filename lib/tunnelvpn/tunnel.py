@@ -136,6 +136,8 @@ class Tunnel:
         # которым собран запуск. None — ещё не собирали.
         self.main_id = None
         self.profile = None
+        # kill_switch из tunnels.json, каким away() прочёл его в последний раз.
+        self.kill_switch = False
         # Индекс нашего tun, каким мы его запомнили. Нужен уборке после того,
         # как интерфейс исчез, а журнал уже удалён.
         self._tun_hint = None
@@ -165,6 +167,21 @@ class Tunnel:
     def main(self):
         """Боковой процесс основного туннеля, иначе None."""
         return next((s for s in self.sides if s.tid == self.main_id), None)
+
+    def away(self):
+        """Выход, пока основной не везёт: block с kill-switch, иначе direct.
+        Без основного — direct всегда: всё остальное напрямую так задумано.
+
+        Галочку читаем с диска на каждом уводе: снимок, взятый start до
+        set-kill-switch, иначе перетёр бы новое значение. Испорчен tunnels.json — прежнее
+        значение: посреди правки файла kill-switch не должен пускать напрямую."""
+        if self.main is None:
+            return buildconfig.DIRECT_TAG
+        try:
+            self.kill_switch = tunnels.load()["kill_switch"]
+        except (OSError, ValueError):
+            pass
+        return buildconfig.BLOCK_TAG if self.kill_switch else buildconfig.DIRECT_TAG
 
     # ------------------------------------------------------ журнал владения
 
@@ -520,10 +537,11 @@ class Tunnel:
             self.log("!! правило NRPT не встало: несуществующие корп-имена "
                      "будут отвечать по 12 с")
 
-        # Основной не поднялся — выход напрямую сразу, не дожидаясь сторожа:
-        # socks без процесса за ним отказывал бы каждому соединению.
+        # Основной не поднялся — выход напрямую (с kill-switch — в block) сразу, не
+        # дожидаясь сторожа: socks без процесса за ним отказывал бы каждому
+        # соединению.
         if self.main and side_err[self.main.tid]:
-            self.set_out(buildconfig.DIRECT_TAG)
+            self.set_out(self.away())
         if self.cancel.is_set():
             return CANCELLED
 
@@ -977,7 +995,7 @@ class Tunnel:
                      "будут отвечать по 12 с")
 
     def _switch_main(self, new, config):
-        """Основной сменился — selector out на его socks (или direct, основного
+        """Основной сменился — selector out на его socks (или away(), основного
         нет или его процесс лежит), а config.json — с новым default: по нему
         main_id находят основной пробер и следующая правка. Процесс
         конфиг не перечитывает, а всё, кроме default и журнала, в нём то же."""
@@ -985,8 +1003,7 @@ class Tunnel:
             return
         self.main_id = new
         main = self.main
-        tag = (buildconfig.via_tag(new) if main and main.alive()
-               else buildconfig.DIRECT_TAG)
+        tag = buildconfig.via_tag(new) if main and main.alive() else self.away()
         self.log(f"→ основной туннель: {main.title if main else 'нет, остальное напрямую'}")
         self.set_out(tag)
         try:

@@ -68,6 +68,7 @@ class _Tunnel:
         self.restarts = []       # id перезапущенных туннелей
         self.side_fail = ""
         self.delay_ms = None     # что ответит проверка через основной
+        self.kill_switch = False  # что away() прочла бы из tunnels.json
         self.mends = 0           # сверок маршрутов к пирам
         self.cancel = threading.Event()
 
@@ -101,6 +102,9 @@ class _Tunnel:
         self.out = tag
         self.outs.append(tag)
         return True
+
+    def away(self):
+        return buildconfig.BLOCK_TAG if self.kill_switch else buildconfig.DIRECT_TAG
 
     def delay(self, _tag):
         return self.delay_ms
@@ -629,6 +633,43 @@ def test_ожил_личный_выход_возвращается_на_него
     assert core.tunnel.restarts == []
     assert _said(core, "«Личный» везёт (проверка за 120 мс)")
     assert core.prober.snapshot()["out"] == HOME_VIA
+
+
+def test_упавший_личный_с_kill_switch_выход_в_block(monkeypatch):
+    core = _core(monkeypatch)
+    core.tunnel.kill_switch = True
+    core.tunnel.home.proc = _Proc()
+
+    _rounds(core, 1)
+
+    assert core.tunnel.outs == [buildconfig.BLOCK_TAG]
+    assert core.tunnel.restarts == ["home"]
+    assert core.prober.snapshot()["out"] == buildconfig.BLOCK_TAG
+
+
+def test_ожил_личный_выход_из_block_возвращается_на_него(monkeypatch):
+    """Задержка меряется через via-<id>, а не через out: из block видно, что основной ожил."""
+    core = _core(monkeypatch)
+    core.tunnel.kill_switch = True
+    core.tunnel.out = buildconfig.BLOCK_TAG
+    core.tunnel.delay_ms = 120
+
+    _rounds(core, 1)
+
+    assert core.tunnel.outs == [HOME_VIA]
+    assert core.prober.snapshot()["out"] == HOME_VIA
+
+
+def test_личный_не_ожил_выход_остаётся_в_block(monkeypatch):
+    core = _core(monkeypatch)
+    core.tunnel.kill_switch = True
+    core.tunnel.out = buildconfig.BLOCK_TAG
+
+    _rounds(core, 1)
+
+    assert core.tunnel.outs == []
+    assert core.tunnel.restarts == ["home"]
+    assert core.prober.snapshot()["out"] == buildconfig.BLOCK_TAG
 
 
 def test_уведённый_выход_не_мечется_обратно_раньше_паузы(monkeypatch, tmp_path):

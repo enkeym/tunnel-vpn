@@ -94,6 +94,18 @@ def _main_on(st):
     return main if main and main.get("enabled") is not False else None
 
 
+def _away(st):
+    """Куда ушёл выход мимо работающего основного: 'block' (kill-switch),
+    'direct' (запасной) или ''. out служба переключает раньше, чем проверка
+    выхода перемерит exit_state, — out решает первым."""
+    if not _main_on(st):
+        return ""
+    out = st.get("out")
+    if out in ("block", "direct"):
+        return out
+    return {"blocked": "block", "direct": "direct"}.get(st.get("exit_state"), "")
+
+
 def _tray_state(st):
     """Состояние значка (ключ icon.TRAY) по статусу службы. Порядок — как
     у заголовка окна: утечка IPv6 раньше запасного выхода, а на запасном
@@ -104,7 +116,10 @@ def _tray_state(st):
         return "error" if st.get("last_error") else "off"
     if st.get("v6_leak"):
         return "leak"
-    if _main_on(st) and "direct" in (st.get("out"), st.get("exit_state")):
+    away = _away(st)
+    if away == "block":
+        return "blocked"
+    if away == "direct":
         return "fallback"
     if st.get("exit_state") == "leak":
         return "leak"
@@ -280,7 +295,10 @@ class Tray:
         exit_ip = st.get("exit_ip") or "—"
         if st.get("v6_leak"):
             return f"TunnelVPN — УТЕЧКА IPv6: {st['v6_leak']}"
-        if _tray_state(st) == "fallback":
+        state = _tray_state(st)
+        if state == "blocked":
+            return f"TunnelVPN — «{name}» не работает, kill-switch закрыл интернет"
+        if state == "fallback":
             return f"TunnelVPN — запасной выход напрямую: «{name}» не работает"
         if st.get("exit_state") == "leak":
             return f"TunnelVPN — УТЕЧКА, виден адрес провайдера ({exit_ip})"
@@ -793,6 +811,8 @@ def _state_word(t, st, checking):
     check = t.get("check")
     if t.get("mode") == "all" and check == "up" and st.get("out") == "direct":
         return "не работает · интернет напрямую"
+    if t.get("mode") == "all" and st.get("out") == "block":
+        return "не работает · интернет закрыт"
     return {"up": "работает", "error": "не отвечает", "rules": "домен не открывается",
             "none": "нечем проверить"}.get(check, "не проверен")
 
@@ -831,7 +851,7 @@ def _conf_colors(st, checking):
     checking — id, чей ответ трей ещё ждёт: они рыжие, как и те, что
     служба проверяет сама. Каждый по себе: молчащий рабочий не красит рыжим
     работающий личный. Итог — check службы; у основного красный и на
-    запасном выходе напрямую, случившемся после проверки. «По списку» без
+    запасном выходе напрямую, случившемся после проверки, и за kill-switch. «По списку» без
     DNS и домена в «пускать» ответить нечему — серый честнее красного.
     Сервер отвечает, а домен из «пускать» нет (rules) — рыжий, как жёлтая
     плитка окна: не мёртвый, но и не «всё хорошо». Выключенный «по списку» не
@@ -849,7 +869,8 @@ def _conf_colors(st, checking):
         check = t.get("check")
         if t["id"] in checking or t.get("checking"):
             out[t["id"]] = "busy"
-        elif check == "up" and t.get("mode") == "all" and st.get("out") == "direct":
+        elif t.get("mode") == "all" and (st.get("out") == "block"
+                                          or (check == "up" and st.get("out") == "direct")):
             out[t["id"]] = "error"
         elif check == "rules":
             out[t["id"]] = "busy"

@@ -77,14 +77,15 @@ def _check_result(p, got, st):
     домена из «пускать» не знает (ответ — этот домен): сервер жив, не
     подходят правила; none — «по списку» без DNS и без домена в
     «пускать», проверять нечем; '' — туннель не поднят. Основной работает,
-    если выход виден и он не мимо туннеля и не запасной напрямую.
+    если выход виден и он не мимо туннеля, не запасной напрямую и не block
+    kill-switch.
     """
     if not p["running"]:
         return "", ""
     if p["mode"] == "all":
         ip = st.get("exit_ip") or ""
-        ok = (ip and st.get("out") != buildconfig.DIRECT_TAG
-              and st.get("exit_state") not in ("leak", "direct"))
+        ok = (ip and st.get("out") not in buildconfig.AWAY_TAGS
+              and st.get("exit_state") not in ("leak", "direct", "blocked"))
         return ("up" if ok else "error"), ip
     mine = got.get(p["id"]) or {}
     if p["dns"]:
@@ -577,9 +578,11 @@ class Prober:
                 pass
             # Три исхода, а не два: «подтверждено», «утечка» и «не могу
             # сказать». Молча считать неизвестность утечкой — значит пугать зря.
+            out = self.snapshot().get("out")
             if not ip:
-                state = "unknown"
-            elif self.snapshot().get("out") == buildconfig.DIRECT_TAG:
+                # Kill-switch закрыл выход — адреса и не будет, это не «не смогли».
+                state = "blocked" if out == buildconfig.BLOCK_TAG else "unknown"
+            elif out == buildconfig.DIRECT_TAG:
                 # Личный не работает, служба сама увела выход напрямую: адрес
                 # провайдера тут ожидаем, это не утечка.
                 state = "direct"

@@ -46,6 +46,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 
 _MODES = {"list": "по списку", "all": "весь остальной трафик"}
+_BLOCKED = "закрыт kill-switch: личный не работает, мимо туннеля не пускаю"
 
 
 def _check_text(t):
@@ -95,6 +96,7 @@ def status_lines(st):
     if up:
         state = {"tunnel": "через туннель", "leak": "!! УТЕЧКА, адрес провайдера",
                  "direct": "запасной, напрямую: личный не работает",
+                 "blocked": _BLOCKED,
                  "unknown": "не удалось проверить"}.get(st.get("exit_state"), "?")
         # Без работающего основного выход и так direct — это не запасной.
         if not main_on:
@@ -103,12 +105,15 @@ def status_lines(st):
         # Выход сторож переключает раньше, чем проверка выхода его перемерит.
         elif st.get("out") == "direct":
             state = "запасной, напрямую: личный не работает"
+        elif st.get("out") == "block":
+            state = _BLOCKED
         out.append(f"  выход    : {st.get('exit_ip') or '—'} "
                    f"{st.get('exit_country') or ''} {st.get('exit_city') or ''} — {state}")
         # HTTPS проверяют только у туннеля без DNS.
         http = f"   HTTP {st['corp_http']}" if st.get("corp_http") else ""
         out.append(f"  корп-DNS : {st.get('corp_dns') or 'нет'} "
                    f"→ {st.get('corp_ip') or '—'}{http}")
+    out.append(f"  kill-switch: {'да' if st.get('kill_switch') else 'нет'}")
     out.append(f"  автозапуск: {'да' if st.get('autostart') else 'нет'}")
     return out
 

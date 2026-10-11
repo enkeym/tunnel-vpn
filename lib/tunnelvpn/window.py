@@ -293,6 +293,14 @@ class Api:
                 self._apply()
             finally:
                 self.js("logLevelDone")
+        elif name == "kill_switch":
+            # Служба переключает выход сама (выбор selector) — apply не нужен.
+            # Галочка, как у журнала, возвращается к настоящему значению при любом UAC.
+            try:
+                self._guard(self._admin_call("set-kill-switch", on=bool(arg)))
+            finally:
+                self.refresh(full=True)
+                self.js("killSwitchDone")
         elif name == "logs":
             self._push_logs()
         # Вкладка «Настройки»: ответы — возвратом send (request).

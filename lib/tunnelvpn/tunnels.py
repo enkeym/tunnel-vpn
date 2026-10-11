@@ -4,7 +4,7 @@
 с конфигами, из которых один активный. Настройки принадлежат слоту, а не
 файлу: заменили .conf — правила остались.
 
-    {"version": 1, "log_level": "info",
+    {"version": 1, "log_level": "info", "kill_switch": false,
      "tunnels": [
        {"id": "work", "name": "Работа", "mode": "list", "active": "corp",
         "enabled": true,
@@ -19,6 +19,10 @@ enabled — выключить туннель, не теряя его конфи
 собирает его без процесса. Выключенный основной остаётся основным (метка,
 запасные — его конфиги, кроме active, «не пускать»), а весь остальной
 трафик идёт напрямую, как без основного.
+
+kill_switch — пока включённый основной не везёт, выход наружу не напрямую, а
+в block: трафик мимо туннеля не уходит. Без основного или с выключенным
+всё остальное идёт напрямую, как задумано, — галочка этого не меняет.
 
 id и имя конфига приходят через канал службы, у которой права SYSTEM, и
 становятся путями на диске. Поэтому всё, что пришло снаружи, проверяется
@@ -107,7 +111,8 @@ def list_confs(tid):
 
 
 def empty():
-    return {"version": VERSION, "log_level": "info", "tunnels": []}
+    return {"version": VERSION, "log_level": "info", "kill_switch": False,
+            "tunnels": []}
 
 
 def _check_list(tunnel, key):
@@ -158,6 +163,9 @@ def validate(data):
     if level not in LOG_LEVELS:
         raise ValueError(f"tunnels.json: уровень журнала {level!r}, "
                          f"ожидаю один из {', '.join(LOG_LEVELS)}")
+    kill = data.get("kill_switch", False)
+    if not isinstance(kill, bool):
+        raise ValueError("tunnels.json: kill_switch должен быть true или false")
     raw = data.get("tunnels", [])
     if not isinstance(raw, list):
         raise ValueError("tunnels.json: tunnels должен быть списком")
@@ -172,7 +180,8 @@ def validate(data):
     if len(alls) > 1:
         raise ValueError(f"«весь остальной трафик» может забирать только один "
                          f"туннель, а не {', '.join(alls)}")
-    return {"version": VERSION, "log_level": level, "tunnels": tunnels}
+    return {"version": VERSION, "log_level": level, "kill_switch": kill,
+            "tunnels": tunnels}
 
 
 def load():

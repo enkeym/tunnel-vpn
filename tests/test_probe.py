@@ -51,6 +51,26 @@ def test_адрес_провайдера_на_запасном_выходе_не
     assert p.snapshot()["exit_state"] == state
 
 
+@pytest.mark.parametrize("out, state", [("block", "blocked"), ("direct", "unknown")])
+def test_kill_switch_без_адреса_выхода_закрыт_а_не_неизвестно(monkeypatch, out, state):
+    monkeypatch.setattr(probe.Prober, "peer_addrs", lambda self: {})
+    monkeypatch.setattr(probe.Prober, "_exit_info", lambda self: {})
+    monkeypatch.setattr(probe.Prober, "main_tag", staticmethod(lambda: "wg-home"))
+    p = probe.Prober()
+    p.set(out=out)
+
+    p._slow_exit()
+
+    assert p.snapshot()["exit_state"] == state
+
+
+def test_основной_за_kill_switch_не_работает():
+    p = {"running": True, "mode": "all", "id": "home"}
+    st = {"exit_ip": "185.12.4.9", "out": "block", "exit_state": "tunnel"}
+
+    assert probe._check_result(p, {}, st)[0] == "error"
+
+
 def _stop_loop(p, loop):
     p.stop()
     loop.join(2)

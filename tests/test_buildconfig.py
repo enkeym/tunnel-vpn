@@ -628,7 +628,10 @@ def test_остальное_через_основной_с_запасным_dire
     out = _by_tag(main["outbounds"], "out")
     assert out["type"] == "selector"
     # Все туннели: основным становится любой переключением, без перезапуска.
-    assert out["outbounds"] == ["via-work", "via-lab", "via-home", "direct"]
+    # direct — запасной выход, block — он же с kill-switch: оба в конфиге всегда,
+    # галочка — выбор selector, а не перезапуск.
+    assert out["outbounds"] == ["via-work", "via-lab", "via-home", "direct", "block"]
+    assert _by_tag(main["outbounds"], "block")["type"] == "block"
     assert out["default"] == "via-home"
     assert main["inbounds"][0]["mtu"] == buildconfig.TUN_MTU == 1280
     assert buildconfig.api_of(main)[0].startswith("127.0.0.1:")

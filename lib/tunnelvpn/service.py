@@ -437,6 +437,9 @@ class Core:
             return self._remove_tunnel(tid)
         if op == "set-log-level":
             return self._set_log_level(payload.get("level", ""))
+        if op == "set-kill-switch":
+            # Строго True/False, как on у set-enabled.
+            return self._set_kill_switch(payload.get("on"))
         if op == "set-site":
             return self._set_site(payload.get("text", ""))
         if op == "get-site":
@@ -492,6 +495,8 @@ class Core:
         st["singbox"] = self._singbox_version()
         # Галочка «подробный журнал» в окне: set-log-level пишет, читать — любому.
         st["log_level"] = data["log_level"]
+        # Галочка kill-switch: пишет set-kill-switch (администратор), читать — любому.
+        st["kill_switch"] = data["kill_switch"]
         st["profiles"] = self._profiles(data)
         st["corp"] = self._corp(data)
         # Старые стороны окна — до шага окна.
@@ -1134,7 +1139,8 @@ class Core:
     def _mind_sides(self, lines):
         """Упавший или мёртвый туннель — перезапуск только его процесса, не чаще
         DEAD_GAP. Пока основной не везёт, выход наружу напрямую: главное — чтобы
-        интернет работал; везёт снова — выход обратно через него."""
+        интернет работал; с kill-switch — в block, мимо туннеля ничего (Tunnel.away).
+        Везёт снова — выход обратно через него."""
         # Круг идёт секундами. Выключили, включили или правили конфиги за это время —
         # его таймауты и замеры от прежних процессов: 9 октября так сторож после
         # перезапуска назвал свежий процесс «не запущенным» и увёл выход на 17 с напрямую.
@@ -1143,8 +1149,8 @@ class Core:
         dead = self._dead_tunnels(lines)
         main = self.tunnel.main
         out, carries = self.tunnel.out_now(), None
-        if main and out == buildconfig.DIRECT_TAG and main.alive():
-            out, carries = self._try_back(main)
+        if main and out in buildconfig.AWAY_TAGS and main.alive():
+            out, carries = self._try_back(main, out)
         self.prober.set(out=out)
         for side in self.tunnel.sides:
             if self._round_human != self._human:
@@ -1156,16 +1162,17 @@ class Core:
             if side.alive() and not hits and not stuck:
                 continue
             if (side is main and hits and not stuck and side.alive()
-                    and out != buildconfig.DIRECT_TAG
+                    and out not in buildconfig.AWAY_TAGS
                     and self.tunnel.delay(buildconfig.via_tag(side.tid)) is not None):
                 # Лежит чужой адрес, а не туннель: выход не трогаем.
                 self._dead_hits = tuple(h for h in self._dead_hits
                                         if h[1] != side.tag)
                 continue
-            if side is main and out != buildconfig.DIRECT_TAG:
+            if side is main and out not in buildconfig.AWAY_TAGS:
                 # Выход уводим сразу, без паузы: интернет не должен ждать перезапуска.
-                if self.tunnel.set_out(buildconfig.DIRECT_TAG):
-                    out = buildconfig.DIRECT_TAG
+                away = self.tunnel.away()
+                if self.tunnel.set_out(away):
+                    out = away
                     # Назад — не раньше BACK_EVERY: 7 октября одна удачная проверка
                     # через 2 с после увода возвращала трафик в полуживой туннель,
                     # и выход за 40 с метался пять раз.
@@ -1215,20 +1222,21 @@ class Core:
             self._side_said.discard(side.tid)
         return what
 
-    def _try_back(self, main):
-        """Выход напрямую, процесс основного main жив: если задержка
-        через него дошла — вернуть выход на него. (выход, везёт ли): None —
-        не проверяли, рано по BACK_EVERY."""
+    def _try_back(self, main, out):
+        """Выход out мимо основного (AWAY_TAGS), процесс основного main жив:
+        если задержка через него дошла — вернуть выход на него. (выход, везёт ли):
+        None — не проверяли, рано по BACK_EVERY. Задержка идёт прямо через
+        via-<id>, не через out: и из block видно, ожил ли основной."""
         now = time.monotonic()
         if now < self._back_at:
-            return buildconfig.DIRECT_TAG, None
+            return out, None
         self._back_at = now + BACK_EVERY
         tag = buildconfig.via_tag(main.tid)
         ms = self.tunnel.delay(tag)
         if ms is None:
-            return buildconfig.DIRECT_TAG, False
+            return out, False
         if not self.tunnel.set_out(tag):
-            return buildconfig.DIRECT_TAG, True
+            return out, True
         self.log(f"→ «{main.title}» везёт (проверка за {ms} мс) — выход снова через него")
         self.prober.remeasure()
         return tag, True
@@ -2038,6 +2046,27 @@ class Core:
             return {"ok": False, "error": str(exc)}
         data["log_level"] = level
         return self._save_tunnels(data, f"уровень журнала sing-box: {level}")
+
+    def _set_kill_switch(self, on):
+        """kill_switch в tunnels.json и сразу на живой VPN: выход уже мимо
+        основного — из direct в block или обратно. Это выбор selector, не
+        перезапуск: apply не нужен."""
+        if not isinstance(on, bool):
+            return {"ok": False, "error": "kill-switch: ожидаю true или false"}
+        try:
+            data = tunnels.load()
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        data["kill_switch"] = on
+        reply = self._save_tunnels(data, f"kill-switch {'включён' if on else 'выключен'}")
+        proc = self.tunnel.proc
+        if not reply["ok"] or proc is None or proc.poll() is not None:
+            return reply
+        out, away = self.tunnel.out_now(), self.tunnel.away()
+        if out in buildconfig.AWAY_TAGS and out != away and self.tunnel.set_out(away):
+            self.prober.set(out=away)
+            self.prober.remeasure()
+        return reply
 
     # ------------------------------- поля site.env старого окна, до шага окна
 

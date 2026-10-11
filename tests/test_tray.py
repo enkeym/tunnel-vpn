@@ -460,6 +460,10 @@ _SIDE = {"id": "work", "mode": "list"}
     ({"up": True, "tunnels": [_MAIN, _SIDE], "exit_state": "tunnel"}, "up"),
     ({"up": True, "tunnels": [_MAIN], "out": "direct"}, "fallback"),
     ({"up": True, "tunnels": [_MAIN], "exit_state": "direct"}, "fallback"),
+    # Kill-switch: out сторож переключает раньше, чем перемерится exit_state.
+    ({"up": True, "tunnels": [_MAIN], "out": "block", "exit_state": "direct"}, "blocked"),
+    ({"up": True, "tunnels": [_MAIN], "exit_state": "blocked"}, "blocked"),
+    ({"up": True, "tunnels": [_MAIN], "out": "direct", "exit_state": "blocked"}, "fallback"),
     ({"up": True, "tunnels": [_MAIN], "exit_state": "leak"}, "leak"),
     ({"up": True, "tunnels": [_MAIN], "out": "direct", "v6_leak": "2a00::1"}, "leak"),
     # Без основного напрямую идёт всё остальное — так задумано.

@@ -39,7 +39,7 @@ def _tunnel(**over):
 
 
 def _data(*ts, **over):
-    d = {"version": 1, "log_level": "info", "tunnels": list(ts)}
+    d = {"version": 1, "log_level": "info", "kill_switch": False, "tunnels": list(ts)}
     d.update(over)
     return d
 
@@ -63,7 +63,8 @@ def _profile(name):
 # ---------------------------------------------------------------- проверка
 
 def test_нет_файла_пустой_список():
-    assert tunnels.load() == {"version": 1, "log_level": "info", "tunnels": []}
+    assert tunnels.load() == {"version": 1, "log_level": "info", "kill_switch": False,
+                              "tunnels": []}
 
 
 def test_запись_и_чтение_дают_то_же():
@@ -163,6 +164,15 @@ def test_уровень_журнала_проверяется():
     with pytest.raises(ValueError, match="уровень журнала"):
         tunnels.validate(_data(log_level="verbose"))
     assert tunnels.validate(_data(log_level="debug"))["log_level"] == "debug"
+
+
+def test_kill_switch_строго_булев_и_выключен_по_умолчанию():
+    d = _data()
+    del d["kill_switch"]
+    assert tunnels.validate(d)["kill_switch"] is False
+    with pytest.raises(ValueError, match="kill_switch"):
+        tunnels.validate(_data(kill_switch="true"))
+    assert tunnels.validate(_data(kill_switch=True))["kill_switch"] is True
 
 
 def test_испорченный_json_отказ_а_не_пустой_список():
@@ -279,7 +289,7 @@ def test_переезд_нынешней_установки():
     data = tunnels.migrate(log=lambda _: None)
 
     assert data == {
-        "version": 1, "log_level": "debug",
+        "version": 1, "log_level": "debug", "kill_switch": False,
         "tunnels": [
             {"id": "work", "name": "Работа", "mode": "list", "active": "corp",
              "enabled": True, "include": ["corp.example"],
