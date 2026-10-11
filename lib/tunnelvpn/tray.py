@@ -1,13 +1,14 @@
-"""Значок в трее: включить, выключить, конфиги с кружком статуса, открыть окно.
+"""Значок в трее: включить, выключить, туннели с кружком статуса, открыть окно.
 
-Остальное — выбор личного профиля, автозапуск, рабочая сеть — только в окне:
-меню трея держим коротким, а настройки — в одном месте.
+Остальное — конфиги, вкл/выкл туннелей, правила, настройки — только в
+окне: меню трея держим коротким, а управление — в одном месте. Клик по туннелю
+открывает окно у его карточки.
 
 Туннелем владеет служба, трей шлёт ей команды через именованный канал.
-Установленный трей работает от администратора: конфиги с ключами служба
-принимает только от администратора, и так UAC спрашивается один раз при
-запуске, а не на каждое добавление конфига. Права он поднимает сам (run), а не
-манифестом: ярлык к уже работающему трею открывает окно без UAC.
+Установленный трей работает от администратора, и окно наследует его права:
+конфиги с ключами служба принимает только от администратора, и так UAC
+спрашивается один раз при запуске, а не на каждое добавление конфига.
+Права он поднимает сам (run), а не манифестом: ярлык к уже работающему трею открывает окно без UAC.
 
 Значок рисуется кодом (icon.tray), а не берётся из файла: состояний
 шесть, и каждое рисуется сразу в размер трея при нынешнем масштабе экрана.
@@ -53,8 +54,8 @@ INFO_MAX = 255
 # Цвета состояний — те же, что у значка (icon.TRAY) и статусов окна.
 COLORS = {state: rgba(color) for state, (color, _mark) in TRAY.items()}
 
-# Длиннее имя конфига в меню обрезаем: меню растягивается по самому длинному
-# пункту, и имя файла в сотню знаков сделало бы его шириной в пол-экрана.
+# Длиннее имя туннеля в меню обрезаем: меню растягивается по самому длинному
+# пункту, и имя в сотню знаков сделало бы его шириной в пол-экрана.
 NAME_MAX = 28
 
 # Свои сообщения окну значка pystray. Всё, что трогает HMENU, идёт через них
@@ -121,8 +122,9 @@ class Tray:
         # id туннелей на момент открытия меню: номер бита в lParam WM_CHECKED.
         self._check_ids = ()
         # Пункты туннелей по id и id в порядке меню. Оба меняет только
-        # _sync_menu: _paint_dots ищет пункт по identity в list(self.icon.menu), и
-        # список между перестройками обязан совпадать с показанным HMENU.
+        # _sync_menu (пункты — через _tunnel_entries): _paint_dots ищет пункт по
+        # identity в list(self.icon.menu), и список между перестройками обязан
+        # совпадать с показанным HMENU.
         self._tunnel_items = {}
         self._menu_ids = ()
         self.stop_event = threading.Event()
@@ -165,10 +167,11 @@ class Tray:
             self._post(WM_SYNC_MENU)
 
     def _menu_sig(self):
-        """То, от чего зависят подписи, галочки и доступность пунктов меню."""
+        """То, от чего зависят подписи и доступность пунктов меню."""
         st = self.status
+        labels = _labels(st, self._checking)
         return (bool(st), bool(st.get("up")), bool(st.get("busy")),
-                tuple((_menu_key(t), _conf_label(t)) for t in st.get("tunnels") or []))
+                tuple((t["id"], labels[t["id"]]) for t in st.get("tunnels") or []))
 
     def _post(self, msg, wparam=0, lparam=0):
         """Сообщение окну значка. Окна ещё нет — опрос повторит."""
@@ -194,8 +197,7 @@ class Tray:
         if sig == self._last_menu_sig:
             return
         # Порядок tunnels.json, как в окне: на маршрут он не влияет (решение #16).
-        # С видом пункта: подменю и галочку в нём _patch_menu на месте не правит.
-        ids = tuple(_menu_key(t) for t in self.status.get("tunnels") or [])
+        ids = tuple(t["id"] for t in self.status.get("tunnels") or [])
         if self._menu_open:
             if ids == self._menu_ids and self._patch_menu():
                 self._last_menu_sig = sig
@@ -287,49 +289,29 @@ class Tray:
             pystray.MenuItem("Закрыть", self.on_quit),
         )
         return pystray.Menu(
-            lambda: (*head, *self._conf_items(pystray), *tail))
+            lambda: (*head, *self._tunnel_entries(pystray), *tail))
 
-    def _conf_items(self, pystray):
-        """Пункты туннелей в порядке _menu_ids: имя конфига и кружок
-        статуса слева, клик — добавить файл в этот туннель. У туннеля
-        «по списку» с конфигом — подменю «Включён» и «Добавить конфиг…»: основной
-        выключает «Всё остальное напрямую» в окне, и его пункт остаётся одним кликом.
+    def _tunnel_entries(self, pystray):
+        """Пункты туннелей в порядке _menu_ids: кружок статуса, имя и
+        короткое состояние. Только статус: клик открывает окно у карточки
+        туннеля — конфиги и вкл/выкл только там.
 
         Кружок ставит _paint_dots, а не pystray: картинок у пунктов pystray
-        не умеет. Пункт удалённого туннеля или прежнего вида забываем.
+        не умеет. Пункт удалённого туннеля забываем.
         """
-        items = {}
-        for key in self._menu_ids:
-            tid, on = key
-            items[key] = self._tunnel_items.get(key) or (
-                self._switch_item(pystray, tid) if on is not None else pystray.MenuItem(
-                    self._label_of(tid), self._add_to(tid), enabled=self._can_edit))
+        items = {tid: self._tunnel_items.get(tid) or pystray.MenuItem(
+            self._label_of(tid), self._focus_of(tid)) for tid in self._menu_ids}
         self._tunnel_items = items
         return tuple(items.values())
 
-    def _switch_item(self, pystray, tid):
-        """Пункт туннеля «по списку» с подменю вкл/выкл и добавления файла."""
-        return pystray.MenuItem(self._label_of(tid), pystray.Menu(
-            pystray.MenuItem("Включён", self._toggle_of(tid), checked=self._enabled_of(tid),
-                             enabled=self._can_edit),
-            pystray.MenuItem("Добавить конфиг…", self._add_to(tid), enabled=self._can_edit)),
-            enabled=self._can_edit)
-
     def _label_of(self, tid):
         """Подпись пункта туннеля tid — из текущего статуса."""
-        return lambda _i: _conf_label(_tunnel_of(self.status, tid) or {})
+        return lambda _i: _labels(self.status, self._checking).get(tid, "")
 
-    def _add_to(self, tid):
+    def _focus_of(self, tid):
         """Действие пункта без аргументов: pystray считает co_argcount, и
         lambda tid=tid он вызвал бы с значком вместо id."""
-        return lambda: self.on_add_config(tid)
-
-    def _toggle_of(self, tid):
-        return lambda: self.on_set_enabled(tid)
-
-    def _enabled_of(self, tid):
-        """Галочка «Включён» — из текущего статуса."""
-        return lambda _i: (_tunnel_of(self.status, tid) or {}).get("enabled") is not False
+        return lambda: self.on_window(tid)
 
     # ------------------------------------------------------ кружки в меню
 
@@ -403,8 +385,8 @@ class Tray:
         # Только убавляем: поздний ответ туннеля не вернёт рыжий готовому.
         self._checking &= _sides_of(lparam, self._check_ids)
         if self._menu_open:
-            self._paint_dots()
-            _redraw_menus(self.icon._hwnd)
+            # «проверяю…» в подписи сменяется итогом вместе с кружком.
+            self._patch_menu()
 
     def _paint_dots(self):
         """Кружки в пунктах туннелей текущего HMENU. Поток значка."""
@@ -413,12 +395,10 @@ class Tray:
             return
         items = list(self.icon.menu)
         colors = _conf_colors(self.status, self._checking)
-        for (tid, _on), item in self._tunnel_items.items():
-            t = _tunnel_of(self.status, tid)
+        for tid, item in self._tunnel_items.items():
             if item in items:
                 _set_item_bitmap(handle[0], items.index(item),
-                                 _dot_bitmap(colors[tid])
-                                 if t and _conf_name(t) else None)
+                                 _dot_bitmap(colors[tid]) if tid in colors else None)
 
     # -------------------------------------------------------------- команды
 
@@ -478,66 +458,9 @@ class Tray:
                 self._notify(str(exc))
         self._busy_while(work)
 
-    # ---------------------------------------------------------------- конфиги
+    # ---------------------------------------------------------------- окно
 
-    def _can_edit(self, _item=None):
-        # При поднятом туннеле тоже можно: on_add_config сам перезапустит VPN,
-        # чтобы новый файл подействовал сразу, а не после ручного перезапуска.
-        return bool(self.status) and not self.status.get("busy")
-
-    def on_add_config(self, tid):
-        """Файл .conf в туннель tid через службу: имя чистит она, добавленный
-        становится активным. Был поднят туннель — перезапускаем его с новым
-        конфигом."""
-        title = (_tunnel_of(self.status, tid) or {}).get("name") or tid
-
-        def work():
-            picked = _pick_file(
-                f"Конфиг туннеля «{title}» (WireGuard / AmneziaWG)",
-                "Конфиги WireGuard (*.conf)\0*.conf\0Все файлы\0*.*\0")
-            if not picked:
-                return
-            path, text = picked
-            name = os.path.splitext(os.path.basename(path))[0]
-            reply = self._call("add-config", name=name, text=text, tunnel=tid)
-            if reply is None:
-                return
-            # Тот же частный DNS — служба заменила прежний конфиг туннеля.
-            what = ("вместо прежнего" if reply.get("place") == "replace"
-                    else "добавлен")
-            if self.status.get("up"):
-                # Служба перезапустит только процесс этого туннеля.
-                self._notify(f"«{title}»: конфиг {reply.get('name')}.conf {what},"
-                             " переключаю туннель")
-                self._call("apply")
-            else:
-                self._notify(f"«{title}»: конфиг {reply.get('name')}.conf {what}")
-        threading.Thread(target=work, daemon=True).start()
-
-    def on_set_enabled(self, tid):
-        """Вкл/выкл туннеля «по списку»: служба пишет флаг, на живой VPN его
-        переносит apply — как после добавления конфига."""
-        on = (_tunnel_of(self.status, tid) or {}).get("enabled") is False
-
-        def work():
-            if self._call("set-enabled", tunnel=tid, on=on) and self.status.get("up"):
-                self._call("apply")
-        self._busy_while(work)
-
-    def _call(self, op, **payload):
-        """Команда в службу с уведомлением об ошибке. None — не вышло."""
-        try:
-            reply = ipc.call(op, **payload)
-        except ipc.NotRunning as exc:
-            self._notify(str(exc))
-            return None
-        if not reply.get("ok"):
-            self._notify(reply.get("error") or "не вышло")
-            return None
-        self._poll_once()
-        return reply
-
-    def on_window(self):
+    def on_window(self, focus=None):
         """Окно — в отдельном процессе.
 
         И pywebview, и pystray хотят собственный цикл сообщений в главном
@@ -550,13 +473,17 @@ class Tray:
         запоминалось только последнее — «Закрыть» снимал его, а первое
         оставалось висеть. Ожидание — в своём потоке: зовут нас и из
         обработчика меню, а он идёт в потоке значка.
-        """
-        threading.Thread(target=self._open_window, daemon=True).start()
 
-    def _open_window(self):
+        focus — id туннеля, к чьей карточке окно прокрутит (клик по туннелю
+        в меню).
+        """
+        threading.Thread(target=self._open_window, args=(focus,), daemon=True).start()
+
+    def _open_window(self, focus=None):
         with self._window_lock:
             if self.stop_event.is_set():
                 return
+            _set_focus(focus)
             proc = self._window_proc
             if proc is not None and proc.poll() is None:
                 # Фокус есть у трея (по нему щёлкнули), а окно — другой процесс.
@@ -748,11 +675,6 @@ def _clip(text, limit):
     return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
-def _tunnel_of(st, tid):
-    """Туннель tid из st["tunnels"], иначе None."""
-    return next((t for t in st.get("tunnels") or [] if t["id"] == tid), None)
-
-
 def _conf_name(t):
     """Имя конфига туннеля t для меню, None — показывать нечего.
 
@@ -765,22 +687,50 @@ def _conf_name(t):
     return active if active in confs else None
 
 
-def _menu_key(t):
-    """(id, включён) пункта туннеля t. Второе — None у пункта без подменю:
-    основной и туннель без конфига одним кликом зовут добавить файл."""
-    if t.get("mode") != "list" or not _conf_name(t):
-        return t["id"], None
-    return t["id"], t.get("enabled") is not False
+def _labels(st, checking):
+    """{id туннеля: подпись пункта} — «имя · состояние». Имя туннеля, а не
+    конфига: клик ведёт к карточке туннеля. checking — как у _conf_colors."""
+    return {t["id"]: f"{_clip(t.get('name') or t['id'], NAME_MAX)} · "
+                     f"{_state_word(t, st, checking)}"
+            for t in st.get("tunnels") or []}
 
 
-def _conf_label(t):
-    """Подпись пункта туннеля: имя его конфига, как на плитке окна, или
-    «<имя туннеля>: добавить конфиг…» — конфиг выбирать нечего. Выключенный
-    туннель «по списку» — с пометкой, как «конфиг выключен» на плитке."""
-    conf = _conf_name(t)
-    if conf:
-        return _clip(conf, NAME_MAX) + (" (выключен)" if t.get("enabled") is False else "")
-    return f"{_clip(t.get('name') or t.get('id'), NAME_MAX)}: добавить конфиг…"
+def _state_word(t, st, checking):
+    """Короткое состояние туннеля t — теми же словами, что карточка окна
+    (cards.js:cardState), но без подробностей: меню узкое, подробно — в окне.
+    Порядок веток — как у _conf_colors: кружок и слово не спорят."""
+    if not t.get("confs"):
+        return "нет конфига"
+    if not _conf_name(t):
+        return "не выбран конфиг"
+    if t.get("enabled") is False:
+        return "выключен"
+    if not st.get("up"):
+        return "не работал в прошлый раз" if t.get("last") == "error" else "ждёт включения VPN"
+    if st.get("busy"):
+        return f"{st['busy']}…"
+    if t["id"] in checking or t.get("checking"):
+        return "проверяю…"
+    check = t.get("check")
+    if t.get("mode") == "all" and check == "up" and st.get("out") == "direct":
+        return "не работает · интернет напрямую"
+    return {"up": "работает", "error": "не отвечает", "rules": "домен не открывается",
+            "none": "нечем проверить"}.get(check, "не проверен")
+
+
+def _set_focus(tid):
+    """Карточка для окна (window.Api._focus): id в paths.FOCUS_FILE, а без
+    него файла нет — иначе оставшийся от непоказавшегося окна файл увёл бы
+    к той карточке и обычный левый клик. Не вышло — окно просто не прокрутит."""
+    try:
+        if tid:
+            paths.ensure_dirs()
+            with open(paths.FOCUS_FILE, "w", encoding="utf-8") as fh:
+                fh.write(tid)
+        else:
+            os.remove(paths.FOCUS_FILE)
+    except OSError:
+        pass
 
 
 def _side_bits(pending, ids):
@@ -1070,33 +1020,6 @@ def _wait_visible(pid, timeout):
         time.sleep(0.1)
 
 
-def _pick_file(title, filters):
-    """Стандартный диалог «Открыть». (путь, текст) или None, если отменили.
-
-    Зовётся из рабочего потока, а не из потока значка: диалог модальный, и
-    меню на всё время выбора иначе застыло бы. COM диалогу нужен свой на поток.
-    utf-8-sig: Блокнот сохраняет с BOM, и без этого «[Interface]» в первой
-    строке не узнавался бы.
-    """
-    import pythoncom
-    import pywintypes
-    import win32con
-    import win32gui
-
-    pythoncom.CoInitialize()
-    try:
-        path, _filter, _flags = win32gui.GetOpenFileNameW(
-            Title=title, Filter=filters,
-            Flags=win32con.OFN_EXPLORER | win32con.OFN_FILEMUSTEXIST
-            | win32con.OFN_HIDEREADONLY)
-    except pywintypes.error:
-        return None                     # отмена — это тоже error, с кодом 0
-    finally:
-        pythoncom.CoUninitialize()
-    with open(path, encoding="utf-8-sig", errors="replace") as fh:
-        return path, fh.read()
-
-
 def already_running(background=False):
     """True — трей этого сеанса уже есть; ему передано «покажи окно».
 
@@ -1191,7 +1114,6 @@ def run(background=False):
         threading.Thread(target=_bring_up, daemon=True).start()
     Tray().run(background)
     # Значок закрыт — процесс обязан закончиться. Обычный выход ждёт все
-    # недемонические потоки, а их может оставить COM диалога выбора файла или
-    # pywin32; тогда TunnelVPN-Tray.exe остался бы висеть без значка, и снять
+    # недемонические потоки, а их может оставить pywin32; тогда TunnelVPN-Tray.exe остался бы висеть без значка, и снять
     # его можно было бы только из диспетчера задач. Уборка уже сделана в on_quit.
     os._exit(0)

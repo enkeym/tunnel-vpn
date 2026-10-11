@@ -3,10 +3,11 @@
 аргументов CLI.
 """
 
+import os
 import sys
 import types
 
-from tunnelvpn import cli, ipc, window
+from tunnelvpn import cli, ipc, paths, window
 
 
 class _SyncThread:
@@ -131,6 +132,46 @@ def test_открытое_окно_по_сигналу_только_выходи
 
     window._show(_Window(shown), api)
     assert shown == ["show"] and calls == []
+
+
+def _focus_on(tid):
+    paths.ensure_dirs()
+    with open(paths.FOCUS_FILE, "w", encoding="utf-8") as fh:
+        fh.write(tid)
+
+
+def test_открытое_окно_по_сигналу_прокручивает_к_карточке_один_раз(monkeypatch):
+    api, _, _ = _api(monkeypatch)
+    focused = []
+    monkeypatch.setattr(api, "js", lambda fn, arg=None: focused.append(arg) if fn == "focusCard" else None)
+    api.ready.set()
+    _focus_on("work")
+
+    window._show(_Window([]), api)
+    window._show(_Window([]), api)
+
+    assert focused == ["work"]
+    assert not os.path.exists(paths.FOCUS_FILE)
+
+
+def test_карточку_клика_забирает_показанное_окно_после_отрисовки(monkeypatch):
+    api, _, shown = _api(monkeypatch)
+    _focus_on("work")
+
+    api.send("ready")
+
+    assert shown.index("render") < shown.index("focusCard")
+
+
+def test_прогретое_окно_на_ready_карточку_не_забирает(monkeypatch):
+    api, _, shown = _api(monkeypatch)
+    api.hidden = True
+    _focus_on("work")
+
+    api.send("ready")
+
+    assert "focusCard" not in shown and os.path.exists(paths.FOCUS_FILE)
+    os.remove(paths.FOCUS_FILE)
 
 
 def test_спрятанное_окно_по_сигналу_обновляется(monkeypatch):

@@ -143,6 +143,8 @@ class Api:
             self.ready.set()
             self.refresh(full=True)
             self.reveal()
+            if not self.hidden:
+                self._focus()
             # Статус туннелей сразу при открытии: сама служба меряет сеть
             # только на подъёме туннеля, и прежний ответ мог устареть на часы.
             # Спрятанному окну проверка ни к чему — её сделает показ.
@@ -270,6 +272,19 @@ class Api:
         if w is not None:
             _unpark(w, self)
             w.show()
+
+    def _focus(self):
+        """Карточка туннеля, по которому щёлкнули в меню трея: id из
+        paths.FOCUS_FILE, файл забираем — следующий показ без клика по
+        туннелю прокручивать не должен. Зовётся, когда карточки уже нарисованы."""
+        try:
+            with open(paths.FOCUS_FILE, encoding="utf-8") as fh:
+                tid = fh.read().strip()
+            os.remove(paths.FOCUS_FILE)
+        except OSError:
+            return
+        if tid:
+            self.js("focusCard", tid)
 
     @staticmethod
     def _guard(reply):
@@ -917,6 +932,8 @@ def _show(window, api):
     if not on_screen and api.ready.is_set():
         api.refresh(full=True)
         threading.Thread(target=api._check, daemon=True).start()
+    if api.ready.is_set():
+        api._focus()
 
 
 def open_window(resident=False, hidden=False):

@@ -1,4 +1,5 @@
-"""Пункты конфигов в меню трея: подписи и цвета кружков из статуса службы."""
+"""Пункты туннелей в меню трея: подписи и цвета кружков из статуса службы,
+клик — окно у карточки туннеля."""
 
 import sys
 import types
@@ -139,15 +140,35 @@ def test_двойной_левый_клик_сам_окно_не_открыва�
     assert calls == []
 
 
-def test_подпись_имя_конфига_без_имени_туннеля():
-    """Как на плитке окна: единица — конфиг, а не «рабочий/личный»."""
-    assert tray._conf_label(_work(confs=["office", "lab"], active="lab")) == "lab"
+@pytest.mark.parametrize("t, st, word", [
+    (_work(), {}, "нет конфига"),
+    (_work(confs=["a", "b"]), {}, "не выбран конфиг"),
+    (_work(confs=["a"], enabled=False), {}, "выключен"),
+    (_work(confs=["a"]), {"up": False}, "ждёт включения VPN"),
+    (_work(confs=["a"], last="error"), {"up": False}, "не работал в прошлый раз"),
+    (_work(confs=["a"]), {"busy": "включаю"}, "включаю…"),
+    (_work(confs=["a"], checking=True), {}, "проверяю…"),
+    (_work(confs=["a"]), {}, "работает"),
+    (_work(confs=["a"], check="error"), {}, "не отвечает"),
+    (_work(confs=["a"], check="rules"), {}, "домен не открывается"),
+    (_work(confs=["a"], check="none"), {}, "нечем проверить"),
+    (_work(confs=["a"], check=""), {}, "не проверен"),
+    (_home(confs=["nl-1"]), {"out": "direct"}, "не работает · интернет напрямую"),
+])
+def test_подпись_имя_туннеля_и_короткое_состояние(t, st, word):
+    assert tray._labels(_up(t, **st), NONE) == {t["id"]: f"{t['name']} · {word}"}
 
 
-def test_длинное_имя_обрезается_а_пустое_зовёт_добавить():
-    long = tray._conf_label(_work(confs=["x" * 100]))
-    assert long.endswith("…") and len(long) == tray.NAME_MAX
-    assert tray._conf_label(_home()) == "Личный: добавить конфиг…"
+def test_ждущий_ответа_трея_проверяется_а_остальные_нет():
+    labels = tray._labels(_up(_work(confs=["a"]), _home(confs=["nl-1"])), frozenset({"work"}))
+
+    assert labels == {"work": "Работа · проверяю…", "home": "Личный · работает"}
+
+
+def test_длинное_имя_туннеля_обрезается():
+    label = tray._labels(_up(_work(name="x" * 100)), NONE)["work"]
+
+    assert label == "x" * (tray.NAME_MAX - 1) + "… · нет конфига"
 
 
 class _Item:
@@ -157,69 +178,62 @@ class _Item:
         self.text, self.action, self.enabled, self.checked = text, action, enabled, checked
 
 
-# Подменю — кортеж его пунктов в action.
-STUB = types.SimpleNamespace(MenuItem=_Item, Menu=lambda *items: items)
+class _Menu:
+    """Меню pystray без pystray: пункты как есть, у главного — функция."""
+    SEPARATOR = object()
+
+    def __init__(self, *items):
+        self.items = items
+
+
+STUB = types.SimpleNamespace(MenuItem=_Item, Menu=_Menu)
 
 
 def _menu_app(st):
-    app = tray.Tray.__new__(tray.Tray)
+    app = tray.Tray()
     app.status = st
-    app._tunnel_items = {}
-    app._menu_ids = tuple(tray._menu_key(t) for t in st["tunnels"])
-    app.added = []
-    app.on_add_config = app.added.append
-    app.toggled = []
-    app.on_set_enabled = app.toggled.append
+    app._menu_ids = tuple(t["id"] for t in st["tunnels"])
+    app.opened = []
+    app.on_window = lambda focus=None: app.opened.append(focus)
     return app
 
 
-def test_пункты_туннелей_по_порядку_с_подписью_и_своим_туннелем():
+def test_клик_по_туннелю_открывает_окно_у_его_карточки():
     app = _menu_app(_up(_work(), _home(confs=["nl-1"])))
 
-    work, home = app._conf_items(STUB)
+    work, home = app._tunnel_entries(STUB)
     work.action()
     home.action()
 
-    assert work.text(work) == "Работа: добавить конфиг…"
-    assert home.text(home) == "nl-1"
-    assert app.added == ["work", "home"]
+    assert work.text(work) == "Работа · нет конфига"
+    assert home.text(home) == "Личный · работает"
+    assert app.opened == ["work", "home"]
 
 
 def test_пункты_туннелей_те_же_объекты_а_удалённый_забыт():
     app = _menu_app(_up(_work(), _work(id="lab", name="Лаб"), _home()))
-    work, lab, home = app._conf_items(STUB)
+    work, lab, home = app._tunnel_entries(STUB)
 
     app.status = _up(_home(), _work())
-    app._menu_ids = (("home", None), ("work", None))
-    again = app._conf_items(STUB)
+    app._menu_ids = ("home", "work")
+    again = app._tunnel_entries(STUB)
 
     assert again == (home, work)
-    assert set(app._tunnel_items) == {("home", None), ("work", None)}
+    assert set(app._tunnel_items) == {"home", "work"}
 
 
-def test_туннель_по_списку_с_конфигом_подменю_вкл_выкл_и_добавить():
-    app = _menu_app(_up(_work(confs=["office"], enabled=False), _home(confs=["nl-1"])))
+def test_в_меню_только_статус_туннелей_без_конфигов_и_галочек(monkeypatch):
+    """Добавление конфига и вкл/выкл туннеля — только в окне: ни подменю,
+    ни «Добавить конфиг…», ни «Включён» даже у туннеля «по списку» с конфигом."""
+    monkeypatch.setitem(sys.modules, "pystray", STUB)
+    app = _menu_app(_up(_work(confs=["office"], enabled=False), _home()))
 
-    work, home = app._conf_items(STUB)
-    switch, add = work.action
-    switch.action()
-    add.action()
+    items = [i for i in app._menu().items[0]() if i is not _Menu.SEPARATOR]
+    texts = [i.text(i) if callable(i.text) else i.text for i in items]
 
-    assert work.text(work) == "office (выключен)"
-    assert switch.text == "Включён" and switch.checked(switch) is False
-    assert app.toggled == ["work"] and app.added == ["work"]
-    # Основной — одним кликом: его выключает «Всё остальное напрямую» в окне.
-    assert callable(home.action)
-
-
-def test_смена_флага_новый_ключ_пункта_меню():
-    """Галочку подменю _patch_menu не правит: смена флага — перестройка меню."""
-    on = tray._menu_key(_work(confs=["office"]))
-    off = tray._menu_key(_work(confs=["office"], enabled=False))
-
-    assert on == ("work", True) and off == ("work", False)
-    assert tray._menu_key(_work()) == ("work", None)
-    assert tray._menu_key(_home(confs=["nl-1"])) == ("home", None)
+    assert texts == ["Выключить", "Перезапустить", "Работа · выключен",
+                     "Личный · нет конфига", "Закрыть"]
+    assert not [i for i in items if isinstance(i.action, _Menu)]
 
 
 def test_выключенный_серый_и_на_живом_и_на_выключенном_vpn():
@@ -230,42 +244,4 @@ def test_выключенный_серый_и_на_живом_и_на_выклю
     assert tray._conf_colors({**_up(off), "up": False}, NONE) == {"work": "off"}
     assert tray._conf_colors(_up(off, busy="включаю"), NONE) == {"work": "off"}
 
-
-@pytest.mark.parametrize("enabled, on, up, ops", [
-    (True, False, True, ["set-enabled", "apply"]),
-    (False, True, True, ["set-enabled", "apply"]),
-    # VPN выключен — флаг подействует при включении, apply не нужен.
-    (True, False, False, ["set-enabled"]),
-])
-def test_вкл_выкл_из_трея(monkeypatch, enabled, on, up, ops):
-    st = {**_up(_work(confs=["office"], enabled=enabled)), "up": up}
-    sent = []
-
-    def call(op, **kw):
-        sent.append((op, kw))
-        return {"ok": True, "status": st}
-    monkeypatch.setattr(tray.ipc, "call", call)
-    app = tray.Tray()
-    app.status = st
-    app._busy_while = lambda work: work()
-
-    app.on_set_enabled("work")
-
-    assert [op for op, _ in sent if op != "status"] == ops
-    assert ("set-enabled", {"tunnel": "work", "on": on}) in sent
-
-
-def test_отказ_вкл_выкл_уведомляет_и_не_применяет(monkeypatch):
-    sent, shown = [], []
-    monkeypatch.setattr(tray.ipc, "call", lambda op, **kw: sent.append(op) or
-                        {"ok": False, "error": "«Личный» — основной"})
-    app = tray.Tray()
-    app.status = _up(_work(confs=["office"]))
-    app._busy_while = lambda work: work()
-    app._notify = shown.append
-
-    app.on_set_enabled("work")
-
-    assert sent == ["set-enabled"]
-    assert shown == ["«Личный» — основной"]
 

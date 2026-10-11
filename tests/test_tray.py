@@ -5,6 +5,7 @@ pystray и окно здесь не поднять — подменяем зна
 """
 
 import ctypes
+import os
 import subprocess
 import sys
 import threading
@@ -61,6 +62,22 @@ def test_живое_окно_показывается_сигналом_а_не_�
     t._window_proc = _live()
     t._open_window()
     assert sent == [tray.instance.WINDOW_SHOW]
+
+
+def test_клик_по_туннелю_оставляет_окну_его_карточку_а_левый_клик_убирает(monkeypatch):
+    """Файл от непоказавшегося окна не должен увести к карточке обычный показ."""
+    sent = _signals(monkeypatch)
+    monkeypatch.setattr(subprocess, "Popen", _no_popen)
+    t = tray.Tray()
+    t._window_proc = _live()
+
+    t._open_window("work")
+    with open(tray.paths.FOCUS_FILE, encoding="utf-8") as fh:
+        assert fh.read() == "work"
+    t._open_window()
+
+    assert not os.path.exists(tray.paths.FOCUS_FILE)
+    assert sent == [tray.instance.WINDOW_SHOW] * 2
 
 
 def test_живой_процесс_без_окна_заменяется(monkeypatch):
