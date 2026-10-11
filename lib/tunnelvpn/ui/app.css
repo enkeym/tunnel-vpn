@@ -420,6 +420,7 @@ body.kbd :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
   animation: rise-in var(--t-mid) var(--ease);
 }
 .toast .orb { margin-top: 2px; }
+.toast > .btn { align-self: center; }
 .toast.leaving { opacity: 0; transform: translateY(4px);
                  transition: opacity var(--t-mid) var(--ease), transform var(--t-mid) var(--ease); }
 
@@ -595,6 +596,14 @@ body.kbd :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
 .set-help p { margin: 0 0 var(--sp-2); }
 .set-help :is(ul, ol) { margin: 0 0 var(--sp-2); padding-left: var(--sp-5); display: grid; gap: var(--sp-1); }
 .set-help > :last-child { margin-bottom: 0; }
+.set-line > .st-err { color: var(--st); }
+/* Обновление: «Что нового» — текст релиза как есть, полоса скачивания —
+   во всю ширину группы цветом занятости. */
+.set-notes { white-space: pre-line; }
+.upd-bar { -webkit-appearance: none; appearance: none; width: 100%; height: var(--sp-1); border: 0;
+           border-radius: var(--r-pill); overflow: hidden; background: var(--pressed); }
+.upd-bar::-webkit-progress-bar { background: var(--pressed); }
+.upd-bar::-webkit-progress-value { background: var(--busy); transition: width var(--t-mid) var(--ease); }
 
 /* Перетаскивание .conf: поверх всего, кроме подсказки и уведомлений. */
 .drop {
