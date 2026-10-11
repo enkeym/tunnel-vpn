@@ -48,6 +48,7 @@
 
   --ease: cubic-bezier(.32, .72, 0, 1);
   --t-fast: 120ms; --t-mid: 200ms; --t-slow: 280ms;
+  --t-spin: 1s;                      /* оборот спиннера: орб, кнопки, запасной */
 
   --shadow-pop:   0 12px 32px color-mix(in srgb, var(--black) 55%, transparent);
   --shadow-sheet: 0 24px 64px color-mix(in srgb, var(--black) 65%, transparent);
@@ -65,7 +66,7 @@
 .st-unset { --st: var(--unset); }
 
 @media (prefers-reduced-motion: reduce) {
-  :root { --t-fast: 0ms; --t-mid: 0ms; --t-slow: 0ms; }
+  :root { --t-fast: 0ms; --t-mid: 0ms; --t-slow: 0ms; --t-spin: 3s; }
 }
 
 /* ------------------------------------------------------------------ база */
@@ -118,7 +119,7 @@ button:disabled { cursor: default; }
 .btn.ghost { background: none; border-color: transparent; }
 .btn.ghost:hover:not(:disabled) { background: var(--hover); }
 .btn .spin { display: none; }
-.btn.working .spin { display: block; animation: spin .9s linear infinite; }
+.btn.working .spin { display: block; animation: spin var(--t-spin) linear infinite; }
 .btn.working .ic:not(.spin) { display: none; }
 
 /* Кнопка-иконка: зона 32×32, сам значок — 16. */
@@ -131,7 +132,7 @@ button:disabled { cursor: default; }
 .ibtn:hover:not(:disabled) { background: var(--hover); color: var(--text); }
 .ibtn:active:not(:disabled) { transform: scale(.94); }
 .ibtn:disabled { opacity: .4; }
-.ibtn.working .ic { animation: spin .9s linear infinite; }
+.ibtn.working .ic { animation: spin var(--t-spin) linear infinite; }
 
 .link { color: var(--accent); font-size: var(--fs-m); }
 .link:hover { text-decoration: underline; }
@@ -183,10 +184,9 @@ body.kbd :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
   transition: opacity var(--t-mid) var(--ease);
 }
 .orb.st-ok::after { opacity: .9; }
-.orb.st-busy .ic { animation: spin 1s linear infinite; }
+.orb.st-busy .ic { animation: spin var(--t-spin) linear infinite; }
 .orb.big { width: 22px; height: 22px; }
 @media (prefers-reduced-motion: reduce) {
-  .orb.st-busy .ic, .btn.working .spin, .ibtn.working .ic { animation-duration: 3s; }
   .switch.pending::after { animation: none; }
 }
 
@@ -415,7 +415,7 @@ body.kbd :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
 /* Цвет — только со своим st-*: иначе унаследовалась бы --st карточки. */
 .spare-state:is(.st-ok, .st-err, .st-warn, .st-busy) { color: var(--st); }
 .spare-state .ic { width: 12px; height: 12px; }
-.spare-state.st-busy .ic { animation: spin 1s linear infinite; }
+.spare-state.st-busy .ic { animation: spin var(--t-spin) linear infinite; }
 .spare-state.st-off { color: var(--off-text); }
 .spare .ibtn { width: var(--hit-s); height: var(--hit-s); }
 
@@ -426,9 +426,6 @@ body.kbd :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
 .empty h2 { margin: 0; font-size: var(--fs-l); font-weight: 600; }
 .empty p { margin: 0; color: var(--dim); font-size: var(--fs-m); }
 .empty-logo { width: 56px; height: 56px; color: var(--unset); }
-@media (prefers-reduced-motion: reduce) {
-  .spare-state.st-busy .ic { animation-duration: 3s; }
-}
 
 /* ----------------------------------------------------------- всплывающее */
 /* Меню, поповер и подсказка — маленькие поверхности: только на них
