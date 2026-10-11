@@ -7,6 +7,7 @@
 ;   * поверх установленной версии спрашивает: обновить или удалить
 ;   * тихое обновление возвращает туннель и трей, как они были
 ;   * переносит установку под прежним именем DualVPN (MigrateLegacy в [Code])
+;   * ставит WebView2 Runtime, если его нет (EnsureWebView2 в [Code])
 ;
 ; ВАЖНО: файл в UTF-8 С BOM. Без BOM Inno Setup читает его как ANSI, и вся
 ; кириллица в подписях кнопок и сообщениях превращается в мусор. Та же беда,
@@ -623,6 +624,64 @@ begin
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
+// WebView2 Runtime: без него окно не откроется, только значок в трее. В
+// Windows 11 он есть всегда, в Windows 10 — не всегда (LTSC, вычищенные
+// сборки). Ключ и значение pv — из документации Microsoft по развёртыванию:
+// машинная установка пишет в 32-битную ветку HKLM, пользовательская — в HKCU.
+function WebView2Installed: Boolean;
+var
+  Key, Version: String;
+begin
+  Key := 'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
+  Result := (RegQueryStringValue(HKLM32, Key, 'pv', Version) and
+             (Version <> '') and (Version <> '0.0.0.0')) or
+            (RegQueryStringValue(HKCU, Key, 'pv', Version) and
+             (Version <> '') and (Version <> '0.0.0.0'));
+end;
+
+// Скачанное запускаем с правами администратора — только с действующей
+// подписью Microsoft: HTTPS защищает канал, а не то, что лежит в {tmp}.
+function SignedByMicrosoft(FileName: String): Boolean;
+var
+  ResultCode: Integer;
+begin
+  // {tmp} — в профиле, а в имени пользователя бывает апостроф.
+  StringChangeEx(FileName, '''', '''''', True);
+  Result := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -NonInteractive -Command "$s = Get-AuthenticodeSignature -LiteralPath ''' + FileName + '''; ' +
+    'if ($s.Status -eq ''Valid'' -and $s.SignerCertificate.Subject -like ''*O=Microsoft Corporation*'') ' +
+    '{ exit 0 } else { exit 1 }"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+// Нет WebView2 — ставим загрузчиком Microsoft (он сам скачивает Runtime под
+// систему). Не вышло — не беда для службы и туннеля: сообщаем, где взять.
+procedure EnsureWebView2;
+var
+  Url, Setup: String;
+begin
+  if WebView2Installed then
+    Exit;
+  Url := 'https://go.microsoft.com/fwlink/p/?LinkId=2124703';
+  WizardForm.StatusLabel.Caption := 'Устанавливаю Microsoft Edge WebView2 Runtime...';
+  try
+    DownloadTemporaryFile(Url, 'MicrosoftEdgeWebview2Setup.exe', '', nil);
+    Setup := ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe');
+    if not SignedByMicrosoft(Setup) then
+      Log('WebView2: у загрузчика нет действующей подписи Microsoft, не запускаю')
+    else
+      RunStep(Setup, '/silent /install');
+  except
+    Log('WebView2: не скачался — ' + GetExceptionMessage);
+  end;
+  if WebView2Installed then
+    Exit;
+  Log('WebView2 Runtime не установлен');
+  SuppressibleMsgBox('Не получилось установить Microsoft Edge WebView2 Runtime — без него ' +
+                     'не откроется окно {#MyName}, туннели и значок в трее работают.' + #13#10 + #13#10 +
+                     'Поставь его сам: ' + Url, mbInformation, MB_OK, IDOK);
+end;
+
 // Конфиги по умолчанию переживают удаление: в них ключи, и после
 // переустановки человек не обязан их восстанавливать. Но если удаляют совсем,
 // оставлять каталог молча — это мусор. Спрашиваем; по умолчанию «Нет».
@@ -654,6 +713,9 @@ begin
                          ExpandConstant('{log}'), mbError, MB_OK, IDOK);
     end;
     RestoreAfterUpdate;
+    // После службы и туннеля: загрузка Runtime долгая, а соединение и так
+    // лежит с начала установки.
+    EnsureWebView2;
     if WizardIsTaskSelected('autorun') then
       RegisterTrayTask
     else
