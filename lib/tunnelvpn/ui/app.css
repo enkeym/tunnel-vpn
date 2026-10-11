@@ -305,7 +305,9 @@ body.kbd :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
 .card {
   container: card / inline-size;
   position: relative; display: grid; gap: var(--sp-1); align-content: start;
-  padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
+  /* Строки с кнопкой питания забирают лишнюю высоту ряда: кнопка — у низа. */
+  grid-template-rows: auto 1fr;
+  padding: var(--sp-4);
   background: var(--card); border: 1px solid var(--line); border-radius: var(--r-l);
 }
 /* Неон работающего — готовая рамка с тенью на ::after, меняется только opacity. */
@@ -331,27 +333,32 @@ body.kbd :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
 .card-id { display: flex; align-items: center; gap: var(--sp-2); flex: 1; min-width: 0; }
 .card-name { margin: 0; font-size: var(--fs-b); font-weight: 600; flex: 0 1 auto; }
 .card-acts { display: flex; align-items: center; flex: none; margin: calc(-1 * var(--sp-1)) calc(-1 * var(--sp-1)) 0 0; }
-/* Строки состояния и роли переносятся по словам; кнопка питания — справа от них. */
-.card-body { display: flex; align-items: center; gap: var(--sp-2); }
-.card-lines { display: grid; gap: 2px; padding-left: calc(16px + var(--sp-2)); flex: 1; min-width: 0; }
+/* Строки состояния и роли переносятся по словам; кнопка питания — справа
+   внизу, на уровне последней строки: отдельной строки под неё нет. */
+.card-body { display: flex; align-items: flex-end; gap: var(--sp-3); margin-top: var(--sp-2); }
+.card-lines { display: grid; gap: var(--sp-1); padding-left: calc(16px + var(--sp-2)); flex: 1; min-width: 0;
+              line-height: 1.5; overflow-wrap: break-word; align-self: flex-start; }
 .card-state { font-size: var(--fs-m); }
 .card-role { color: var(--dim); font-size: var(--fs-m); }
-/* Строка проблемы держит место и пустой: карточки не прыгают по высоте. */
+/* Строка проблемы — только когда она есть: пустая не держит высоту плитки. */
 .card-warn { display: flex; align-items: center; gap: var(--sp-1); min-width: 0;
              font-size: var(--fs-s); color: var(--st); }
 .card-warn .ic { width: var(--ic-s); height: var(--ic-s); }
-.card-warn.vacant { visibility: hidden; }
+.card-warn.vacant { display: none; }
 .card-foot { display: flex; align-items: center; gap: var(--sp-2); padding-left: calc(16px + var(--sp-2));
              min-height: var(--hit); }
-/* Кнопка питания туннеля: выключен — серый круг, значок тусклый; включён —
-   значок и ореол --ok. Кольцо и ореол — общие с #btn-toggle. */
+/* Кнопка питания туннеля: выключен — серый круг, значок тусклый; включён,
+   а VPN выключен — значок светлый, без света; работает (.lit) — значок и
+   ореол --ok. Кольцо и ореол — общие с #btn-toggle. */
 .power {
-  position: relative; border-radius: 50%;
+  position: relative; width: 40px; height: 40px; border-radius: 50%;
   background: var(--raised); border: 1px solid var(--line-strong);
 }
+.power .ic { width: 20px; height: 20px; }
 .power::after { box-shadow: var(--glow) var(--ok); transition: opacity var(--t-mid) var(--ease); }
-.power[aria-pressed="true"], .power[aria-pressed="true"]:hover:not(:disabled) { color: var(--ok); }
-.power[aria-pressed="true"]:not(.working)::after { opacity: .9; }
+.power[aria-pressed="true"] { color: var(--text); }
+.power.lit, .power.lit:hover:not(:disabled) { color: var(--ok); }
+.power.lit:not(.working)::after { opacity: .9; }
 /* Прогресс показывает кольцо: значок питания не крутится. */
 .power.working .ic { animation: none; }
 
