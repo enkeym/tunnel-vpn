@@ -57,6 +57,11 @@ AWG3_BOOL = {"randomtrailers": "random_trailers",
 AWG_JUNK = ("jc", "s1", "s2", "s3", "s4")
 AWG_MTU_MAX = 1280
 
+# MTU tun — постоянный, не от туннелей: иначе правка MTU в .conf, включение
+# туннеля и смена основного меняли бы основной конфиг и роняли tun
+# (Tunnel.live_plan). 1280 — минимум IPv6, пролезает и во вложенные туннели.
+TUN_MTU = 1280
+
 
 # Раньше тип туннеля решало имя файла в плоском conf\. Эти шаблоны остались
 # только для переезда старых установок: сначала в conf\corp и conf\personal,
@@ -984,7 +989,7 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True):
 
     # Переключатели для диагностики, без правки файлов:
     #   SB_STACK=system|gvisor|mixed   сетевой стек tun
-    #   SB_TUN_MTU=1380                MTU самого tun
+    #   SB_TUN_MTU=1380                MTU самого tun вместо TUN_MTU
     #   SB_CORP_*                      туннелям «по списку», см. corp_diagnostics
     stack = os.environ.get("SB_STACK", "gvisor")
 
@@ -1052,10 +1057,6 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True):
                       "default": socks_tag(main[0]["id"]) if main else DIRECT_TAG,
                       "interrupt_exist_connections": True})
     dns_servers, dns_rules = dns_section(dns_tunnels, OUT_TAG)
-    # Наименьший среди всех, выключенные в счёте: иначе включение туннеля,
-    # смена основного и «Всё остальное напрямую» меняли бы MTU tun и
-    # требовали полного перезапуска.
-    mtu = min(ep["mtu"] for _, _, ep in built)
 
     config = {
         "log": {"level": level, "timestamp": True},
@@ -1067,7 +1068,7 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True):
         },
         "inbounds": [{
             "type": "tun", "tag": "tun-in",
-            "mtu": int(os.environ.get("SB_TUN_MTU", mtu)),
+            "mtu": int(os.environ.get("SB_TUN_MTU", TUN_MTU)),
             "address": tun_address,
             "auto_route": True,
             # Windows шлёт DNS-запрос во все адаптеры сразу и берёт первый

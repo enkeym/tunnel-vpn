@@ -602,7 +602,7 @@ def test_пускать_нечего_правило_есть_rule_set_пусто
 
 
 def test_остальное_через_основной_с_запасным_direct(build):
-    main, sides = build(THREE)
+    main, _ = build(THREE)
 
     assert main["route"]["final"] == "out"
     out = _by_tag(main["outbounds"], "out")
@@ -610,7 +610,7 @@ def test_остальное_через_основной_с_запасным_dire
     # Все туннели: основным становится любой переключением, без перезапуска.
     assert out["outbounds"] == ["socks-work", "socks-lab", "socks-home", "direct"]
     assert out["default"] == "socks-home"
-    assert main["inbounds"][0]["mtu"] == sides["home"]["endpoints"][0]["mtu"]
+    assert main["inbounds"][0]["mtu"] == buildconfig.TUN_MTU == 1280
     assert buildconfig.api_of(main)[0].startswith("127.0.0.1:")
     assert buildconfig.api_of(main)[1]
 
@@ -804,6 +804,19 @@ def test_другие_подсети_туннеля_по_списку_меняю
     assert buildconfig.tunnel_nets(main, "lab") == ["172.20.0.0/16", "203.0.113.9/32"]
 
 
+def test_другой_mtu_туннеля_основной_процесс_не_меняет(build, tmp_path):
+    """MTU tun постоянный: правка MTU в .conf — перезапуск одного бокового,
+    а не падение tun."""
+    main, _ = build(THREE)
+    texts = dict(CONFS, work=CORP.replace("DNS = 10.0.0.53", "DNS = 10.0.0.53\nMTU = 1200"))
+
+    again, sides, _ = _again(main, tmp_path, texts)
+
+    assert again == main
+    assert sides["work"]["endpoints"][0]["mtu"] == 1200
+    assert again["inbounds"][0]["mtu"] == 1280
+
+
 @pytest.mark.parametrize("change, out", [
     ({"home": {"mode": "list"}}, "direct"),
     ({"home": {"mode": "list"}, "lab": {"mode": "all"}}, "socks-lab"),
@@ -811,8 +824,8 @@ def test_другие_подсети_туннеля_по_списку_меняю
 ])
 def test_смена_основного_меняет_только_rule_set_и_выход(build, tmp_path, change, out):
     """«Всё остальное напрямую», выключение и смена основного — на лету
-    (Tunnel.live_plan): основной конфиг тот же, кроме выбора out. MTU основного
-    (1420) больше, чем у «по списку» (1280), — tun всё равно с наименьшим."""
+    (Tunnel.live_plan): основной конфиг тот же, кроме выбора out. MTU tun —
+    TUN_MTU, какой бы MTU ни был у основного."""
     texts = dict(CONFS, home=PERSONAL_AWG.replace("MTU = 1420", "MTU = 1420\nDNS = 1.1.1.1"))
     main, _ = build(THREE, texts=texts)
     items = [dict(t, include=[], exclude=[], **change[t["id"]]) if t["id"] in change
