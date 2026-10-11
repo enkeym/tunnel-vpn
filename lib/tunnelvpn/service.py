@@ -263,10 +263,11 @@ class Core:
         # Туннели, чей DNS отвечает при таймаутах: «не перезапускаю» — раз на смену
         # состояния, а не на каждую пачку таймаутов к адресу чужой сети.
         self._side_said = set()
-        # Проверки конфигов (_test_conf): запись итога и временные процессы —
-        # по одному: у каждого свой host-маршрут и json в run\.
+        # Проверки конфигов (_test_conf): запись итога — по одной; временные
+        # процессы — по одному на туннель (id → замок): json в run\ и журнал у
+        # них по id, а разные туннели — «Проверить все» без VPN — проверяются разом.
         self._tests_lock = threading.Lock()
-        self._trial_lock = threading.Lock()
+        self._trial_locks = {}
 
     # Сколько ещё попыток поднять туннель после неудачного переподключения.
     # Команда человека (start/stop) их отменяет: он уже решил сам.
@@ -644,7 +645,9 @@ class Core:
         key = (t["id"], name)
         stamp = self._conf_stamp(*key)
         try:
-            with self._trial_lock:
+            with self._tests_lock:
+                lock = self._trial_locks.setdefault(t["id"], threading.Lock())
+            with lock:
                 result, answer = self._run_test(t, name)
         except Exception as exc:
             self.log(f"!! проверка {name}.conf упала: {exc!r}")

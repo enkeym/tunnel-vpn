@@ -138,7 +138,7 @@ class _Tunnel:
 @pytest.fixture
 def core(monkeypatch):
     core = service.Core.__new__(service.Core)
-    core._tests_lock, core._trial_lock = threading.Lock(), threading.Lock()
+    core._tests_lock, core._trial_locks = threading.Lock(), {}
     core.log = lambda line: None
     core.tunnel = _Tunnel()
     core.prober = probe.Prober()
@@ -196,6 +196,31 @@ def test_процесс_не_поднялся_итог_ошибка(core, monkey
     core.tunnel = _Tunnel(err="sing-box не запустился")
     test = core._test_conf("t1", "w1")["test"]
     assert (test["result"], test["answer"]) == ("error", "sing-box не запустился")
+
+
+def test_разные_туннели_проверяются_разом(core, monkeypatch):
+    """«Проверить все» без VPN: проверка одного туннеля не ждёт другого."""
+    t1 = _tunnel(monkeypatch, include=["corp.example"])
+    t2 = {**t1, "id": "t2"}
+    os.makedirs(tunnels.conf_dir("t2"), exist_ok=True)
+    with open(tunnels.conf_path("t2", "w1"), "w", encoding="utf-8") as fh:
+        fh.write(CONF)
+    both = threading.Barrier(2, timeout=5)
+
+    def meet(*a):
+        both.wait()                     # по очереди вторая сюда не дойдёт
+        return "up", ""
+
+    monkeypatch.setattr(probe, "trial_check", meet)
+    got = {}
+    runs = [threading.Thread(target=lambda t=t: got.update({t["id"]: core._finish_test(t, "w1")}))
+            for t in (t1, t2)]
+    for r in runs:
+        r.start()
+    for r in runs:
+        r.join(10)
+
+    assert [got[i]["result"] for i in ("t1", "t2")] == ["up", "up"]
 
 
 def test_заменённый_файл_прежний_итог_не_показывает(core, monkeypatch):
@@ -265,3 +290,30 @@ def test_без_vpn_маршрут_не_нужен(routes):
     with t.trial("t1", buildconfig.parse_text(CONF)) as (link, err):
         assert not err
     assert routes.added == []
+
+
+def test_общий_пир_маршрут_снимает_последняя_проверка(routes):
+    """Два туннеля с одним сервером: закончившая первой не снимает маршрут
+    из-под второй — иначе её пакеты ушли бы в tun."""
+    t = tunnel.Tunnel(lambda line: None)
+    t.uplink = (5, "192.168.1.1")
+    first = t.trial("t1", buildconfig.parse_text(CONF))
+    second = t.trial("t2", buildconfig.parse_text(CONF))
+    first.__enter__()
+    second.__enter__()
+    first.__exit__(None, None, None)
+    assert "198.51.100.7/32" in routes.table
+    second.__exit__(None, None, None)
+    assert "198.51.100.7/32" not in routes.table
+    assert routes.added == [("198.51.100.7/32", 5, "192.168.1.1", 1)]
+
+
+def test_журнал_проверки_свой_у_туннеля(routes, monkeypatch):
+    """Проверки разных туннелей идут разом: один файл перемешал бы их строки."""
+    t = tunnel.Tunnel(lambda line: None)
+    opened = []
+    real = t.open_log
+    monkeypatch.setattr(t, "open_log", lambda prefix: opened.append(prefix) or real(prefix))
+    with t.trial("t1", buildconfig.parse_text(CONF)):
+        pass
+    assert opened == ["trial-t1"]

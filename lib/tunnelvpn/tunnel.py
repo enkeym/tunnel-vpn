@@ -44,7 +44,8 @@ SIDE_WAIT = 15
 # он не пишет, только отказ («reload rule-set <тег>: …»), — ждём всё время.
 RULE_SET_WAIT = 2
 
-# Журнал временного процесса проверки конфига (Tunnel.trial).
+# Журнал временного процесса проверки конфига (Tunnel.trial): trial-<id туннеля>,
+# у каждого свой — проверки разных туннелей идут разом.
 TRIAL_PREFIX = "trial"
 
 # Чем clash_api меряет выход. Только по имени: голый 1.1.1.1 sing-box
@@ -123,6 +124,11 @@ class Tunnel:
         # завязаны host-маршруты пиров и адрес корп-сервера: служба сверяет
         # их с текущим аплинком и при смене сети переподключается.
         self.uplink = None
+        # Пир → [сколько проверок (trial) держат поставленный ими
+        # host-маршрут, его шлюз]: у двух туннелей бывает один сервер, и закончившая первой сняла бы
+        # маршрут из-под второй — её пакеты ушли бы в tun.
+        self._trial_routes = {}
+        self._trial_routes_lock = threading.Lock()
 
     @property
     def main(self):
@@ -604,8 +610,8 @@ class Tunnel:
 
         При поднятом VPN к пиру — временный host-маршрут через аплинк, как
         у боковых: без автоопределения интерфейса пакеты ушли бы в tun. Снимается
-        только свой: уже стоявший и взятый тем временем в журнал владения —
-        остаются. В журнал владения сам не пишет: mend_peer_routes ставил бы
+        только свой и последней из проверок с тем же пиром: уже стоявший
+        и взятый тем временем в журнал владения — остаются. В журнал владения сам не пишет: mend_peer_routes ставил бы
         снятый заново, а забытый host-маршрут к серверу VPN через свой же
         шлюз безвреден. Собранный json — с ключом, удаляется на выходе.
         """
@@ -627,12 +633,8 @@ class Tunnel:
             try:
                 paths.ensure_dirs()
                 buildconfig.write_json(path, buildconfig.trial_config(ep, link))
-                peer = ep["peers"][0]["address"]
-                if (uplink and all(c in "0123456789." for c in peer)
-                        and not winnet.routes_for(f"{peer}/32")):
-                    winnet.add_routes([(f"{peer}/32", uplink[0], uplink[1], 1)])
-                    route = peer
-                logfile = self.open_log(TRIAL_PREFIX)
+                route = self._trial_route_up(ep["peers"][0]["address"], uplink)
+                logfile = self.open_log(f"{TRIAL_PREFIX}-{tid}")
                 proc = subprocess.Popen(
                     [paths.SINGBOX, "run", "-c", path, "--disable-color"],
                     cwd=paths.BIN, stdout=logfile, stderr=subprocess.STDOUT,
@@ -657,8 +659,35 @@ class Tunnel:
                 os.remove(path)
             except OSError:
                 pass
-            if route and route not in self._peers_owned():
-                self.del_host_ours(route, want_gw=uplink[1])
+            if route:
+                self._trial_route_down(route)
+
+    def _trial_route_up(self, peer, uplink):
+        """Пир, чей host-маршрут теперь держит эта проверка, или None: VPN
+        выключен, пир не IPv4 или маршрут чужой. Поставленный соседней
+        проверкой — тоже свой: счётчик в _trial_routes."""
+        with self._trial_routes_lock:
+            if peer in self._trial_routes:
+                self._trial_routes[peer][0] += 1
+                return peer
+            if (not uplink or not all(c in "0123456789." for c in peer)
+                    or winnet.routes_for(f"{peer}/32")):
+                return None
+            winnet.add_routes([(f"{peer}/32", uplink[0], uplink[1], 1)])
+            self._trial_routes[peer] = [1, uplink[1]]
+            return peer
+
+    def _trial_route_down(self, peer):
+        """Отпускает маршрут _trial_route_up; последняя проверка снимает его,
+        если его тем временем не взяли в журнал владения."""
+        with self._trial_routes_lock:
+            held = self._trial_routes[peer]
+            held[0] -= 1
+            if held[0]:
+                return
+            del self._trial_routes[peer]
+            if peer not in self._peers_owned():
+                self.del_host_ours(peer, want_gw=held[1])
 
     def _report_side(self, side, err):
         if err:
