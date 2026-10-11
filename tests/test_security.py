@@ -22,7 +22,7 @@ def test_чтение_состояния_доступно_всем(op):
 
 
 @pytest.mark.parametrize("op", ["start", "stop", "apply", "set-profile", "set-active",
-                                "test-config", "set-enabled"])
+                                "test-config", "set-enabled", "start-only"])
 def test_управление_туннелем_доступно_вошедшему(op):
     """Включить и выключить — это кнопка в трее, а не повышение прав. apply
     только применяет уже записанное администратором — не больше, чем

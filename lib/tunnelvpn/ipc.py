@@ -35,9 +35,10 @@ READ_OPS = frozenset({"status", "list-profiles", "log", "check", "howto"})
 # apply только применяет уже записанные конфиги к живому VPN, как start.
 # test-config проверяет уже лежащий конфиг, ответ — итог без ключей и адресов.
 # set-enabled включает и выключает один туннель, основной тоже, — не больше, чем stop.
+# start-only — те же флаги и start одной командой (⏻ плитки при выключенном VPN).
 # Списки правил туннелей (get-tunnels) — администратору: в них рабочая сеть.
 USER_OPS = frozenset({"start", "stop", "set-profile", "set-active", "apply",
-                      "test-config", "set-enabled"})
+                      "test-config", "set-enabled", "start-only"})
 
 
 def requires_admin(op):

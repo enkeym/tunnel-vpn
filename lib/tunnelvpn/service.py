@@ -367,6 +367,8 @@ class Core:
             return {"ok": True, "howto": self._howto(is_admin)}
         if op == "start":
             return self._do_start(payload.get("profile", ""), wake=True)
+        if op == "start-only":
+            return self._do_start(only=tid)
         if op == "stop":
             return self._do_stop()
         if op == "apply":
@@ -700,14 +702,16 @@ class Core:
             pass
         return cls._singbox_cached
 
-    def _do_start(self, profile="", reconnect=False, retries=0, wake=False):
+    def _do_start(self, profile="", reconnect=False, retries=0, wake=False, only=""):
         """Поднимает туннель. reconnect — сначала снять текущий: без этого
         start принял бы живой процесс за «уже работает» и ничего не сделал.
         retries — сколько повторов взвести, если не поднимется. Взводим под
         замком: иначе переподключение, заставшее «Выключить» человека, потом
         включило бы VPN обратно. wake — «Включить» человека или автозапуск:
         ничего не включено — включить всё (_wake_all). apply его не ставит:
-        выключенный последним туннель включился бы обратно."""
+        выключенный последним туннель включился бы обратно. only — ⏻ плитки
+        при выключенном VPN: включён один этот туннель (_only), не поднялся —
+        флаги как были."""
         if not self.lock.acquire(blocking=False):
             return {"ok": False, "error": f"уже идёт: {self.busy or 'операция'}"}
         try:
@@ -725,7 +729,11 @@ class Core:
                 self._flush_paths()
                 self.tunnel.stop()
             began = time.monotonic()
-            err = self._wake_all() if wake else ""
+            was = None
+            if only:
+                was, err = self._only(only)
+            else:
+                err = self._wake_all() if wake else ""
             err = err or self.tunnel.start(profile)
             took = time.monotonic() - began
             self.last_error = err
@@ -736,6 +744,8 @@ class Core:
                 # Наполовину поднятое состояние опаснее выключенного: маршруты
                 # уже могли встать. Убираем за собой сразу, а не ждём человека.
                 self.tunnel.stop()
+                if was:
+                    self._restore_flags(was)
                 return {"ok": False, "error": err}
             self.log(f"→ туннель поднят за {took:.1f} с")
             # Туннель новый: таймауты и паузы перезапуска прошлого сеанса — от
@@ -753,6 +763,41 @@ class Core:
             self._probe_now()
             self.busy = ""
             self.lock.release()
+
+    def _only(self, tunnel):
+        """Включён только tunnel, остальные выключены — одной записью: общая
+        кнопка дальше включает этот набор. (прежние флаги {id: enabled}, '') или
+        (None, ошибка). Живой VPN — отказ: start его не пересобрал бы, флаги
+        легли бы на диск мимо работающего набора."""
+        if self.tunnel.uplink is not None:
+            return None, "VPN уже включён"
+        try:
+            data, t = self._load_target(tunnel)
+            if not tunnels.active_conf(t):
+                return None, f"у «{t['name']}» нет конфига"
+        except ValueError as exc:
+            return None, str(exc)
+        was = {x["id"]: x["enabled"] for x in data["tunnels"]}
+        for x in data["tunnels"]:
+            x["enabled"] = x is t
+        r = self._save_tunnels(data, f"включаю только {t['id']}")
+        if not r["ok"]:
+            return None, f"флаги туннелей не записать: {r['error']}"
+        return was, ""
+
+    def _restore_flags(self, was):
+        """Флаги до _only: не поднявшийся VPN не оставляет выключенными остальные."""
+        try:
+            data = tunnels.load()
+        except ValueError as exc:
+            self.log(f"!! флаги туннелей не вернуть: {exc}")
+            return
+        for x in data["tunnels"]:
+            if x["id"] in was:
+                x["enabled"] = was[x["id"]]
+        r = self._save_tunnels(data, "VPN не поднялся — флаги туннелей как были")
+        if not r["ok"]:
+            self.log(f"!! флаги туннелей не вернуть: {r['error']}")
 
     def _wake_all(self):
         """Нет включённого туннеля с конфигом — включает все: выключенный

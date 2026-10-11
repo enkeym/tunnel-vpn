@@ -512,11 +512,13 @@ class _Up:
 
     def __init__(self):
         self.seen = []
+        self.uplink = None
+        self.err = ""
 
     def start(self, _profile):
         self.seen.append({t["id"]: (t["mode"], t["enabled"])
                           for t in tunnels.load()["tunnels"]})
-        return ""
+        return self.err
 
     def stop(self):
         pass
@@ -600,6 +602,60 @@ def test_перезапуск_после_правки_флаги_не_трога
     up._do_start()
 
     assert up.tunnel.seen == [{"work": ("list", False)}]
+
+
+def _flags():
+    return {t["id"]: t["enabled"] for t in tunnels.load()["tunnels"]}
+
+
+def test_только_этот_включает_один_и_собирает_с_ним(up):
+    """⏻ плитки при выключенном VPN: флаги записаны до сборки и остаются —
+    общая кнопка дальше включает этот набор."""
+    tunnels.save({"tunnels": [WORK, *_off(HOME)]})
+    _put("work", "corp.conf")
+    _put("home", "nl.conf", FULL)
+
+    assert up.handle("start-only", {"tunnel": "home"}, is_admin=False) == {"ok": True}
+
+    assert up.tunnel.seen == [{"work": ("list", False), "home": ("all", True)}]
+    assert _flags() == {"work": False, "home": True}
+
+
+def test_только_этот_не_поднялся_флаги_как_были(up):
+    tunnels.save({"tunnels": [WORK, *_off(HOME)]})
+    _put("work", "corp.conf")
+    _put("home", "nl.conf", FULL)
+    up.tunnel.err = "sing-box упал на старте"
+
+    r = up.handle("start-only", {"tunnel": "home"}, is_admin=False)
+
+    assert not r["ok"] and _flags() == {"work": True, "home": False}
+
+
+def test_только_этот_без_выбранного_конфига_ничего_не_трогает(up):
+    """Несколько конфигов без выбора: остальные туннели не выключаются ради
+    сборки, которая всё равно упадёт."""
+    tunnels.save({"tunnels": [WORK, *_off(HOME)]})
+    _put("work", "corp.conf")
+    _put("home", "nl.conf", FULL)
+    _put("home", "de.conf", FULL)
+
+    r = up.handle("start-only", {"tunnel": "home"}, is_admin=False)
+
+    assert not r["ok"] and "выберите" in r["error"]
+    assert up.tunnel.seen == [] and _flags() == {"work": True, "home": False}
+
+
+def test_только_этот_на_живом_vpn_отказ(up):
+    """start живой VPN не пересобирает: флаги легли бы мимо работающего набора."""
+    tunnels.save({"tunnels": [WORK, HOME]})
+    _put("work", "corp.conf")
+    _put("home", "nl.conf", FULL)
+    up.tunnel.uplink = (5, "192.168.1.1")
+
+    r = up.handle("start-only", {"tunnel": "home"}, is_admin=False)
+
+    assert not r["ok"] and _flags() == {"work": True, "home": True}
 
 
 

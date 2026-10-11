@@ -155,6 +155,33 @@ def test_вкл_выкл_туннеля_без_прав_и_сразу_на_жи�
     assert "failed" not in [fn for fn, _ in shown]
 
 
+def test_плитка_при_выключенном_vpn_поднимает_только_её(monkeypatch):
+    api, admin, shown = _api(monkeypatch, [])
+    calls = []
+    monkeypatch.setattr(ipc, "call", lambda op, **kw: calls.append((op, kw)) or
+                        {"ok": True, "status": {}})
+
+    api.send("start_only", {"tunnel": "work"})
+
+    # Флаги и start — одна команда службы: между ними никто не вклинится.
+    assert calls[0] == ("start-only", {"tunnel": "work"})
+    assert admin == []
+    assert "failed" not in [fn for fn, _ in shown]
+
+
+def test_плитка_отказ_службы_виден_и_статус_обновляется(monkeypatch):
+    api, _, shown = _api(monkeypatch, [])
+    calls = []
+    monkeypatch.setattr(ipc, "call", lambda op, **kw: calls.append(op) or
+                        ({"ok": False, "error": "занято"} if op == "start-only" else
+                         {"ok": True, "status": {}}))
+
+    api.send("start_only", {"tunnel": "work"})
+
+    assert ("failed", "start_only: занято") in shown
+    assert "status" in calls
+
+
 def test_конфликт_при_включении_предлагает_замену_и_не_применяет(monkeypatch):
     api, _, shown = _api(monkeypatch, [])
     calls = []
