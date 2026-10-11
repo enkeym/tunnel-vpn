@@ -482,21 +482,21 @@ body.kbd :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
 #layer-sheet:empty { display: none; }
 .scrim {
   position: fixed; inset: 0; z-index: var(--z-sheet); background: var(--scrim);
-  display: grid; place-items: end center; padding: var(--sp-6) var(--sp-4) 0;
+  display: grid; place-items: center; padding: var(--sp-6) var(--sp-4);
   animation: fade-in var(--t-slow) var(--ease);
 }
 .sheet {
-  width: min(640px, 100%); max-height: calc(100vh - 48px);
+  width: min(640px, 100%); max-height: calc(100vh - var(--sp-6) * 2);
   display: flex; flex-direction: column; overflow: hidden;
-  background: var(--card); border: 1px solid var(--line-strong); border-bottom: 0;
-  border-radius: var(--r-l) var(--r-l) 0 0; box-shadow: var(--shadow-sheet);
+  background: var(--card); border: 1px solid var(--line-strong);
+  border-radius: var(--r-l); box-shadow: var(--shadow-sheet);
   animation: sheet-in var(--t-slow) var(--ease);
 }
 .sheet.wide { width: min(820px, 100%); }
 .sheet.ask { width: min(480px, 100%); }
-@keyframes sheet-in { from { transform: translateY(32px); opacity: 0; } }
+@keyframes sheet-in { from { transform: translateY(12px); opacity: 0; } }
 .scrim.leaving { opacity: 0; transition: opacity var(--t-mid) var(--ease); }
-.scrim.leaving .sheet { transform: translateY(24px); transition: transform var(--t-mid) var(--ease); }
+.scrim.leaving .sheet { transform: translateY(8px); transition: transform var(--t-mid) var(--ease); }
 .sheet-head { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-5);
               border-bottom: 1px solid var(--line); }
 .sheet-head h2 { flex: 1; margin: 0; font-size: var(--fs-l); font-weight: 600; }
