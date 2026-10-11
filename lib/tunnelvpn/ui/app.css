@@ -267,12 +267,13 @@ body.kbd :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
 
 /* ------------------------------------------------------------- карточки */
 #pane-tunnels { padding: var(--sp-3) var(--sp-4) var(--sp-4); }
-/* 380: три колонки на 1440, две на 1024, одна на 720. */
-.cards { display: grid; gap: var(--sp-3); align-items: start;
+/* 380: три колонки на 1440, две на 1024, одна на 720. Карточки ряда — одной
+   высоты: у основного туннеля нет строки с переключателем. */
+.cards { display: grid; gap: var(--sp-3); align-items: stretch;
          grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr)); }
 .card {
   container: card / inline-size;
-  position: relative; display: grid; gap: var(--sp-1);
+  position: relative; display: grid; gap: var(--sp-1); align-content: start;
   padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
   background: var(--card); border: 1px solid var(--line); border-radius: var(--r-l);
 }
