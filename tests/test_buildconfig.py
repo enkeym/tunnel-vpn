@@ -555,6 +555,7 @@ def test_порядок_правил_списки_локальная_сеть_м
     assert main["route"]["rules"] == [
         {"action": "sniff"},
         {"protocol": "dns", "action": "hijack-dns"},
+        {"rule_set": ["no-v6"], "action": "reject"},
         {"rule_set": ["rules-work"], "outbound": "socks-work"},
         {"rule_set": ["rules-lab"], "outbound": "socks-lab"},
         # У основного — с пустым rule-set: его смена меняет файл, а не конфиг.
@@ -574,7 +575,8 @@ def test_что_забирает_туннель_лежит_в_его_rule_set(bu
     assert main["route"]["rule_set"] == [
         {"type": "local", "tag": tag, "format": "source",
          "path": str(tmp_path / f"{tag}.json")}
-        for tag in ("rules-work", "names-work", "rules-lab", "rules-home", "bypass")]
+        for tag in ("rules-work", "names-work", "rules-lab", "rules-home", "bypass",
+                    "no-v6")]
     assert _load(tmp_path / "rules-home.json") == {"version": 3, "rules": []}
     assert _load(tmp_path / "rules-work.json") == {"version": 3, "rules": [
         {"type": "logical", "mode": "and", "rules": [
@@ -687,7 +689,8 @@ def test_выключенный_туннель_собирается_с_пуст�
 
 def test_выключенный_основной_остальное_напрямую(build, tmp_path):
     """Выключенный основной остаётся основным в tunnels.json, но собран без
-    процесса: out смотрит в direct, «не пускать» пустой, v6 по нему не включается."""
+    процесса: out смотрит в direct, «не пускать» пустой. Адрес v6 у tun — как у
+    включённого, а IPv6 отвергается: выхода по v6 нет."""
     texts = dict(CONFS, home=PERSONAL_AWG.replace(
         "Address = 10.9.0.2/32", "Address = 10.9.0.2/32, fd00::2/128"))
     items = [*THREE[:2], dict(THREE[2], enabled=False)]
@@ -698,7 +701,8 @@ def test_выключенный_основной_остальное_напрям
     assert buildconfig.side_ids(main) == ["work", "lab", "home"]
     assert _by_tag(main["outbounds"], "out")["default"] == "direct"
     assert buildconfig.main_id(main) is None
-    assert main["inbounds"][0]["address"] == ["172.19.0.1/30"]
+    assert main["inbounds"][0]["address"] == ["172.19.0.1/30", "fdfe:dcba:9876::1/126"]
+    assert _load(tmp_path / "no-v6.json") == {"version": 3, "rules": [{"ip_cidr": ["::/0"]}]}
     assert _load(tmp_path / "bypass.json") == {"version": 3, "rules": []}
 
 
@@ -800,17 +804,18 @@ def test_другие_подсети_туннеля_по_списку_меняю
     assert buildconfig.tunnel_nets(main, "lab") == ["172.20.0.0/16", "203.0.113.9/32"]
 
 
-@pytest.mark.parametrize("modes, out", [
-    ({"home": "list"}, "direct"),
-    ({"home": "list", "lab": "all"}, "socks-lab"),
+@pytest.mark.parametrize("change, out", [
+    ({"home": {"mode": "list"}}, "direct"),
+    ({"home": {"mode": "list"}, "lab": {"mode": "all"}}, "socks-lab"),
+    ({"home": {"enabled": False}}, "direct"),
 ])
-def test_смена_основного_меняет_только_rule_set_и_выход(build, tmp_path, modes, out):
-    """«Всё остальное напрямую» и смена основного — на лету (Tunnel.live_plan):
-    основной конфиг тот же, кроме выбора out. MTU основного (1420) больше, чем у
-    «по списку» (1280), — tun всё равно с наименьшим."""
+def test_смена_основного_меняет_только_rule_set_и_выход(build, tmp_path, change, out):
+    """«Всё остальное напрямую», выключение и смена основного — на лету
+    (Tunnel.live_plan): основной конфиг тот же, кроме выбора out. MTU основного
+    (1420) больше, чем у «по списку» (1280), — tun всё равно с наименьшим."""
     texts = dict(CONFS, home=PERSONAL_AWG.replace("MTU = 1420", "MTU = 1420\nDNS = 1.1.1.1"))
     main, _ = build(THREE, texts=texts)
-    items = [dict(t, mode=modes[t["id"]], include=[], exclude=[]) if t["id"] in modes
+    items = [dict(t, include=[], exclude=[], **change[t["id"]]) if t["id"] in change
              else t for t in THREE]
 
     again, _, sets = _again(main, tmp_path, texts, items)
@@ -820,6 +825,22 @@ def test_смена_основного_меняет_только_rule_set_и_в�
     assert again["inbounds"][0]["mtu"] == 1280
     assert buildconfig.tunnel_dns(main) == {"work": "10.0.0.53", "home": "1.1.1.1"}
     assert sets["bypass"] != _load(tmp_path / "bypass.json")
+
+
+def test_выключение_основного_с_v6_на_лету(build, tmp_path):
+    """Адрес v6 у tun остаётся: иначе основной конфиг другой и tun падает.
+    Выход без v6 — IPv6 отвергает rule-set no-v6."""
+    texts = dict(CONFS, home=PERSONAL_AWG.replace(
+        "Address = 10.9.0.2/32", "Address = 10.9.0.2/32, fd00::2/128"))
+    main, _ = build(THREE, texts=texts)
+    items = [dict(t, enabled=False) if t["id"] == "home" else t for t in THREE]
+
+    again, _, sets = _again(main, tmp_path, texts, items)
+
+    assert tunnel._fixed(again) == tunnel._fixed(main)
+    assert "fdfe:dcba:9876::1/126" in again["inbounds"][0]["address"]
+    assert _load(tmp_path / "no-v6.json") == {"version": 3, "rules": []}
+    assert sets["no-v6"] == {"version": 3, "rules": [{"ip_cidr": ["::/0"]}]}
 
 
 @pytest.mark.parametrize("tag, ep", [
@@ -937,7 +958,7 @@ def test_лишние_боковые_конфиги_удаляются(state):
     buildconfig.main(log=lambda line: None)
 
     assert sorted(p.name for p in state.iterdir()) == [
-        "bypass.json", "config.json", "names-work.json", "rules-home.json",
+        "bypass.json", "config.json", "names-work.json", "no-v6.json", "rules-home.json",
         "rules-work.json", "tunnel-home.json", "tunnel-work.json"]
 
 
@@ -965,7 +986,8 @@ def test_сборка_в_сторону_rule_set_рядом_а_не_в_run(state
     main = _load(out)
     assert {rs["path"] for rs in main["route"]["rule_set"]} == {
         str(tmp_path / "test.rules-work.json"), str(tmp_path / "test.names-work.json"),
-        str(tmp_path / "test.rules-home.json"), str(tmp_path / "test.bypass.json")}
+        str(tmp_path / "test.rules-home.json"), str(tmp_path / "test.bypass.json"),
+        str(tmp_path / "test.no-v6.json")}
     assert buildconfig.tunnel_domains(main) == ["corp.example"]
 
 

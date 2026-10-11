@@ -205,6 +205,14 @@ def split_list(value):
     return [x.strip() for x in value.split(",") if x.strip()]
 
 
+def _has_v6(conf):
+    """Сервер выдал v6-адрес в [Interface] Address. ::/0 в AllowedIPs не
+    в счёт: конфиги пишут его по привычке."""
+    return any(ipaddress.ip_network(a, strict=False).version == 6
+               for a in split_list(conf["interface"].get("address", ""))
+               if _is_cidr(a))
+
+
 # Сколько ждём DNS за адресом пира. Без потолка getaddrinfo висел
 # 12 с, когда DNS роутера не отвечал, — и столько же стояло переподключение.
 SYSTEM_DNS_WAIT = 4.0
@@ -644,6 +652,8 @@ def names_tag(tid):
 
 # «Не пускать» основного — напрямую, мимо out.
 BYPASS_TAG = "bypass"
+# IPv6 при выходе без v6 — отказ до соединения.
+NO_V6_TAG = "no-v6"
 
 RULE_SET_VERSION = 3
 
@@ -954,23 +964,22 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True):
     # без процесса, остальное — напрямую, как без основного.
     main = next((b for b in built if b[0]["mode"] == "all" and b[0]["enabled"]), None)
 
-    # IPv6 включаем ТОЛЬКО если сервер основного туннеля выдал нам v6-адрес в
-    # [Interface] Address. Наличия ::/0 в AllowedIPs недостаточно: конфиги
-    # его пишут по привычке.
+    # IPv6 выхода — ТОЛЬКО если сервер включённого основного выдал v6-адрес.
     #
     # Почему это важно. Если дать tun v6-адрес, не имея v6 на самом туннеле,
     # приложения видят «IPv6 есть» и по Happy Eyeballs идут сначала по нему.
     # Трафик заходит в туннель и умирает там с
     #     "missing IPv6 local address",
     # причём не молча — соединение получает отказ, и браузер рвёт страницу
-    # (это и был ERR_CONNECTION_CLOSED). Без v6-адреса на tun приложения
-    # просто не пытаются использовать v6 и сразу работают по IPv4.
-    v6 = main is not None and any(
-        ipaddress.ip_network(a, strict=False).version == 6
-        for a in split_list(main[1]["interface"].get("address", ""))
-        if _is_cidr(a))
+    # (это и был ERR_CONNECTION_CLOSED).
+    v6 = main is not None and _has_v6(main[1])
+    # Адрес v6 у tun — по основному, выключенному тоже: иначе его вкл/выкл
+    # меняли бы основной конфиг и роняли tun (Tunnel.live_plan). Основной
+    # выключен — IPv6 отвергается rule-set NO_V6_TAG до соединения, и
+    # приложение сразу уходит на IPv4.
+    tun_v6 = any(t["mode"] == "all" and _has_v6(conf) for t, conf, _ in built)
     tun_address = ["172.19.0.1/30"]
-    if v6:
+    if tun_v6:
         tun_address.append("fdfe:dcba:9876::1/126")
 
     # Переключатели для диагностики, без правки файлов:
@@ -1025,6 +1034,7 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True):
     bypass = _match(*split_entries(main[0]["exclude"], v6)) if main else None
     sets[BYPASS_TAG] = rule_set(bypass)
     rules.append({"rule_set": [BYPASS_TAG], "outbound": DIRECT_TAG})
+    sets[NO_V6_TAG] = rule_set({"ip_cidr": ["::/0"]} if tun_v6 and not v6 else None)
 
     links = {t["id"]: links.get(t["id"]) or new_link() for t, _, _ in built}
     api = api or new_api()
@@ -1076,6 +1086,7 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True):
             "rules": [
                 {"action": "sniff"},
                 {"protocol": "dns", "action": "hijack-dns"},
+                {"rule_set": [NO_V6_TAG], "action": "reject"},
                 *rules,
             ],
             # Нет туннеля на «весь остальной трафик» — out смотрит в direct.

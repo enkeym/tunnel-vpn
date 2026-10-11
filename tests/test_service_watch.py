@@ -754,11 +754,23 @@ def test_правка_посреди_круга_сторожа_перезапу�
 
 
 def test_правка_пока_идёт_включение_отказ(monkeypatch):
+    monkeypatch.setattr(service, "APPLY_WAIT", 0.01)
     core = _core(monkeypatch)
     core.busy = "включаю"
     core.lock.acquire()
 
     assert core._apply() == {"ok": False, "error": "уже идёт: включаю"}
+
+
+def test_правка_ждёт_идущую_и_применяется(monkeypatch):
+    """Второй щелчок тумблера посреди живой правки первого: флаг уже записан,
+    apply дожидается замка, а не отвечает «уже идёт»."""
+    core = _core(monkeypatch)
+    core.tunnel.uplink = None
+    core.lock.acquire()
+    threading.Timer(0.1, core.lock.release).start()
+
+    assert core._apply() == {"ok": True, "applied": "off"}
 
 
 def _corp_dead():
