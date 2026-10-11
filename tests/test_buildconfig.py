@@ -900,6 +900,21 @@ def test_собирает_туннели_из_tunnels_json(state):
     assert buildconfig.main_id(main) == "home"
 
 
+def test_ручная_сборка_при_работающем_sing_box_отказ(state, monkeypatch):
+    monkeypatch.setattr(buildconfig, "running_pid", lambda: "4242")
+
+    with pytest.raises(SystemExit, match="sing-box уже работает"):
+        buildconfig.main(log=lambda line: None)
+
+
+def test_включение_собирает_при_идущей_проверке_конфига(state, monkeypatch):
+    """Проверка конфига (trial) — тот же sing-box: с ней включение не собиралось."""
+    monkeypatch.setattr(buildconfig, "running_pid", lambda: "4242")
+
+    assert buildconfig.main(log=lambda line: None, check_running=False) == [
+        ("work", "Work"), ("home", "Home")]
+
+
 def test_старые_папки_типов_сборка_не_читает(state, tmp_path):
     """После переезда conf\\corp и conf\\personal не источник: без tunnels.json
     туннелей нет, а не «рабочий и личный как раньше»."""

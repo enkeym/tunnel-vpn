@@ -129,6 +129,14 @@ class Tunnel:
         # маршрут из-под второй — её пакеты ушли бы в tun.
         self._trial_routes = {}
         self._trial_routes_lock = threading.Lock()
+        # PID-ы идущих проверок (trial): тот же sing-box из нашей папки, но не
+        # след прошлого запуска. 11 октября «Проверить все» и сразу «Включить»:
+        # уборка приняла проверки за следы, гасила их и ждала до 10 с, а итог
+        # проверки выходил «не отвечает». Старт процесса проверки и поиск
+        # следов — под одним замком: иначе уборка застала бы процесс, ещё не
+        # записанный сюда.
+        self._trials = set()
+        self._trials_lock = threading.Lock()
 
     @property
     def main(self):
@@ -339,7 +347,9 @@ class Tunnel:
 
         self.log("→ собираю конфиг из conf\\…")
         try:
-            built = buildconfig.main(log=self.log)
+            # Без отказа «sing-box уже работает»: следы прошлого запуска убраны
+            # выше, а из нашей папки сейчас работают только проверки (trial).
+            built = buildconfig.main(log=self.log, check_running=False)
         except SystemExit as exc:
             # buildconfig сообщает об ошибках через sys.exit с текстом.
             return str(exc) or "не удалось собрать конфиг — проверьте conf\\*.conf"
@@ -635,10 +645,12 @@ class Tunnel:
                 buildconfig.write_json(path, buildconfig.trial_config(ep, link))
                 route = self._trial_route_up(ep["peers"][0]["address"], uplink)
                 logfile = self.open_log(f"{TRIAL_PREFIX}-{tid}")
-                proc = subprocess.Popen(
-                    [paths.SINGBOX, "run", "-c", path, "--disable-color"],
-                    cwd=paths.BIN, stdout=logfile, stderr=subprocess.STDOUT,
-                    creationflags=_NO_WINDOW)
+                with self._trials_lock:
+                    proc = subprocess.Popen(
+                        [paths.SINGBOX, "run", "-c", path, "--disable-color"],
+                        cwd=paths.BIN, stdout=logfile, stderr=subprocess.STDOUT,
+                        creationflags=_NO_WINDOW)
+                    self._trials.add(proc.pid)
                 deadline = time.time() + SIDE_WAIT
                 while proc.poll() is None and time.time() < deadline:
                     if _port_open(link["port"]):
@@ -653,6 +665,9 @@ class Tunnel:
             yield got
         finally:
             _end(proc)
+            if proc is not None:
+                with self._trials_lock:
+                    self._trials.discard(proc.pid)
             if logfile is not None:
                 logfile.close()
             try:
@@ -1023,7 +1038,7 @@ class Tunnel:
         """Есть ли следы прошлого запуска: журнал, живой процесс или наш tun."""
         if os.path.exists(paths.OWNED_FILE) and os.path.getsize(paths.OWNED_FILE):
             return True
-        if winnet.pids_of(paths.SINGBOX):
+        if self._strays():
             return True
         if winnet.tun_index(paths.TUN_IP) is not None:
             return True
@@ -1109,23 +1124,30 @@ class Tunnel:
         # значит однажды принять за свой чужой интерфейс с тем же номером.
         self._tun_hint = None
 
+    def _strays(self):
+        """PID-ы sing-box из нашей папки, кроме идущих проверок (trial)."""
+        with self._trials_lock:
+            return [pid for pid in winnet.pids_of(paths.SINGBOX)
+                    if pid not in self._trials]
+
     def _kill_strays(self):
-        """Добивает sing-box из нашей папки, оставшийся от прошлых запусков."""
-        pids = winnet.pids_of(paths.SINGBOX)
+        """Добивает sing-box из нашей папки, оставшийся от прошлых запусков.
+
+        Сразу /F: без окна просьбу закрыться sing-box не получает, и taskkill
+        без /F только отвечал отказом, а уборка ждала его 10 с впустую.
+        """
+        pids = self._strays()
         if not pids:
             return
-        for sig, wait in (("", 10), ("/F", 5)):
-            for pid in pids:
-                subprocess.run(["taskkill", "/PID", str(pid)] + ([sig] if sig else []),
-                               capture_output=True, creationflags=_NO_WINDOW)
-            for _ in range(wait * 2):
-                time.sleep(0.5)
-                pids = winnet.pids_of(paths.SINGBOX)
-                if not pids:
-                    self.log("→ sing-box остановлен")
-                    return
-            if sig == "":
-                self.log("→ не отвечает, добиваю принудительно")
+        for pid in pids:
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                           capture_output=True, creationflags=_NO_WINDOW)
+        for _ in range(10):
+            time.sleep(0.5)
+            pids = self._strays()
+            if not pids:
+                self.log("→ sing-box остановлен")
+                return
         self.log(f"!! sing-box не умер даже принудительно: pid {pids}")
         self.log("   маршруты всё равно уберу, но процесс придётся снять вручную")
 

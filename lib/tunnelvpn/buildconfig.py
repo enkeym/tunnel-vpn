@@ -1145,8 +1145,12 @@ def _remove(path):
         pass
 
 
-def main(log=print):
-    """Собирает state\\run\\config.json и боковые. [(id, имя)] собранных туннелей."""
+def main(log=print, check_running=True):
+    """Собирает state\\run\\config.json и боковые. [(id, имя)] собранных туннелей.
+
+    check_running=False — без отказа «уже работает»: включение (Tunnel.start)
+    свои следы уже убрало, а проверка конфига (Tunnel.trial) — тот же sing-box из
+    нашей папки, и с ней конфиг не собирался."""
     os.makedirs(paths.RUN, exist_ok=True)
     out_path = paths.CONFIG_JSON
 
@@ -1154,7 +1158,7 @@ def main(log=print):
     # смениться, и sing-box падает на «sendmsg: socket is already connected»,
     # а корп-туннель молча перестаёт подниматься. `vpn start` зовёт сборку до
     # запуска, поэтому его это не касается; запрет — на ручные пересборки.
-    pid = running_pid()
+    pid = running_pid() if check_running else ""
     if pid and "--force" not in sys.argv and "--out" not in sys.argv:
         sys.exit(f"sing-box уже работает (pid {pid}) — конфиг не трогаю.\n"
                  f"Остановите его (`vpn stop`) или соберите в другой файл:\n"

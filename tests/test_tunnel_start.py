@@ -30,12 +30,13 @@ class FakeNet:
         self.singbox_running = False
         self.added = []
         self.gone = set()       # маршруты, которые система потеряла
+        self.pids = []          # sing-box из нашей папки в списке процессов
 
     def tun_index(self, _ip):
         return 45 if self.singbox_running else None
 
     def pids_of(self, _exe):
-        return []
+        return list(self.pids)
 
     def v6_blocked(self):
         return False
@@ -57,8 +58,11 @@ class FakeNet:
 
 
 class FakeProc:
+    pids = iter(range(5000, 6000))
+
     def __init__(self, cfg):
         self.cfg = cfg
+        self.pid = next(FakeProc.pids)
         self.returncode = None
         self.terminated = False
 
@@ -82,8 +86,9 @@ class FakeBuild:
     def __init__(self):
         self.on_main = lambda: None
 
-    def main(self, log=print):
+    def main(self, log=print, check_running=True):
         self.on_main()
+        self.check_running = check_running
         return BUILT
 
     def __getattr__(self, name):
@@ -180,7 +185,7 @@ def env(monkeypatch, tmp_path):
     def popen(cmd, **_k):
         cfg_path = cmd[cmd.index("-c") + 1]
         seen["started"].append(cfg_path)
-        proc = FakeProc(cfg_path)
+        proc = seen["proc"] = FakeProc(cfg_path)
         if cfg_path == paths.CONFIG_JSON:
             with open(paths.REAL_IP_FILE, encoding="utf-8") as fh:
                 seen["real_ip"] = fh.read()
@@ -461,6 +466,59 @@ def test_перезапуск_туннеля_без_туннеля_отказ(en
     assert seen["started"] == []
 
 
+TRIAL_CONF = """[Interface]
+PrivateKey = cHJpdmF0ZS1rZXktcHJpdmF0ZS1rZXktcHJpdmF0ZS0=
+Address = 10.8.0.2/32
+[Peer]
+PublicKey = cHVibGljLWtleS1wdWJsaWMta2V5LXB1YmxpYy1rZXk=
+Endpoint = 198.51.100.7:51820
+AllowedIPs = 0.0.0.0/0
+"""
+
+
+def test_проверка_конфига_не_след_прошлого_запуска(env, monkeypatch):
+    """«Проверить все» и сразу «Включить»: уборка гасила проверки как следы,
+    а итог выходил «не отвечает»."""
+    tun, build, seen = env
+    killed = []
+    run = tunnel.subprocess.run
+    monkeypatch.setattr(tunnel.subprocess, "run", lambda cmd, **k: (
+        killed.append(cmd) if "taskkill" in cmd else run(cmd, **k)))
+
+    with tun.trial("home", buildconfig.parse_text(TRIAL_CONF)) as (_link, err):
+        assert not err
+        trial = seen["proc"]
+        seen["net"].pids = [trial.pid]
+        assert tun.leftovers() is False
+        tun._kill_strays()
+        assert not trial.terminated and killed == []
+        assert tun.start() == ""
+
+    assert not any("следы прошлого запуска" in line for line in seen["log"])
+    assert build.check_running is False
+    # Проверка кончилась — её PID больше не пропускаем.
+    assert tun._strays() == [trial.pid]
+
+
+def test_след_прошлого_запуска_добивается_сразу_принудительно(env, monkeypatch):
+    """taskkill без /F sing-box без окна не гасит: уборка ждала его 10 с впустую."""
+    tun, _build, seen = env
+    seen["net"].pids = [4321]
+    killed = []
+
+    def run(cmd, **_k):
+        killed.append(cmd)
+        seen["net"].pids = []
+
+    monkeypatch.setattr(tunnel.subprocess, "run", run)
+    monkeypatch.setattr(tunnel.time, "sleep", lambda _s: None)
+
+    tun._kill_strays()
+
+    assert killed == [["taskkill", "/PID", "4321", "/F"]]
+    assert "→ sing-box остановлен" in seen["log"]
+
+
 def test_стоп_гасит_все_процессы(env, monkeypatch):
     tun, _build, _seen = env
     assert tun.start() == ""
@@ -550,7 +608,7 @@ def test_тот_же_профиль_второй_раз_уже_работает(
 
 def test_без_основного_упавший_туннель_выход_не_трогает(env, monkeypatch):
     tun, build, seen = env
-    monkeypatch.setattr(build, "main", lambda log=print: [("work", "Работа")])
+    monkeypatch.setattr(build, "main", lambda **_k: [("work", "Работа")])
     with open(paths.CONFIG_JSON, "w", encoding="utf-8") as fh:
         json.dump({"outbounds": [
             {"type": "socks", "tag": "socks-work", "server_port": 1080}]}, fh)
