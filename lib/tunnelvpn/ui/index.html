@@ -55,8 +55,8 @@ document.write(`<link rel="stylesheet" href="app.css${location.search}">`);
 <header id="bar">
   <nav id="tabs" class="seg" role="tablist" aria-label="Разделы">
     <button class="tab" role="tab" data-tab="tunnels" aria-selected="true">Туннели</button>
-    <button class="tab" role="tab" data-tab="log" aria-selected="false">Журнал</button>
-    <button class="tab" role="tab" data-tab="settings" aria-selected="false">Настройки</button>
+    <button class="tab" role="tab" data-tab="log" aria-selected="false" tabindex="-1">Журнал</button>
+    <button class="tab" role="tab" data-tab="settings" aria-selected="false" tabindex="-1">Настройки</button>
   </nav>
   <section id="top" class="st-busy" aria-live="polite"></section>
 </header>
