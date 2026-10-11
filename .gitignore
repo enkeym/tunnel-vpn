@@ -22,6 +22,11 @@ __pycache__/
 
 # Готовый установщик.
 installer/Output/
+# Картинки мастера: make_icon.py рисует их при сборке.
+installer/gen/
+# Проверка установщика: пробные сборки и снимки экрана.
+installer/dev/out/
+installer/dev/screenshots/
 
 # Генерируется из icon.svg при сборке.
 lib/tunnelvpn/ui/icons/

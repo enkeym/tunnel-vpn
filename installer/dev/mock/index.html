@@ -1,0 +1,350 @@
+<!doctype html>
+<!-- Макеты страниц установщика для согласования вида и текстов. В сборку не
+     попадают. Окно — клиент мастера Inno 6.7 WizardStyle=modern при 100 %
+     (600×432) плюс заголовок окна; координаты нативных контролов сняты со
+     скриншотов пробной сборки (installer/dev/snap.ps1). Открывать через
+     Playwright: шрифты /fonts/* и картинки /gen/* отдаёт page.route. -->
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>TunnelVPN — макеты установщика</title>
+<style>
+@font-face { font-family: "Segoe UI"; src: url("/fonts/segoeui.ttf"); font-weight: 400; }
+@font-face { font-family: "Segoe UI"; src: url("/fonts/seguisb.ttf"); font-weight: 600; }
+@font-face { font-family: "Segoe UI"; src: url("/fonts/segoeuib.ttf"); font-weight: 700; }
+@font-face { font-family: "Segoe UI Symbol"; src: url("/fonts/seguisym.ttf"); }
+
+/* Токены приложения (lib/tunnelvpn/ui/app.css): то, что можно задать из
+   [Code] цветом шрифта или панели. */
+:root {
+  --bg: #101012;
+  --card: #1c1c1e;
+  --text: #f4f4f6;
+  --dim: #9a9aa6;
+  --ok: #3df5a7;
+  --err: #ff5c7a;
+  --warn: #ffd23f;
+  --off: #6b6b76;
+  /* Нативные контролы в тёмной теме Windows 11: их цвет задаёт система
+     (акцент пользователя), не мы. */
+  --n-title: #202020;
+  --n-btn: #2d2d2d;
+  --n-btn-line: #3c3c3c;
+  --n-accent: #4cc2ff;
+  --n-field: #1d1d1f;
+  --n-link: #99d6ff;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #2a2a2e; }
+body { font: 12px/16px "Segoe UI", sans-serif; color: var(--text); padding: 0; }
+.sym { font-family: "Segoe UI Symbol", "Segoe UI", sans-serif; }
+
+/* --- окно */
+.win { position: relative; width: 600px; background: var(--bg); outline: 1px solid #3a3a3a; }
+.titlebar { height: 31px; background: var(--n-title); display: flex; align-items: center; padding-left: 8px; gap: 8px; }
+.titlebar img { width: 16px; height: 16px; }
+.titlebar .caps { margin-left: auto; display: flex; }
+.titlebar .caps span { width: 46px; text-align: center; color: #c8c8c8; font-size: 11px; }
+.client { position: relative; width: 600px; height: 432px; overflow: hidden; }
+.dlg .client { height: auto; }
+
+/* --- нативные контролы */
+.btn { position: absolute; height: 23px; width: 82px; background: var(--n-btn); border: 1px solid var(--n-btn-line);
+       border-radius: 4px; display: flex; align-items: center; justify-content: center; white-space: nowrap; }
+.btn.def { border-color: var(--n-accent); box-shadow: inset 0 0 0 1px var(--n-accent); }
+.btn.off { color: #6d6d6d; }
+.btn.free { position: static; width: auto; padding: 0 12px; display: inline-flex; }
+.btns .btn { top: 400px; }
+.b-back { left: 330px; } .b-next { left: 414px; } .b-cancel { left: 506px; }
+
+.chk, .rad { position: relative; padding-left: 21px; min-height: 16px; }
+.chk::before, .rad::before { content: ""; position: absolute; left: 0; top: 1px; width: 13px; height: 13px;
+  border: 1px solid #9a9a9a; background: #1f1f1f; }
+.chk::before { border-radius: 3px; }
+.rad::before { border-radius: 50%; }
+.chk.on::before { background: var(--n-accent); border-color: var(--n-accent); }
+.chk.on::after { content: "✓"; position: absolute; left: 2px; top: -1px; font-size: 11px; color: #000; font-weight: 700; }
+.rad.on::before { border: 4px solid var(--n-accent); background: #000; }
+.edit { position: absolute; height: 23px; background: var(--n-field); border: 1px solid #3a3a3a; border-bottom-color: #9a9a9a;
+        border-radius: 3px; padding: 3px 6px; white-space: nowrap; overflow: hidden; }
+.bar { position: absolute; height: 4px; background: #3a3a3a; border-radius: 2px; overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--n-accent); border-radius: 2px; }
+.link { color: var(--n-link); text-decoration: underline; }
+
+/* --- страница с большой картинкой: «Добро пожаловать», «Готово» */
+.side-img { position: absolute; left: 0; top: 0; width: 202px; height: 386px; }
+.side { position: absolute; left: 214px; top: 16px; width: 374px; height: 370px; }
+.h1 { font-size: 16px; line-height: 21px; font-weight: 700; }
+.bottom-line { position: absolute; left: 0; right: 0; top: 386px; height: 1px; } /* hidebevels: линии нет */
+
+/* --- внутренние страницы */
+.hdr { position: absolute; left: 0; top: 0; width: 600px; height: 58px; }
+.hdr .t { position: absolute; left: 24px; top: 10px; font-weight: 700; width: 500px; }
+.hdr .d { position: absolute; left: 40px; top: 28px; width: 480px; white-space: nowrap; overflow: hidden; }
+.hdr img { position: absolute; right: 2px; top: 0; width: 58px; height: 58px; }
+.body { position: absolute; left: 40px; top: 72px; width: 520px; height: 316px; }
+
+/* --- наши подписи из [Code]: TNewStaticText с цветом шрифта и TPanel */
+.dim { color: var(--dim); }
+.ok { color: var(--ok); } .err { color: var(--err); } .warn { color: var(--warn); }
+.note { margin: 2px 0 0 21px; color: var(--dim); }
+.opt { margin-bottom: 14px; }
+.opt .rad, .opt .chk { font-weight: 600; }
+.plate { background: var(--card); border-left: 3px solid var(--off); padding: 8px 10px; }
+.plate.warn { border-left-color: var(--warn); color: var(--text); }
+.plate .warn, .plate .err { font-weight: 600; }
+.mono { font-family: "Cascadia Mono", Consolas, monospace; font-size: 11px; }
+.stack > * + * { margin-top: 10px; }
+.stack > [style*="position:absolute"] { margin-top: 0; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; }
+.big { font-size: 20px; line-height: 21px; }
+
+/* --- MsgBox и TaskDialog Windows */
+.dlg { width: 460px; }
+.dlg .client { padding: 20px 24px 0; }
+.dlg .ins { font-size: 15px; line-height: 20px; color: #9fd7ff; margin-bottom: 8px; }
+.dlg .txt { display: flex; gap: 14px; }
+.dlg .ico { font-size: 28px; line-height: 32px; width: 32px; text-align: center; }
+.dlg .foot { margin: 18px -24px 0; background: #202020; padding: 12px 24px; display: flex; justify-content: flex-end; gap: 8px; }
+.dlg .foot .btn { position: static; }
+.cmd { display: flex; gap: 8px; padding: 8px 10px; margin: 0 0 2px; border-radius: 4px; }
+.cmd:first-child { background: #262628; }
+.cmd .arrow { color: var(--n-accent); font-size: 16px; }
+.cmd b { display: block; font-weight: 400; font-size: 14px; line-height: 19px; color: #9fd7ff; }
+
+/* --- оглавление */
+.toc { padding: 20px; font-size: 14px; line-height: 22px; }
+.toc a { color: var(--n-link); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+'use strict';
+// Пары «скриншот → ширина» для srcset: те же файлы, что берёт Inno.
+const BIG = [[202, 386], [269, 515], [336, 643], [403, 772], [430, 824], [534, 1022]];
+const SMALL = [58, 77, 97, 116, 124, 159];
+const bigImg = `<img class="side-img" alt="" sizes="202px"
+  srcset="${BIG.map(([w, h]) => `/gen/wizard-${w}x${h}.png ${w}w`).join(', ')}">`;
+const smallImg = `<img alt="" sizes="58px"
+  srcset="${SMALL.map((s) => `/gen/wizard-small-${s}.png ${s}w`).join(', ')}">`;
+
+const V = '0.3.7';
+const CONF = 'C:\\ProgramData\\TunnelVPN\\conf';
+const LOG = 'C:\\Users\\Enkeym\\AppData\\Local\\Temp\\Setup Log 2026-10-11 #001.txt';
+
+const buttons = (back, next, cancel = 'Отмена', nextDef = true) =>
+  `<div class="btns">
+     ${back ? `<div class="btn b-back">${back}</div>` : ''}
+     ${next ? `<div class="btn b-next ${nextDef ? 'def' : 'off'}">${next}</div>` : ''}
+     ${cancel ? `<div class="btn b-cancel">${cancel}</div>` : ''}
+   </div>`;
+
+const header = (t, d) =>
+  `<div class="hdr"><div class="t fit">${t}</div><div class="d fit">${d}</div>${smallImg}</div>`;
+
+const side = (html, btns) => `${bigImg}<div class="side fit stack">${html}</div>${btns}`;
+const inner = (t, d, html, btns) => `${header(t, d)}<div class="body fit stack">${html}</div>${btns}`;
+
+const opt = (kind, on, label, note) =>
+  `<div class="opt"><div class="${kind} ${on ? 'on' : ''}">${label}</div><div class="note">${note}</div></div>`;
+
+const maintenance = (versions, plate, options, next) => inner(
+  'TunnelVPN уже установлен', versions,
+  `${plate || ''}${options.join('')}
+   <div style="position:absolute; top:296px"><span class="link">Изменить параметры</span></div>`,
+  buttons('', next, 'Отмена', next !== 'Далее'));
+
+const updateOpt = (on = true) => opt('rad', on, `Обновить до ${V}`,
+  'Конфиги, правила и настройки сохранятся. VPN отключится на время обновления и включится обратно.');
+const removeOpt = opt('rad', false, 'Удалить TunnelVPN',
+  'Конфиги с ключами останутся, если не попросите удалить.');
+
+const serviceFailed = (reason) =>
+  `${header('Служба TunnelVPN не запустилась', 'Программа скопирована, но VPN пока не включить')}
+   <div class="body fit stack">
+     <div style="display:flex; gap:10px; align-items:flex-start">
+       <span class="sym err big">✕</span>
+       <div class="fit" style="width:480px">${reason}</div>
+     </div>
+     <div class="row" style="margin-left:30px">
+       <span class="btn free def">Повторить запуск</span>
+       <span class="btn free">Открыть журнал</span>
+       <span class="btn free">Скопировать путь</span>
+       <span class="btn free">Сообщить о проблеме</span>
+     </div>
+     <div class="dim fit" style="margin-left:30px; width:490px; overflow-wrap:anywhere">Журнал: ${LOG}</div>
+     <div class="fit" style="position:absolute; top:276px">Программа скопирована. Когда служба заработает, VPN можно будет включить.</div>
+   </div>
+   ${buttons('', 'Готово', '', true)}`;
+
+const installing = (status, pct, extra = '') => inner(
+  'Установка', `Ставлю TunnelVPN ${V}`,
+  `<div class="fit" style="width:520px; white-space:nowrap; overflow:hidden">${status}</div>
+   <div class="bar" style="top:26px; width:520px"><i style="width:${pct}%"></i></div>${extra}`,
+  buttons('', '', 'Отмена'));
+
+const dialog = (title, html, foot) =>
+  ({title, kind: 'dlg', html: `${html}<div class="foot">${foot}</div>`});
+
+// Страницы раздела 3 ТЗ. id — параметр ?page=.
+const PAGES = {
+  // 3.1 — проверки до первой страницы
+  'arm64': dialog('Установка — TunnelVPN',
+    `<div class="txt"><span class="ico sym err">✕</span><div class="fit" style="width:360px">
+      TunnelVPN пока не работает на Windows для ARM.<br><br>
+      Драйвер сетевого адаптера нельзя запустить через эмуляцию — туннель не поднимется.</div></div>`,
+    '<span class="btn def">ОК</span>'),
+  'oldwin': dialog('Установка — TunnelVPN',
+    `<div class="txt"><span class="ico sym err">✕</span><div class="fit" style="width:360px">
+      Нужна Windows 10 версии 1809 или новее.<br><br>
+      На этой версии не работают компоненты, без которых TunnelVPN не поднимет туннель.</div></div>`,
+    '<span class="btn def">ОК</span>'),
+  'pending-delete': {title: 'Установка — TunnelVPN', html: inner(
+    'Нужна перезагрузка', 'Установка не начиналась, ничего не изменено',
+    `<div class="fit" style="width:520px">Windows ещё удаляет прежнюю службу TunnelVPN: её держит другая программа.
+       Перезагрузите компьютер и запустите установку снова.</div>
+     <div class="rad on">Перезагрузить сейчас</div>
+     <div class="rad">Позже</div>`,
+    buttons('', 'Готово', '', true))},
+
+  // 3.2 — новая установка
+  'welcome': {title: 'Установка — TunnelVPN', html: side(
+    `<div class="h1 fit">TunnelVPN ${V}</div>
+     <div class="fit">Несколько туннелей WireGuard и AmneziaWG одновременно: каждый сайт идёт через свой выход,
+       остальное — напрямую.</div>
+     <div class="dim fit" style="font-size:11px">Бета-версия</div>`,
+    buttons('', 'Далее'))},
+  'dir': {title: 'Установка — TunnelVPN', html: inner(
+    'Папка программы', 'Куда поставить TunnelVPN',
+    `<div style="position:relative; height:23px">
+       <div class="edit fit" style="left:0; top:0; width:432px">C:\\Program Files\\TunnelVPN</div>
+       <div class="btn" style="left:440px; top:0; width:80px">Обзор…</div></div>
+     <div class="dim fit">Конфиги и ключи хранятся отдельно — в C:\\ProgramData\\TunnelVPN.</div>
+     <div class="fit" style="position:absolute; top:292px">Нужно 96 МБ на диске.</div>`,
+    buttons('Назад', 'Далее'))},
+  'dir-long': {title: 'Установка — TunnelVPN', html: inner(
+    'Папка программы', 'Куда поставить TunnelVPN',
+    `<div style="position:relative; height:23px">
+       <div class="edit" style="left:0; top:0; width:432px">D:\\Программы\\Сетевые инструменты\\VPN и туннели\\Рабочий ноутбук\\TunnelVPN</div>
+       <div class="btn" style="left:440px; top:0; width:80px">Обзор…</div></div>
+     <div class="dim fit">Конфиги и ключи хранятся отдельно — в C:\\ProgramData\\TunnelVPN.</div>
+     <div class="fit" style="position:absolute; top:292px">Нужно 96 МБ на диске.</div>`,
+    buttons('Назад', 'Далее'))},
+  'tasks': {title: 'Установка — TunnelVPN', html: inner(
+    'Параметры', 'Что включить вместе с программой',
+    opt('chk', true, 'Запускать значок в трее при входе в Windows',
+        'Без запроса прав администратора при каждом входе.') +
+    opt('chk', false, 'Значок на рабочем столе', 'Ярлык TunnelVPN рядом с остальными.'),
+    buttons('Назад', 'Установить'))},
+  'installing': {title: 'Установка — TunnelVPN', html: installing('Регистрирую службу…', 72)},
+  'installing-webview2': {title: 'Установка — TunnelVPN', html: installing(
+    'Скачиваю Microsoft WebView2 — 1,2 из 2 МБ', 88,
+    `<div class="dim fit" style="position:absolute; top:44px; width:520px">Без него не откроется окно TunnelVPN.
+       Туннели и значок в трее работают и без него.</div>`)},
+  'webview2-failed': dialog('Установка — TunnelVPN',
+    `<div class="txt"><span class="ico sym warn">⚠</span><div class="fit" style="width:360px">
+      <div class="ins">Не удалось поставить WebView2</div>
+      TunnelVPN установится, но окно не откроется, пока компонента нет. Туннели и значок в трее работают.<br><br>
+      Поставить вручную: go.microsoft.com/fwlink/p/?LinkId=2124703</div></div>`,
+    '<span class="btn def" style="width:auto; padding:0 12px">Повторить</span><span class="btn" style="width:auto; padding:0 12px">Продолжить без него</span>'),
+  'finished': {title: 'Установка — TunnelVPN', html: side(
+    `<div class="h1 fit">TunnelVPN установлен</div>
+     <div class="fit">Откройте TunnelVPN и добавьте конфиг .conf — его выдаёт администратор сети или AmneziaVPN.</div>
+     <div class="chk on">Открыть TunnelVPN</div>
+     <div><span class="link">Инструкция на GitHub</span></div>`,
+    buttons('', 'Готово', ''))},
+
+  // 3.3 — меню обслуживания
+  'maint-update': {title: 'Установка — TunnelVPN', html: maintenance(
+    `Установлено: 0.3.5 · В этом файле: ${V}`, '', [updateOpt(), removeOpt], 'Обновить')},
+  'maint-reinstall': {title: 'Установка — TunnelVPN', html: maintenance(
+    `Установлено: ${V} · В этом файле: ${V}`, '',
+    [opt('rad', true, `Переустановить ${V}`, 'Если что-то сломалось. Конфиги сохранятся.'), removeOpt],
+    'Переустановить')},
+  'maint-rollback': {title: 'Установка — TunnelVPN', html: maintenance(
+    `Установлено: 0.3.8 · В этом файле: ${V}`, '',
+    [opt('rad', false, `<span class="sym warn">⚠</span> Откатить до ${V}`,
+       `Старая версия может не понять настройки, сохранённые новой. Перед откатом сделайте копию
+        ${CONF}. <span class="link">Открыть папку</span>`), removeOpt],
+    'Далее')},
+  // 3.4 — переезд с DualVPN
+  'maint-legacy': {title: 'Установка — TunnelVPN', html: maintenance(
+    `Установлено: DualVPN 0.2.9 · В этом файле: TunnelVPN ${V}`,
+    `<div class="plate fit">Прошлая версия называлась DualVPN. Конфиги и ключи перенесём, старую службу и ярлыки уберём.</div>`,
+    [updateOpt()], 'Обновить')},
+  'legacy-failed': {title: 'Установка — TunnelVPN', html: inner(
+    'Установка не началась', 'Ничего не изменено',
+    `<div style="display:flex; gap:10px"><span class="sym err big">✕</span>
+       <div class="fit stack" style="width:480px">
+         <div>Не удалось перенести данные из C:\\ProgramData\\DualVPN. Ничего не изменено, старая версия работает как раньше.</div>
+         <div>Их держит другая программа. Перезагрузите компьютер и запустите установку снова.</div>
+         <div class="dim" style="overflow-wrap:anywhere">Журнал: ${LOG}</div></div></div>`,
+    buttons('', '', 'Закрыть'))},
+
+  // 3.5 — служба не запустилась: «Готово» перестроена
+  'service-failed': {title: 'Установка — TunnelVPN',
+    html: serviceFailed('Служба установилась, но остановилась сразу после запуска.')},
+  'service-failed-long': {title: 'Установка — TunnelVPN',
+    html: serviceFailed('Служба запущена, но за 20 секунд так и не заработала. Обычно её задерживает антивирус ' +
+      'или другой VPN-клиент, который держит сетевой адаптер.')},
+
+  // обновление: 2 клика — «Обновить» на меню и «Готово» здесь
+  'finished-update': {title: 'Установка — TunnelVPN', html: side(
+    `<div class="h1 fit">TunnelVPN обновлён до ${V}</div>
+     <div class="fit"><span class="sym ok">●</span> VPN снова включён. Конфиги, правила и настройки на месте.</div>
+     <div class="chk on">Открыть TunnelVPN</div>
+     <div><span class="link">Что нового</span></div>`,
+    buttons('', 'Готово', ''))},
+  // 3.6 — туннель не восстановился
+  'finished-update-warn': {title: 'Установка — TunnelVPN', html: side(
+    `<div class="h1 fit">TunnelVPN обновлён до ${V}</div>
+     <div class="plate warn fit"><span class="sym warn">⚠</span> Обновление установлено, но VPN не включился сам.
+       Откройте TunnelVPN и нажмите «Включить» — если не получится, причина будет в журнале.</div>
+     <div class="chk on">Открыть TunnelVPN</div>`,
+    buttons('', 'Готово', ''))},
+
+  // 3.8 — удаление
+  'uninstall-confirm': dialog('Удаление — TunnelVPN',
+    `<div class="txt"><span class="ico sym" style="color:#9fd7ff">?</span><div class="fit" style="width:360px">
+      Удалить TunnelVPN?<br><br>VPN отключится, служба и автозапуск будут удалены.</div></div>`,
+    '<span class="btn def">Да</span><span class="btn">Нет</span>'),
+  'uninstall-configs': dialog('Удаление — TunnelVPN',
+    `<div class="fit" style="width:412px">
+      <div class="ins">Что сделать с конфигами и ключами?</div>
+      <div class="dim" style="margin-bottom:12px">Папка: ${CONF}</div>
+      <div class="cmd"><span class="arrow">→</span><div><b>Оставить</b>Их подхватит следующая установка TunnelVPN.</div></div>
+      <div class="cmd"><span class="arrow">→</span><div><b>Удалить навсегда</b>Приватные ключи будут удалены.
+        Восстановить их можно только у того, кто выдал конфиг.</div></div></div>`,
+    '<span class="btn">Отмена</span>'),
+  'uninstall-progress': {title: 'Удаление — TunnelVPN', html: inner(
+    'Удаление', 'Убираю TunnelVPN с компьютера',
+    `<div class="fit">Останавливаю службу…</div>
+     <div class="bar" style="top:26px; width:520px"><i style="width:40%"></i></div>`,
+    buttons('', '', 'Отмена', false).replace('class="btn b-cancel"', 'class="btn b-cancel off"'))},
+  'uninstall-done': dialog('Удаление — TunnelVPN',
+    `<div class="txt"><span class="ico sym" style="color:#9fd7ff">i</span><div class="fit" style="width:360px">
+      TunnelVPN удалён.<br><br>Конфиги остались в ${CONF} — их подхватит следующая установка.</div></div>`,
+    '<span class="btn def">ОК</span>'),
+};
+
+const page = new URLSearchParams(location.search).get('page');
+const root = document.getElementById('root');
+if (!PAGES[page]) {
+  root.innerHTML = `<div class="toc">${Object.keys(PAGES)
+    .map((id) => `<div><a href="?page=${id}">${id}</a></div>`).join('')}</div>`;
+} else {
+  const p = PAGES[page];
+  root.innerHTML = `<div class="win ${p.kind || ''}" id="win">
+    <div class="titlebar"><img alt="" src="/gen/wizard-small-58.png"><span>${p.title}</span>
+      <span class="caps">${p.kind === 'dlg' ? '<span>✕</span>' : '<span>—</span><span>☐</span><span>✕</span>'}</span></div>
+    <div class="client">${p.html}</div></div>`;
+}
+
+// Для Playwright: блоки .fit, текст которых не влез.
+window.overflows = () => [...document.querySelectorAll('.fit')]
+  .filter((el) => el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1)
+  .map((el) => el.textContent.trim().slice(0, 60));
+</script>
+</body>
+</html>

@@ -103,8 +103,37 @@ if ($LASTEXITCODE -ne 0) { throw "pip install вернул $LASTEXITCODE" }
 & $Py -m pip install -q pyinstaller==6.22.3
 if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller вернул $LASTEXITCODE" }
 
-# --- Значок
-& $Py (Join-Path $Inst 'make_icon.py') (Join-Path $Inst 'TunnelVPN.ico')
+# --- Значок и картинки мастера: всё из lib\tunnelvpn\icon.py в installer\gen.
+$Gen = Join-Path $Inst 'gen'
+& $Py (Join-Path $Inst 'make_icon.py') $Gen
+if ($LASTEXITCODE -ne 0) { throw "make_icon.py вернул $LASTEXITCODE" }
+# Списки и размеры — те же, что WIZARD и WIZARD_SMALL в make_icon.py и
+# WizardImageFile/WizardSmallImageFile в tunnelvpn.iss: пропал масштаб —
+# Inno растянет соседний, и при 150–250 % картинка поплывёт.
+Add-Type -AssemblyName System.Drawing
+$WizardFiles = @('202x386', '269x515', '336x643', '403x772', '430x824', '534x1022' | ForEach-Object { "wizard-$_.png" }) +
+               @(58, 77, 97, 116, 124, 159 | ForEach-Object { "wizard-small-$_.png" })
+$WizardBytes = 0
+foreach ($name in $WizardFiles) {
+    $file = Join-Path $Gen $name
+    if (-not (Test-Path $file)) { throw "нет картинки мастера $name" }
+    $img = [System.Drawing.Image]::FromFile($file)
+    try { $size = "$($img.Width)x$($img.Height)" } finally { $img.Dispose() }
+    $want = if ($name -match '(\d+x\d+)') { $Matches[1] } elseif ($name -match '(\d+)') { "$($Matches[1])x$($Matches[1])" }
+    if ($size -ne $want) { throw "$name — $size, ждали $want" }
+    $WizardBytes += (Get-Item $file).Length
+}
+# Ориентир: установщик не должен заметно вырасти из-за картинок.
+if ($WizardBytes -gt 300KB) { throw "картинки мастера — $([math]::Round($WizardBytes / 1KB)) КБ, больше 300" }
+# ico: каталог в начале файла — число картинок и сторона каждой (0 — 256).
+$Ico = [IO.File]::ReadAllBytes((Join-Path $Gen 'TunnelVPN.ico'))
+$IcoSizes = for ($i = 0; $i -lt [BitConverter]::ToUInt16($Ico, 4); $i++) {
+    $s = $Ico[6 + 16 * $i]; if ($s -eq 0) { 256 } else { $s }
+}
+# Те же, что icon.SIZES.
+foreach ($s in 16, 20, 24, 32, 40, 48, 64, 128, 256) {
+    if ($IcoSizes -notcontains $s) { throw "в TunnelVPN.ico нет $s×$s (есть: $($IcoSizes -join ', '))" }
+}
 
 Push-Location $Root
 try {

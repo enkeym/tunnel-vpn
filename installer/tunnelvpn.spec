@@ -24,7 +24,8 @@ from PyInstaller.utils.win32.versioninfo import (
 # репозитория, и PyInstaller не находил entry_cli.py.
 ROOT = os.path.dirname(os.path.abspath(SPECPATH))
 INST = os.path.join(ROOT, "installer")
-ICON = os.path.join(INST, "TunnelVPN.ico")
+# Рисует make_icon.py в installer/gen (build.ps1 зовёт его до PyInstaller).
+ICON = os.path.join(INST, "gen", "TunnelVPN.ico")
 
 with open(os.path.join(ROOT, "VERSION"), encoding="utf-8") as fh:
     VERSION = fh.read().strip()

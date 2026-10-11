@@ -73,12 +73,15 @@ def rgba(color):
     return (*bytes.fromhex(color[1:]), 255)
 
 
-def draw(size):
-    """Значок приложения size×size."""
+def draw(size, plate=True):
+    """Значок приложения size×size. plate=False — без подложки, на
+    прозрачности: шапка мастера установки сама тёмная."""
     g = LITE if size <= SMALL else FULL
     fan = g["fan"]
-    ops = [_plate(g["radius"], BG), *_arch(g["arch"], g["arch_w"], LIGHT),
+    ops = [*_arch(g["arch"], g["arch_w"], LIGHT),
            *(_line(fan, (x, y), g["stripe_w"], c) for x, y, c in g["stripes"])]
+    if plate:
+        ops.insert(0, _plate(g["radius"], BG))
     return _render(size, ops)
 
 
