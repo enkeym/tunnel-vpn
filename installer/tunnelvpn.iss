@@ -30,11 +30,13 @@ AppId={{8F3A5C21-4E7B-4D96-9A1F-2C6B8D4E7A31}
 AppName={#MyName}
 AppVersion={#MyVersion}
 AppPublisher=Enkeym
-AppUpdatesURL=https://github.com/enkeym/dual-vpn
-DefaultDirName={autopf}\{#MyName}
+AppUpdatesURL=https://github.com/sotakeiteasy/dual-vpn
+; Папка прошлой установки TunnelVPN — из реестра, см. DefaultAppDir в [Code].
+DefaultDirName={code:DefaultAppDir}
 DefaultGroupName={#MyName}
 ; AppId общий с DualVPN, и Inno взял бы её папку и группу ярлыков из реестра:
 ; программа осталась бы в Program Files\DualVPN под новым именем.
+; Свою прошлую папку берёт DefaultAppDir, отличая её от папки DualVPN.
 UsePreviousAppDir=no
 UsePreviousGroup=no
 UninstallDisplayIcon={app}\{#MyExe}
@@ -46,8 +48,10 @@ SolidCompression=yes
 WizardStyle=modern
 ; Служба ставится в систему и правит маршруты — без администратора никак.
 PrivilegesRequired=admin
-ArchitecturesInstallIn64BitMode=x64compatible
-ArchitecturesAllowed=x64compatible
+; x64os, а не x64compatible: на ARM64 эмуляция x64 запустила бы программу, но
+; wintun.dll под amd64 не загрузится в ядро ARM64 — туннель не поднять.
+ArchitecturesInstallIn64BitMode=x64os
+ArchitecturesAllowed=x64os
 ; Windows 10 1809 — минимум, где WebView2 и wintun ведут себя предсказуемо.
 MinVersion=10.0.17763
 ; Журнал установки и удаления в %TEMP% («Setup Log …», «Uninstall Log …»):
@@ -240,6 +244,70 @@ begin
   Log(ExtractFileName(Exe) + ' ' + Params + ': код ' + IntToStr(ResultCode));
 end;
 
+// Папка прошлой установки из её записи в «Приложениях»; '' — ставим впервые.
+function PreviousAppDir: String;
+begin
+  if RegQueryStringValue(HKLM64, UninstKey, 'InstallLocation', Result) then
+    Result := RemoveBackslashUnlessRoot(Result)
+  else
+    Result := '';
+end;
+
+// Папка установки под прежним именем: AppId общий, и запись в реестре та же.
+// Корень диска — никогда: MigrateLegacy удаляет эту папку целиком.
+function IsLegacyDir(const Dir: String): Boolean;
+begin
+  Result := (ExtractFileName(Dir) <> '') and FileExists(Dir + '\{#LegacyCli}');
+end;
+
+// DefaultDirName: обновление остаётся в папке, куда TunnelVPN поставили, — и
+// не по умолчанию тоже. Папку DualVPN не берём: её чистит MigrateLegacy.
+function DefaultAppDir(Param: String): String;
+begin
+  Result := PreviousAppDir;
+  if (Result = '') or IsLegacyDir(Result) then
+    Result := ExpandConstant('{autopf}\{#MyName}');
+end;
+
+// Отрезает от S число до точки вместе с точкой. Хвост вроде «-check» —
+// конец версии: S становится пустой.
+function NextVersionPart(var S: String): Integer;
+var
+  I: Integer;
+begin
+  I := 1;
+  while I <= Length(S) do
+  begin
+    if (S[I] < '0') or (S[I] > '9') then
+      Break;
+    I := I + 1;
+  end;
+  Result := StrToIntDef(Copy(S, 1, I - 1), 0);
+  if I > Length(S) then
+    S := ''
+  else if S[I] = '.' then
+    Delete(S, 1, I)
+  else
+    S := '';
+end;
+
+// По числам, а не строкой: '0.10.0' новее '0.9.0'. -1, 0, 1 — A ниже, равна, выше B.
+function CompareVersions(A, B: String): Integer;
+var
+  X, Y: Integer;
+begin
+  Result := 0;
+  while (Result = 0) and ((A <> '') or (B <> '')) do
+  begin
+    X := NextVersionPart(A);
+    Y := NextVersionPart(B);
+    if X < Y then
+      Result := -1
+    else if X > Y then
+      Result := 1;
+  end;
+end;
+
 // Через PowerShell, а не разбором вывода sc query: Get-Service отдаёт
 // состояние одинаково на любом языке Windows.
 function ServiceRunning: Boolean;
@@ -332,21 +400,32 @@ end;
 // выбран первый пункт — обновление (так ставит процедура из CLAUDE.md).
 procedure InitializeWizard;
 var
-  OldVersion, Title: String;
+  OldVersion, Title, Note: String;
+  Cmp: Integer;
 begin
   if not RegQueryStringValue(HKLM64, UninstKey, 'UninstallString', OldUninstaller) then
     Exit;
   RegQueryStringValue(HKLM64, UninstKey, 'DisplayVersion', OldVersion);
-  if OldVersion = '{#MyVersion}' then
+  Note := 'При обновлении конфиги, ключи VPN и настройки остаются на месте.';
+  Cmp := CompareVersions(OldVersion, '{#MyVersion}');
+  if Cmp = 0 then
     Title := 'Переустановить версию {#MyVersion}'
+  else if Cmp > 0 then
+  begin
+    Title := 'Откатить до версии {#MyVersion}';
+    // Формат конфигов меняется только вперёд: что записала новая версия,
+    // старая может прочитать не так или не прочитать.
+    Note := 'Установлена более новая версия. Конфиги и ключи VPN останутся, но то, что ' +
+            'в них записала новая версия, эта может не понять. Перед откатом сохрани копию ' +
+            ExpandConstant('{commonappdata}\{#MyName}\conf') + '.';
+  end
   else
     Title := 'Обновить до версии {#MyVersion}';
   if OldVersion = '' then
     OldVersion := 'прошлая';
   ActionPage := CreateInputOptionPage(wpWelcome,
     '{#MyName} уже установлен', 'Установлена версия ' + OldVersion + '. Что сделать?',
-    'При обновлении конфиги, ключи VPN и настройки остаются на месте.',
-    True, False);
+    Note, True, False);
   ActionPage.Add(Title);
   ActionPage.Add('Удалить {#MyName}, конфиги и ключи VPN оставить');
   ActionPage.Add('Удалить {#MyName} полностью, вместе с конфигами и ключами VPN');
@@ -479,8 +558,12 @@ begin
        '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   // Её деинсталлятор не зовём: он снёс бы общую запись AppId в реестре и
   // state\ уже перенесённых данных искал бы по старому пути. Чистим сами.
-  OldApp := ExpandConstant('{autopf}\{#LegacyName}');
-  if DirExists(OldApp) then
+  // Папка — откуда её ставили (её деинсталлятор снёс бы её целиком так же),
+  // а не только Program Files\DualVPN. Если в неё же ставят TunnelVPN — не трогаем.
+  OldApp := PreviousAppDir;
+  if not IsLegacyDir(OldApp) then
+    OldApp := ExpandConstant('{autopf}\{#LegacyName}');
+  if DirExists(OldApp) and (CompareText(OldApp, ExpandConstant('{app}')) <> 0) then
   begin
     MoveAsideLocked(OldApp);
     DelTree(OldApp, True, True, True);
