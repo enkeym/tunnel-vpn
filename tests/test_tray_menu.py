@@ -93,6 +93,19 @@ def test_без_основного_подсказка_всё_остальное_
     assert app._title() == "TunnelVPN — работает · всё остальное напрямую"
 
 
+def test_выключенный_основной_подсказка_всё_остальное_напрямую():
+    """Выключенный основной остаётся основным, но не везёт ничего: выход
+    напрямую — так задумано, это не запасной выход."""
+    app = tray.Tray.__new__(tray.Tray)
+    app.installing = False
+    app.status = _up(_work(), _home(enabled=False, check=""), out="direct",
+                     exit_state="direct")
+
+    assert app._title() == "TunnelVPN — работает · всё остальное напрямую"
+    assert tray._conf_colors(app.status, NONE) == {"work": "up", "home": "off"}
+    assert tray._state_word(_home(enabled=False, confs=["nl-1"]), app.status, NONE) == "выключен"
+
+
 @pytest.mark.parametrize("t, name", [
     ({}, None),
     ({"confs": ["nl-1"]}, "nl-1"),

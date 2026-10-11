@@ -70,13 +70,53 @@ def test_enable_disable_флаг_туннеля_и_сразу_применяет
     assert shown in capsys.readouterr().out
 
 
-def test_disable_основного_отказ_службы_и_не_применяет(sent, capsys):
-    sent.replies["set-enabled"] = {"ok": False, "error": "«Личный» — основной"}
+def test_disable_основного_тот_же_set_enabled_и_применяет(sent, capsys):
+    sent.replies["set-enabled"] = {"ok": True, "tunnel": "home", "enabled": False}
 
-    assert cli.main(["disable", "home"]) == 1
+    assert cli.main(["disable", "Личный"]) == 0
 
-    assert "не вышло: «Личный» — основной" in capsys.readouterr().out
+    assert sent == [("set-enabled", {"tunnel": "Личный", "on": False}), ("apply", {})]
+    assert "home: выключен" in capsys.readouterr().out
+
+
+def test_отказ_set_enabled_код_ошибки_и_не_применяет(sent, capsys):
+    sent.replies["set-enabled"] = {"ok": False, "error": "нет туннеля 'x'"}
+
+    assert cli.main(["disable", "x"]) == 1
+
+    assert "не вышло: нет туннеля 'x'" in capsys.readouterr().out
     assert [op for op, _ in sent] == ["set-enabled"]
+
+
+def _status_text(**st):
+    return "\n".join(cli.status_lines({"up": True, "exit_state": "direct", "out": "direct",
+                                       **st}))
+
+
+def test_status_выключенный_основной_напрямую_не_запасной():
+    """Без работающего основного selector и так смотрит в direct."""
+    home = {**STATUS["tunnels"][1], "enabled": False}
+
+    text = _status_text(tunnels=[STATUS["tunnels"][0], home])
+
+    assert "профиль  : основной выключен" in text
+    assert "напрямую: основной туннель выключен" in text
+    assert "запасной" not in text
+
+
+def test_status_без_основного_напрямую_не_запасной():
+    text = _status_text(tunnels=[STATUS["tunnels"][0]])
+
+    assert "профиль  : основного нет" in text
+    assert "напрямую: основного туннеля нет" in text
+    assert "запасной" not in text
+
+
+def test_status_работающий_основной_на_direct_запасной():
+    text = _status_text(tunnels=STATUS["tunnels"], profile="nl-2")
+
+    assert "профиль  : nl-2" in text
+    assert "запасной, напрямую: личный не работает" in text
 
 
 def test_disable_без_туннеля_не_зовёт_службу(sent):

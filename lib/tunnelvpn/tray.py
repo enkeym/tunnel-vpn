@@ -86,6 +86,14 @@ def _tray_size():
     return win32api.GetSystemMetrics(49) or 16             # SM_CXSMICON
 
 
+def _main_on(st):
+    """Работающий основной из статуса — в режиме all и не выключенный, иначе
+    None. Выключенный основной остаётся основным, но не везёт ничего: всё
+    остальное идёт напрямую, как без основного, — это не запасной выход."""
+    main = tunnels.by_kind(st.get("tunnels") or [], "personal")
+    return main if main and main.get("enabled") is not False else None
+
+
 def _tray_state(st):
     """Состояние значка (ключ icon.TRAY) по статусу службы. Порядок — как
     у заголовка окна: утечка IPv6 раньше запасного выхода, а на запасном
@@ -96,8 +104,7 @@ def _tray_state(st):
         return "error" if st.get("last_error") else "off"
     if st.get("v6_leak"):
         return "leak"
-    main = tunnels.by_kind(st.get("tunnels") or [], "personal")
-    if main and "direct" in (st.get("out"), st.get("exit_state")):
+    if _main_on(st) and "direct" in (st.get("out"), st.get("exit_state")):
         return "fallback"
     if st.get("exit_state") == "leak":
         return "leak"
@@ -267,7 +274,7 @@ class Tray:
         if not st.get("up"):
             err = st.get("last_error")
             return "TunnelVPN — выключен" + (f" ({err})" if err else "")
-        main = tunnels.by_kind(st.get("tunnels") or [], "personal")
+        main = _main_on(st)
         name = main["name"] if main else "основной"
         who = st.get("profile") or name
         exit_ip = st.get("exit_ip") or "—"

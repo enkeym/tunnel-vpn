@@ -6,8 +6,9 @@
     tunnelvpn list                туннели и их конфиги (* — активный)
     tunnelvpn use ТУННЕЛЬ КОНФИГ  выбрать конфиг туннеля (туннель — id или имя)
     tunnelvpn enable|disable ТУННЕЛЬ
-                                  включить или выключить туннель «по списку»;
-                                  основной выключает «Всё остальное напрямую» в окне
+                                  включить или выключить туннель, основной тоже:
+                                  выключенный основной остаётся основным, а всё
+                                  остальное идёт напрямую
     tunnelvpn profile ИМЯ         выбрать конфиг основного туннеля
     tunnelvpn log [N]             последние строки журнала sing-box
     tunnelvpn version
@@ -34,7 +35,7 @@
 import os
 import sys
 
-from . import ipc, paths
+from . import ipc, paths, tunnels
 
 # Весь вывод здесь русский, а консоль на английской Windows — cp1252, где
 # кириллицы нет вовсе. Без этого `tunnelvpn status` падал бы с UnicodeEncodeError
@@ -71,8 +72,14 @@ def status_lines(st):
         out.append(f"  сейчас   : {st['busy']}")
     if st.get("last_error"):
         out.append(f"  ошибка   : {st['last_error']}")
-    out.append(f"  профиль  : {st.get('profile') or 'единственный конфиг основного'}")
-    for t in st.get("tunnels") or []:
+    items = st.get("tunnels") or []
+    main = tunnels.by_kind(items, "personal")
+    main_on = main is not None and main.get("enabled") is not False
+    # У выключенного основного профиль пуст: процесса нет, конфиг не выбран.
+    out.append("  профиль  : " + (st.get("profile") or "единственный конфиг основного"
+                                 if main_on else "основной выключен" if main
+                                 else "основного нет"))
+    for t in items:
         check = ("выключен" if t.get("enabled") is False
                  else _check_text(t) if up else "")
         out.append(f"  туннель  : {t.get('name')} [{t.get('id')}], {_MODES.get(t.get('mode'), '?')}"
@@ -89,11 +96,13 @@ def status_lines(st):
         state = {"tunnel": "через туннель", "leak": "!! УТЕЧКА, адрес провайдера",
                  "direct": "запасной, напрямую: личный не работает",
                  "unknown": "не удалось проверить"}.get(st.get("exit_state"), "?")
+        # Без работающего основного выход и так direct — это не запасной.
+        if not main_on:
+            state = ("напрямую: основной туннель выключен" if main
+                     else "напрямую: основного туннеля нет")
         # Выход сторож переключает раньше, чем проверка выхода его перемерит.
-        if st.get("out") == "direct":
+        elif st.get("out") == "direct":
             state = "запасной, напрямую: личный не работает"
-        elif not any(t.get("mode") == "all" for t in st.get("tunnels") or []):
-            state = "напрямую: основного туннеля нет"
         out.append(f"  выход    : {st.get('exit_ip') or '—'} "
                    f"{st.get('exit_country') or ''} {st.get('exit_city') or ''} — {state}")
         # HTTPS проверяют только у туннеля без DNS.

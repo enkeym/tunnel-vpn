@@ -464,6 +464,9 @@ _SIDE = {"id": "work", "mode": "list"}
     ({"up": True, "tunnels": [_MAIN], "out": "direct", "v6_leak": "2a00::1"}, "leak"),
     # Без основного напрямую идёт всё остальное — так задумано.
     ({"up": True, "tunnels": [_SIDE], "exit_state": "direct"}, "up"),
+    # Выключенный основной — то же: он основной, но не везёт ничего.
+    ({"up": True, "tunnels": [{**_MAIN, "enabled": False}, _SIDE], "out": "direct",
+      "exit_state": "direct"}, "up"),
 ])
 def test_состояние_значка_по_статусу(st, state):
     assert tray._tray_state(st) == state
