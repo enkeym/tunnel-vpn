@@ -447,6 +447,36 @@ body.kbd :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
 .sheet-foot { display: flex; gap: var(--sp-2); align-items: center; padding: var(--sp-3) var(--sp-5);
               border-top: 1px solid var(--line); flex-wrap: wrap; }
 .sheet-foot .grow { flex: 1; }
+.sheet-warn { display: flex; gap: var(--sp-2); align-items: flex-start; color: var(--st); }
+.sheet-warn .ic { flex: none; margin-top: 2px; }
+
+/* «Показать конфиг»: файл как есть, секции ярче, ключи под точками. */
+.conf { margin: 0; font-size: var(--fs-m); line-height: 1.6; white-space: pre-wrap; word-break: break-all;
+        -webkit-user-select: text; user-select: text; }
+.conf-sec { font-weight: 700; color: var(--text); }
+.conf-key { color: var(--dim); }
+.conf-cmt { color: var(--off-text); font-style: italic; }
+.conf-secret { letter-spacing: .08em; }
+
+/* «Подробности»: подпись — значение. */
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: var(--sp-2) var(--sp-4); margin: 0; }
+.kv dt { color: var(--dim); }
+.kv dd { margin: 0; min-width: 0; font-size: var(--fs-m); word-break: break-all; }
+
+/* Перетаскивание .conf: поверх всего, кроме подсказки и уведомлений. */
+.drop {
+  position: fixed; inset: 0; z-index: var(--z-drop); background: var(--scrim);
+  display: grid; place-items: center; padding: var(--sp-6); pointer-events: none;
+  animation: fade-in var(--t-mid) var(--ease);
+}
+.drop-in {
+  display: grid; justify-items: center; gap: var(--sp-2); text-align: center;
+  padding: var(--sp-6) calc(var(--sp-6) * 2); border-radius: var(--r-l);
+  border: 2px dashed var(--line-strong); background: var(--card); box-shadow: var(--shadow-sheet);
+}
+.drop-in .ic { width: 32px; height: 32px; }
+.drop-in b { font-size: var(--fs-l); }
+.drop-in span { color: var(--dim); font-size: var(--fs-m); }
 
 @media (prefers-reduced-motion: reduce) {
   .sheet, .pop, .toast { animation-name: fade-in; }

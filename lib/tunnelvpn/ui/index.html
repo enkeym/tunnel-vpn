@@ -81,7 +81,7 @@ document.write(`<link rel="stylesheet" href="app.css${location.search}">`);
   const mock = /[?&]mock=/.test(q) && !window.pywebview
     ? `<script src="dev/mock-api.js${q}"><\/script>` : '';
   // Порядок важен: core — первым, main (шлёт ready) — последним.
-  const parts = ['core', 'model', 'topbar', 'cards', 'main'];
+  const parts = ['core', 'model', 'topbar', 'cards', 'sheets', 'main'];
   document.write(mock + parts.map(p => `<script src="js/${p}.js${q}"><\/script>`).join(''));
 }
 </script>

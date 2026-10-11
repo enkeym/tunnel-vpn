@@ -208,6 +208,9 @@ class Api:
             self._place_config(arg or {})
         elif name == "show_config":
             self._show_conf(arg["tunnel"], arg["name"])
+        elif name == "conf_details":
+            # Ответ — возвратом send: страница ждёт его промисом (request).
+            return self._conf_details(arg["tunnel"], arg["name"])
         elif name == "edit_config":
             # Блокнот держит поток, пока его не закроют, — мост не ждёт.
             threading.Thread(target=self._edit_conf,
@@ -475,13 +478,43 @@ class Api:
         другого пользователя ей просто не видны.
         """
         path = self._pick(_FILE_TYPES)
-        if not path:
-            return
+        if path:
+            self._add_file(path, arg.get("tunnel", ""), arg.get("place", ""))
+
+    def _add_file(self, path, tunnel="", place=""):
         with open(path, encoding="utf-8", errors="replace") as fh:
             text = fh.read()
         # Имя чистит служба (tunnels.safe_name).
         name = os.path.splitext(os.path.basename(path))[0]
-        self._send_config(name, text, arg.get("tunnel", ""), arg.get("place", ""))
+        self._send_config(name, text, tunnel, place)
+
+    def _drop(self, event):
+        """Файл, брошенный на окно: полный путь pywebview кладёт в
+        pywebviewFullPath (WebView2 отдаёт его отдельным сообщением). Дальше —
+        как «Добавить конфиг…» без туннеля: место выбирает служба. Из
+        нескольких .conf берём первый — вопрос о месте задаётся по одному."""
+        files = (event.get("dataTransfer") or {}).get("files") or []
+        confs = [f["pywebviewFullPath"] for f in files
+                 if (f.get("pywebviewFullPath") or "").lower().endswith(".conf")]
+        try:
+            if not confs:
+                raise RuntimeError("Нужен файл .conf WireGuard или AmneziaWG")
+            self._add_file(confs[0])
+        except Exception as exc:                       # noqa: BLE001
+            # Поток pywebview: исключение отсюда никто бы не увидел.
+            self.js("failed", str(exc))
+
+    def _conf_details(self, tunnel, name):
+        """«Подробности» конфига: поля файла без ключей. Читает служба, как и
+        «Показать», — каталог закрыт."""
+        reply = self._admin_call("read-config", tunnel=tunnel, name=name)
+        if not reply.get("ok"):
+            return {"ok": False, "error": reply.get("error") or "не прочитать конфиг"}
+        try:
+            facts = _conf_summary(reply.get("text", ""))
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "path": tunnels.conf_path(tunnel, name), **facts}
 
     def _place_config(self, arg):
         """Ответ на вопрос службы о месте: place "replace" (с tunnel) или "new"."""
@@ -582,6 +615,45 @@ class Api:
                 fh.write(f"{time.strftime('%H:%M:%S')} {line}\n")
         except OSError:
             pass
+
+
+def _conf_summary(text):
+    """Поля конфига для «Подробностей»: всё, кроме ключей. mtu — как его
+    соберёт служба: без MTU в файле — 1280, у AWG с junk-параметрами — не
+    больше 1280 (buildconfig.endpoint); cut — срезан. problem — почему
+    конфиг не соберётся. Не конфиг — ValueError."""
+    from . import buildconfig
+    conf = buildconfig.parse_text(text)
+    iface, peer = conf["interface"], conf["peer"]
+    # Имена полей — как в файле: parse_text приводит их к нижнему регистру.
+    spelled = {}
+    for raw in text.splitlines():
+        key = raw.split("#", 1)[0].split("=", 1)[0].strip()
+        spelled.setdefault(key.lower(), key)
+
+    def num(key):
+        try:
+            return int(iface.get(key, ""))
+        except ValueError:
+            return None
+    mtu = num("mtu")
+    built = mtu or buildconfig.AWG_MTU_MAX
+    cut = built > buildconfig.AWG_MTU_MAX and any(num(k) for k in buildconfig.AWG_JUNK)
+    return {
+        "awg": buildconfig.is_awg(conf),
+        "endpoint": peer.get("endpoint", ""),
+        "address": buildconfig.split_list(iface.get("address", "")),
+        "dns": buildconfig.split_list(iface.get("dns", "")),
+        "allowed": buildconfig.split_list(peer.get("allowedips", "")),
+        "keepalive": peer.get("persistentkeepalive", ""),
+        "mtu": buildconfig.AWG_MTU_MAX if cut else built,
+        "mtu_file": mtu,
+        "cut": cut,
+        # HeaderProtectionKey (AWG 3.x) — ключ, как PrivateKey: не отдаём.
+        "mask": [[spelled.get(k, k), iface[k]] for k in buildconfig.AWG_KEYS
+                 if k in iface and k not in buildconfig.AWG3_STR],
+        "problem": buildconfig.check_conf_text(text) or "",
+    }
 
 
 def _rules_from_file(text):
@@ -757,6 +829,17 @@ def _hide_on_close(window, api):
     window.native.FormClosing += closing
 
 
+def _listen_drop(window, api):
+    """Перетаскивание .conf на окно. Подписка — из Python: только его
+    обработчик получает полный путь файла. Оверлей и dragover страница
+    держит сама (js/sheets.js)."""
+    try:
+        from webview.dom import DOMEventHandler
+        window.dom.document.events.drop += DOMEventHandler(api._drop, prevent_default=True)
+    except Exception as exc:                               # noqa: BLE001
+        api._log(f"перетаскивание недоступно: {exc}")
+
+
 def _restore(window):
     """Свёрнутое — развернуть. SW_RESTORE, а не restore() pywebview: тот
     ставит Normal и уменьшил бы окно, развёрнутое до сворачивания на весь экран."""
@@ -818,6 +901,7 @@ def open_window(resident=False, hidden=False):
         background_color="#101012")
     holder["window"].events.shown += lambda: _dark_title(holder.get("window"))
     holder["window"].events.before_show += lambda window: _park(window, api)
+    holder["window"].events.loaded += lambda window: _listen_drop(window, api)
     if resident:
         holder["window"].events.before_show += lambda window: _hide_on_close(window, api)
         # Слушаем до webview.start: сигнал, пришедший, пока WebView2 ещё

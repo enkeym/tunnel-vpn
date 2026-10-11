@@ -39,6 +39,75 @@ def test_вопрос_о_месте_и_замена_без_повторного_
                         "place": "replace"})]
 
 
+def test_брошенный_conf_идёт_службе_как_добавление(monkeypatch, tmp_path):
+    conf, txt = tmp_path / "office-2.conf", tmp_path / "notes.txt"
+    conf.write_text(WG, encoding="utf-8")
+    txt.write_text("x", encoding="utf-8")
+    api, admin, shown = _api(monkeypatch, [])
+    files = [{"name": "notes.txt", "pywebviewFullPath": str(txt)},
+             {"name": "office-2.conf", "pywebviewFullPath": str(conf)}]
+
+    api._drop({"type": "drop", "dataTransfer": {"files": files}})
+
+    # Место выбирает служба — как у «Добавить конфиг…» без туннеля.
+    assert admin == [("add-config", {"name": "office-2", "text": WG, "tunnel": "", "place": ""})]
+    assert "failed" not in [fn for fn, _ in shown]
+
+
+def test_брошенный_не_conf_объясняется_и_не_шлётся(monkeypatch, tmp_path):
+    api, admin, shown = _api(monkeypatch, [])
+
+    # Без pywebviewFullPath — WebView2 пути не отдал.
+    api._drop({"type": "drop", "dataTransfer": {"files": [{"name": "a.conf"}]}})
+
+    assert admin == []
+    assert shown == [("failed", "Нужен файл .conf WireGuard или AmneziaWG")]
+
+
+AWG = ("[Interface]\nPrivateKey = PRIV0secret=\nAddress = 10.8.0.2/32, fd00::2/128\n"
+       "DNS = 10.1.1.5\nMTU = 1420\nJc = 4\nS1 = 15\nH1 = 1-5\nHeaderProtectionKey = HPK0secret=\n\n"
+       "[Peer]\nPublicKey = PUB0key=\nPresharedKey = PSK0secret=\n"
+       "AllowedIPs = 0.0.0.0/0\nEndpoint = vpn.example.net:51820\nPersistentKeepalive = 25\n")
+
+
+def test_подробности_без_ключей_и_с_mtu_сборки(monkeypatch):
+    api, admin, _ = _api(monkeypatch, [{"ok": True, "text": AWG}])
+
+    got = api.send("conf_details", {"tunnel": "home", "name": "nl-1"})
+
+    assert admin == [("read-config", {"tunnel": "home", "name": "nl-1"})]
+    assert "secret" not in str(got) and "PUB0key" not in str(got)
+    assert got["ok"] and got["awg"] and got["path"].endswith("nl-1.conf")
+    assert got["address"] == ["10.8.0.2/32", "fd00::2/128"]
+    assert (got["endpoint"], got["dns"], got["allowed"], got["keepalive"]) == (
+        "vpn.example.net:51820", ["10.1.1.5"], ["0.0.0.0/0"], "25")
+    # AWG с junk: служба соберёт с 1280, а не с 1420 из файла.
+    assert (got["mtu"], got["mtu_file"], got["cut"]) == (1280, 1420, True)
+    # Имена полей маскировки — как в файле.
+    assert got["mask"] == [["Jc", "4"], ["S1", "15"], ["H1", "1-5"]]
+    assert got["problem"] == ""
+
+
+def test_подробности_wg_без_mtu_и_с_ошибкой_сборки(monkeypatch):
+    api, _, _ = _api(monkeypatch, [{"ok": True, "text": WG}])
+
+    got = api.send("conf_details", {"tunnel": "work", "name": "office"})
+
+    assert not got["awg"] and got["mask"] == []
+    assert (got["mtu"], got["mtu_file"], got["cut"]) == (1280, None, False)
+    assert "PrivateKey" in got["problem"]
+
+
+def test_подробности_отказ_прав_возвращается_ответом(monkeypatch):
+    api, _, shown = _api(monkeypatch, [{"ok": False, "error": "отменено"}])
+
+    got = api.send("conf_details", {"tunnel": "home", "name": "nl-1"})
+
+    # Ошибку показывает страница по ответу — без второго тоста через failed.
+    assert got == {"ok": False, "error": "отменено"}
+    assert shown == []
+
+
 def test_ответ_на_вопрос_без_вопроса_ничего_не_шлёт(monkeypatch):
     api, admin, _ = _api(monkeypatch, [])
 
