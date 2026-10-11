@@ -91,6 +91,19 @@ tunnel, so the agent's reply does not reach the API before the link is back. Wai
 route and a non-403 answer from `api.anthropic.com`. Exit 1 — the link did not return; returning it is
 `guard.ps1`'s job.
 
+## Service by hand
+
+What pytest cannot reach and what drops the link: the user runs it, the agent hands over these steps. The
+journal is `%ProgramData%\TunnelVPN\state\logs\service.log` (window → «Журнал»). Main tunnel = the one in «основной».
+
+| Change | Steps | Expect |
+| --- | --- | --- |
+| Start and ⏻ | «Выключить», «Включить»; ⏻ of a tunnel on the live VPN | «→ туннель поднят за» ≤ 2,3 с; ⏻ applies in under a second |
+| Main `.conf` edited live | edit the active `.conf` of the main (e.g. `MTU`), save | «→ процесс «…» перезапущен»; no «→ выход наружу: direct», sites keep loading |
+| Kill-switch | «Настройки → Защита» on; break the main (wrong `Endpoint` or block its server) | «→ выход наружу: block», header «Интернет закрыт»; sites do not open, tunnels «по списку» and LAN do; switch off → «→ выход наружу: direct» |
+| Spare configs | main with ≥ 2 `.conf`, break the active one | «пробую запасные конфиги», «запасной X.conf отвечает — делаю его активным»; all broken → «запасные конфиги … не отвечают — выход остаётся block/direct», a new round once a minute |
+| IPv6 of the main | main with a v6 `.conf` and one without; switch the config in the window | no full reconnect in the journal, open sites do not drop; without v6 `curl.exe -6 https://api6.ipify.org` fails at once (no hang), sites open over IPv4, the check reads «IPv6 без утечки» |
+
 ## Texts
 
 All user-facing text addresses the user as «вы»: window, tray, toasts, messages from Python, installer.
