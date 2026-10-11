@@ -29,6 +29,9 @@
      статус им не обозначается никогда, иначе спутался бы с --warn. */
   --accent:    #fbb26a;   /*  9.5:1 */
   --on-accent: #0e0e11;
+  /* Метки туннелей в журнале — только чтобы различать туннели: не статусы
+     и не янтарь. */
+  --tun-1: #b69cff; --tun-2: #f68fd9; --tun-3: #8fa8ff; --tun-4: #4fd8d0; --tun-5: #c7e46a;
   --scrim:     color-mix(in srgb, var(--black) 58%, transparent);
   --glass:     color-mix(in srgb, var(--raised) 86%, transparent);
 
@@ -492,6 +495,68 @@ body.kbd :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
 .rules-prob .ic { margin-top: 2px; }
 .rules-prob .val { color: var(--text); }
 .rules-line { color: var(--dim); white-space: nowrap; }
+
+/* ------------------------------------------------------------------ журнал */
+#pane-log { container: log / inline-size;
+            display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--sp-3) var(--sp-4) var(--sp-4); }
+@container log (max-width: 760px) {
+  .log-copy { width: var(--hit-s); padding: 0; }
+  .log-copy .lbl { display: none; }
+}
+.log-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.log-bar .grow { flex: 1; }
+.log-search {
+  display: flex; align-items: center; gap: var(--sp-2); flex: 1 1 220px; max-width: 360px;
+  height: var(--hit); padding: 0 var(--sp-2); border-radius: var(--r-s); color: var(--dim);
+  background: var(--field); border: 1px solid var(--line-strong);
+  transition: border-color var(--t-fast) var(--ease);
+}
+.log-search:focus-within { border-color: color-mix(in srgb, var(--white) 32%, transparent); }
+.log-search input { flex: 1; min-width: 0; padding: 0; border: 0; outline: none; background: none;
+                    color: var(--text); font: inherit; font-size: var(--fs-m); }
+.log-hits { flex: none; font-size: var(--fs-s); white-space: nowrap; }
+.log-tuns { align-self: flex-start; flex-wrap: wrap; max-width: 100%; }
+.log-tuns:empty { display: none; }
+.log-tuns > button { display: inline-flex; align-items: center; gap: 6px; max-width: 180px; }
+.log-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--tc, var(--dim)); }
+.log-tz { color: var(--dim); font-size: var(--fs-s); }
+
+.log-body { position: relative; flex: 1; min-height: 0; display: grid; overflow: hidden;
+            background: var(--field); border: 1px solid var(--line); border-radius: var(--r-m); }
+.log-lines { grid-area: 1 / 1; min-height: 0; padding: var(--sp-2) 0;
+             font: var(--fs-s)/1.6 var(--mono); -webkit-user-select: text; user-select: text; }
+/* 50 строк по ~19px; auto — после первой отрисовки браузер помнит настоящую высоту. */
+.log-chunk { content-visibility: auto; contain-intrinsic-size: auto 960px; }
+.ln { padding: 0 var(--sp-3); white-space: pre-wrap; overflow-wrap: anywhere; }
+.ln > span + span { margin-left: 7px; }
+.ltime, .llvl { color: var(--dim); }
+.lid { color: var(--dim); opacity: .6; }
+.ln.err { background: color-mix(in srgb, var(--err) 8%, transparent); }
+.ln.err :is(.llvl, .lmsg) { color: var(--err); }
+.ln.err .llvl { font-weight: 700; }
+.ln.warn :is(.llvl, .lmsg) { color: var(--warn); }
+.ln.head { color: var(--dim); font-weight: 600; }
+.ltun {
+  /* По верху строки и ниже её высоты: пилюля не раздвигает строку. */
+  display: inline-block; max-width: 16ch; padding: 0 6px; margin-top: 1px; vertical-align: top;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  border-radius: var(--r-pill); font: 600 var(--fs-xs)/15px var(--sans); color: var(--tc, var(--dim));
+  background: color-mix(in srgb, var(--tc, var(--dim)) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tc, var(--dim)) 40%, transparent);
+}
+.ln mark { color: var(--text); background: color-mix(in srgb, var(--white) 24%, transparent); border-radius: 2px; }
+.log-empty { grid-area: 1 / 1; place-self: center; display: grid; justify-items: center; gap: var(--sp-3);
+             padding: var(--sp-6); color: var(--dim); font-size: var(--fs-m); text-align: center; }
+.log-empty p { margin: 0; }
+.log-fresh {
+  position: absolute; left: 0; right: 0; bottom: var(--sp-3); width: max-content; margin: 0 auto;
+  display: inline-flex; align-items: center; gap: var(--sp-1); height: var(--hit-s); padding: 0 var(--sp-3);
+  border-radius: var(--r-pill); background: var(--raised); border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow-pop); font-size: var(--fs-s); font-weight: 500;
+  animation: rise-in var(--t-mid) var(--ease);
+}
+.log-fresh:hover { background: var(--hover); }
+.log-fresh .ic { width: var(--ic-s); height: var(--ic-s); }
 
 /* Перетаскивание .conf: поверх всего, кроме подсказки и уведомлений. */
 .drop {
