@@ -6,6 +6,7 @@
 # Готовые файлы лежат в артефактах прогона:
 #   TunnelVPN-Portable.exe   портативная версия, один файл
 #   TunnelVPN-setup.exe      установщик (служба, ярлыки, автозапуск)
+#   SHA256SUMS.txt           контрольные суммы обоих exe
 
 name: build
 
@@ -79,6 +80,32 @@ jobs:
         shell: pwsh
         run: choco install innosetup --no-progress -y
 
+      # Подпись — только если в настройках репозитория заданы секреты
+      # SIGN_PFX_BASE64 (.pfx в base64) и SIGN_PASSWORD. Без них сборка идёт
+      # без подписи. build.ps1 берёт сертификат из хранилища по отпечатку:
+      # пароль дальше этого шага не уходит.
+      - name: Сертификат подписи
+        shell: pwsh
+        env:
+          SIGN_PFX_BASE64: ${{ secrets.SIGN_PFX_BASE64 }}
+          SIGN_PASSWORD: ${{ secrets.SIGN_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:SIGN_PFX_BASE64) {
+            Write-Host 'секрета SIGN_PFX_BASE64 нет — собираю без подписи'
+            exit 0
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP 'sign.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGN_PFX_BASE64))
+          try {
+            $pass = ConvertTo-SecureString $env:SIGN_PASSWORD -AsPlainText -Force
+            $cert = Import-PfxCertificate -FilePath $pfx -Password $pass `
+              -CertStoreLocation Cert:\CurrentUser\My
+          } finally {
+            Remove-Item $pfx -Force
+          }
+          "TVPN_SIGN_SHA1=$($cert.Thumbprint)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Сборка
         shell: pwsh
         run: powershell -ExecutionPolicy Bypass -File installer\build.ps1
@@ -94,7 +121,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: TunnelVPN-setup
-          path: installer/Output/*.exe
+          path: |
+            installer/Output/*.exe
+            installer/Output/SHA256SUMS.txt
           if-no-files-found: error
 
       # Собранное без установки — на случай, если портативный exe не подойдёт
@@ -112,3 +141,4 @@ jobs:
           files: |
             dist/TunnelVPN-Portable.exe
             installer/Output/*.exe
+            installer/Output/SHA256SUMS.txt

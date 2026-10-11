@@ -19,6 +19,32 @@ $Version = (Get-Content (Join-Path $Root 'VERSION') -Raw).Trim()
 
 Write-Host "-> TunnelVPN $Version, корень: $Root"
 
+# --- Подпись кода: только при заданном сертификате, иначе сборка та же, что
+# всегда, без подписи. TVPN_SIGN_SHA1 — отпечаток сертификата в хранилище
+# текущего пользователя или машины: так работают и токен с ключом, и .pfx,
+# который CI импортирует из секрета (.github/workflows/build.yml), а пароль не
+# попадает ни в командную строку, ни в журнал ISCC.
+$SignSha1 = "$env:TVPN_SIGN_SHA1".Replace(' ', '')
+$SignTool = $null
+if ($SignSha1) {
+    if ($SignSha1 -notmatch '^[0-9A-Fa-f]{40}$') { throw "TVPN_SIGN_SHA1: не отпечаток SHA-1: $SignSha1" }
+    # signtool из Windows SDK, самый свежий: на раннере GitHub SDK уже стоит.
+    $SignTool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" `
+        -ErrorAction SilentlyContinue | Sort-Object FullName -Descending |
+        Select-Object -First 1 -ExpandProperty FullName
+    if (-not $SignTool) { throw 'задан TVPN_SIGN_SHA1, но нет signtool.exe (Windows SDK)' }
+    Write-Host "-> подпись: $SignTool, сертификат $SignSha1"
+}
+$Timestamp = 'http://timestamp.digicert.com'
+# Одна команда на exe и на установщик; ISCC подставляет файл вместо $f.
+$SignArgs = "sign /sha1 $SignSha1 /fd SHA256 /tr $Timestamp /td SHA256"
+
+# Наши exe, не сторонние: sing-box и wintun подписывают (или нет) их авторы.
+function Sign-Files([string[]]$Files) {
+    & $SignTool ($SignArgs -split ' ') @Files
+    if ($LASTEXITCODE -ne 0) { throw "signtool вернул $LASTEXITCODE" }
+}
+
 # --- Бинарники должны быть на месте ДО сборки: PyInstaller кладёт их внутрь
 # сборки, и без них установщик соберётся, а приложение работать не будет.
 foreach ($f in 'sing-box.exe', 'wintun.dll') {
@@ -96,6 +122,13 @@ try {
     Copy-Item (Join-Path $Bin 'sing-box.exe') $Dist -Force
     Copy-Item (Join-Path $Bin 'wintun.dll') $Dist -Force
 
+    # До дымовых проверок: они гоняют уже подписанные exe.
+    if ($SignTool) {
+        Write-Host '-> подписываю exe...'
+        Sign-Files (Join-Path $Dist 'tunnelvpn.exe'), (Join-Path $Dist 'TunnelVPN-Tray.exe'),
+                   (Join-Path $Root 'dist\TunnelVPN-Portable.exe')
+    }
+
     # Дымовая проверка: установщик зовёт tunnelvpn.exe для службы, и если под
     # этим именем окажется не CLI (так было, когда трей назывался DualVPN.exe
     # и ложился поверх), установка зависает намертво. Лучше упасть здесь.
@@ -150,6 +183,24 @@ if (-not $Iscc) {
     exit 0
 }
 
-& $Iscc "/DMyVersion=$Version" (Join-Path $Inst 'tunnelvpn.iss')
+$IsccArgs = @("/DMyVersion=$Version")
+if ($SignTool) {
+    # Inno подписывает сам setup и деинсталлятор внутри него (SignTool=tvpn в
+    # tunnelvpn.iss). $q — кавычка, $f — подписываемый файл.
+    $IsccArgs += '/DSign'
+    $IsccArgs += '/Stvpn=$q' + $SignTool + '$q ' + $SignArgs + ' $f'
+}
+& $Iscc @IsccArgs (Join-Path $Inst 'tunnelvpn.iss')
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup вернул $LASTEXITCODE" }
+$Setup = Join-Path $Inst "Output\TunnelVPN-$Version-setup.exe"
 Write-Host "-> готово: installer\Output\TunnelVPN-$Version-setup.exe"
+
+# --- Контрольные суммы к релизу, в формате sha256sum: проверить скачанное —
+# «sha256sum -c SHA256SUMS.txt» или Get-FileHash.
+$Sums = foreach ($f in $Setup, $Portable) {
+    if (Test-Path $f) {
+        '{0}  {1}' -f (Get-FileHash $f -Algorithm SHA256).Hash.ToLower(), (Split-Path $f -Leaf)
+    }
+}
+$Sums | Set-Content (Join-Path $Inst 'Output\SHA256SUMS.txt') -Encoding Ascii
+Write-Host '-> контрольные суммы: installer\Output\SHA256SUMS.txt'

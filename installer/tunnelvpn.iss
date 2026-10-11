@@ -59,6 +59,11 @@ MinVersion=10.0.17763
 ; без него сбой на чужой машине не разобрать. Путь — в сообщении об ошибке.
 SetupLogging=yes
 UninstallLogging=yes
+#ifdef Sign
+; Подпись setup и деинсталлятора: команду tvpn задаёт build.ps1 (/Stvpn=…),
+; только когда есть сертификат (TVPN_SIGN_SHA1). Без /DSign — без подписи.
+SignTool=tvpn
+#endif
 
 [Languages]
 Name: "ru"; MessagesFile: "compiler:Languages\Russian.isl"
