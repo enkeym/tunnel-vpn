@@ -855,8 +855,9 @@ def test_сменился_rule_set_пишется_на_лету(live):
     assert tun.proc is main and not main.terminated and seen["started"] == started
 
 
-def test_отвергнутый_rule_set_нужен_полный_перезапуск(live, monkeypatch):
-    """sing-box молча держит старые правила — отказ только в его журнале."""
+def test_отвергнутый_rule_set_зовёт_on_reject(live, monkeypatch):
+    """sing-box молча держит старые правила — отказ только в его журнале.
+    Журнал смотрит фоновый поток, отказ уходит службе на полный перезапуск."""
     tun, seen = live
 
     def sleep(_s):
@@ -865,9 +866,26 @@ def test_отвергнутый_rule_set_нужен_полный_перезап�
 
     monkeypatch.setattr(tunnel.time, "sleep", sleep)
     seen["sets"] = {"names-work": buildconfig.rule_set({"domain_suffix": ["x.example"]})}
+    rejected = threading.Event()
 
-    assert tun.reload_sides() is None
+    assert tun.reload_sides(on_reject=rejected.set) == []
+
+    assert rejected.wait(2)
     assert any("не принял rule-set" in line for line in seen["log"])
+
+
+def test_правка_rule_set_не_ждёт_sing_box(live, monkeypatch):
+    """Сон RULE_SET_WAIT держал каждую правку и ⏻; принятый rule-set колбэк не зовёт."""
+    tun, seen = live
+    monkeypatch.setattr(tunnel, "RULE_SET_WAIT", 0.5)
+    seen["sets"] = {"rules-work": buildconfig.rule_set({"ip_cidr": ["10.30.0.0/16"]})}
+    rejected = threading.Event()
+
+    began = time.time()
+    assert tun.reload_sides(on_reject=rejected.set) == []
+
+    assert time.time() - began < 0.4
+    assert not rejected.wait(1)
 
 
 def test_выключенный_туннель_пустой_rule_set_потом_стоп_бокового(live, monkeypatch):
@@ -875,8 +893,8 @@ def test_выключенный_туннель_пустой_rule_set_потом_
     main, work = tun.proc, _side(tun, "work").proc
     alive_at_write = []
     write = tun._write_sets
-    monkeypatch.setattr(tun, "_write_sets", lambda sets: (
-        alive_at_write.append(not work.terminated), write(sets))[1])
+    monkeypatch.setattr(tun, "_write_sets", lambda sets, on_reject=None: (
+        alive_at_write.append(not work.terminated), write(sets, on_reject))[1])
     _enable("work", False)
     seen["sets"] = {"rules-work": buildconfig.rule_set(None)}
 
@@ -896,8 +914,8 @@ def test_включённый_туннель_сначала_боковой_по�
     tun.reload_sides()
     started_at_write = []
     write = tun._write_sets
-    monkeypatch.setattr(tun, "_write_sets", lambda sets: (
-        started_at_write.append(seen["started"][-1]), write(sets))[1])
+    monkeypatch.setattr(tun, "_write_sets", lambda sets, on_reject=None: (
+        started_at_write.append(seen["started"][-1]), write(sets, on_reject))[1])
     _enable("work", True)
     rs = buildconfig.rule_set({"ip_cidr": ["10.10.0.0/16"]})
     seen["sets"] = {"rules-work": rs}

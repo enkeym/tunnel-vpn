@@ -273,6 +273,9 @@ class Prober:
         # Служба переподключила туннель: цикл мог не застать его упавшим между
         # двумя кругами, и тогда остались бы ответы прошлой сети.
         self._remeasure = threading.Event()
+        # Будит цикл run до конца FAST_EVERY: после включения или правки
+        # сетевая проверка иначе стартовала до двух секунд спустя.
+        self._wake = threading.Event()
         # Номер сетевой проверки. check_seq — последней начатой, seq в
         # checks[id] — последней, в которой этот туннель уже проверен: по ним
         # трей и окно красят кружок каждого туннеля, не дожидаясь остальных.
@@ -282,6 +285,16 @@ class Prober:
         """Сетевая проверка, как на подъёме туннеля, даже если цикл не
         видел его падения. Увидел — проверка всё равно одна."""
         self._remeasure.set()
+        self._wake.set()
+
+    def wake(self):
+        """Круг цикла run сейчас, а не по истечении FAST_EVERY."""
+        self._wake.set()
+
+    def stop(self):
+        """Остановка цикла run без досыпания текущего круга."""
+        self.stop_event.set()
+        self._wake.set()
 
     def set(self, **kw):
         with self.lock:
@@ -714,7 +727,8 @@ class Prober:
                 threading.Thread(target=self._slow_guarded,
                                  daemon=True).start()
             self.write_status()
-            self.stop_event.wait(FAST_EVERY)
+            self._wake.wait(FAST_EVERY)
+            self._wake.clear()
 
     def _forget_checks(self):
         """Туннель опущен: итоги прошлой сети не в счёт, номера проверок остаются."""

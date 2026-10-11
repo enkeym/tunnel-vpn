@@ -729,8 +729,9 @@ def _reload(monkeypatch, core, result):
     result None — live_plan тоже None: на лету не выйдет."""
     seen = []
 
-    def reload_sides(plan=None):
+    def reload_sides(plan=None, on_reject=None):
         seen.append({"busy": core.busy, "locked": core.lock.locked(), "plan": plan})
+        core.tunnel.on_reject = on_reject
         return result() if callable(result) else result
 
     monkeypatch.setattr(core.tunnel, "live_plan",
@@ -788,6 +789,41 @@ def test_ошибка_перезапуска_туннеля_в_ответе_и_�
     assert reply["ok"] is False and reply["applied"] == "sides"
     assert reply["error"] == "«Работа»: не удалось разрешить x"
     assert _said(core, "!! «Работа»: не удалось разрешить x")
+
+
+def test_отвергнутый_rule_set_перезапускает_vpn(monkeypatch):
+    """sing-box не принял правила после ответа правки — полный перезапуск под замком."""
+    core = _core(monkeypatch)
+    core.tunnel.proc = _Proc()
+    _reload(monkeypatch, core, [])
+    assert core._apply()["applied"] == "sides"
+    first = core.tunnel.on_reject
+    core._apply()                     # вторая правка файл уже не переписала
+    locked = []
+    monkeypatch.setattr(core, "_start_locked",
+                        lambda: locked.append(core.lock.locked()) or {"ok": True})
+
+    first()
+
+    assert locked == [True] and not core.lock.locked()
+    assert _said(core, "не принял правила на лету")
+
+
+def test_отказ_rule_set_после_перезапуска_vpn_уже_не_нужен(monkeypatch):
+    """Человек выключил и включил: новый основной прочёл rule-set сам."""
+    core = _core(monkeypatch)
+    core.tunnel.proc = _Proc()
+    _reload(monkeypatch, core, [])
+    core._apply()
+    stale = core.tunnel.on_reject
+    core.tunnel.proc = _Proc()
+    starts = []
+    monkeypatch.setattr(core, "_start_locked", lambda: starts.append(1) or {"ok": True})
+
+    stale()
+
+    assert starts == []
+    assert not _said(core, "не принял правила на лету")
 
 
 def test_сменился_основной_конфиг_полный_перезапуск(monkeypatch):

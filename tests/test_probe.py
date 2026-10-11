@@ -52,7 +52,7 @@ def test_адрес_провайдера_на_запасном_выходе_не
 
 
 def _stop_loop(p, loop):
-    p.stop_event.set()
+    p.stop()
     loop.join(2)
     # Поток проверки не должен пережить снятие подмен monkeypatch.
     _wait(lambda: not p.slow_busy.is_set())
@@ -92,6 +92,26 @@ def test_remeasure_проверяет_заново_без_видимого_па�
         assert calls == [1, 1]
     finally:
         _stop_loop(p, loop)
+
+
+def test_remeasure_будит_цикл_не_дожидаясь_круга(monkeypatch):
+    """После включения и правки проверка стартовала спустя до FAST_EVERY."""
+    net = {"up": True}
+    calls = []
+    p, loop = _run_loop(monkeypatch, net, lambda self: calls.append(1))
+    try:
+        assert _wait(lambda: calls)
+        monkeypatch.setattr(probe, "FAST_EVERY", 30)
+        p.wake()                      # круг уже спит на старом FAST_EVERY
+        time.sleep(0.1)
+
+        began = time.monotonic()
+        p.remeasure()
+        assert _wait(lambda: len(calls) == 2, timeout=1)
+        assert time.monotonic() - began < 0.5
+    finally:
+        _stop_loop(p, loop)
+    assert not loop.is_alive()        # stop будит спящий круг
 
 
 def test_проверка_на_подъёме_при_занятой_идёт_после_её_конца(monkeypatch):

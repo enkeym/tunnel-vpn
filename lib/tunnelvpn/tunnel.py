@@ -42,7 +42,8 @@ _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 SIDE_WAIT = 15
 
 # Сколько ждём, пока sing-box перечитает rule-set: на 1.14.2 — до 1,5 с. Успех
-# он не пишет, только отказ («reload rule-set <тег>: …»), — ждём всё время.
+# он не пишет, только отказ («reload rule-set <тег>: …»), — журнал смотрим по
+# истечении всего срока, в фоне (_write_sets).
 RULE_SET_WAIT = 2
 
 # Журнал временного процесса проверки конфига (Tunnel.trial): trial-<id туннеля>,
@@ -799,18 +800,21 @@ class Tunnel:
             return None
         return running, data, confs, config, sides, sets, built
 
-    def reload_sides(self, plan=None):
+    def reload_sides(self, plan=None, on_reject=None):
         """Правка конфигов на поднятом VPN без падения tun. [(процесс, ошибка
         или '')] затронутых боковых или None, если без полного перезапуска не
         обойтись. plan — готовый live_plan, без него собирается здесь.
+        on_reject — что делать, если sing-box позже отвергнет новые rule-set
+        (зовётся из фонового потока, см. _write_sets).
 
         На лету: смена .conf (перезапуск одного бокового), вкл/выкл туннеля
         «по списку», списки и смена основного — файлы rule-set, NRPT и выбор
         selector out. Полный нужен, когда новая сборка меняет сам основной
         конфиг: новый туннель (новый socks), адрес DNS туннеля, MTU tun
         (наименьший среди туннелей), v6-адрес конфига основного (его вкл/выкл —
-        на лету, rule-set no-v6), — или sing-box отверг
-        новый rule-set. Пока лежит процесс основного туннеля, выход идёт напрямую.
+        на лету, rule-set no-v6), — или rule-set не записать. Отказ
+        sing-box принять rule-set виден только через RULE_SET_WAIT — его встречает on_reject.
+        Пока лежит процесс основного туннеля, выход идёт напрямую.
 
         Порядок: включённый — старт бокового и socks до rule-set, иначе первые
         соединения получили бы отказ; выключенный — пустой rule-set до остановки.
@@ -843,7 +847,7 @@ class Tunnel:
             order.append(side)
         self.sides = order
         names = self._corp_domains()
-        if not self._write_sets(sets):
+        if not self._write_sets(sets, on_reject):
             return None
         self._renew_nrpt(names)
         # Выход — до остановки: прежний основной мог стать выключенным «по списку».
@@ -863,10 +867,12 @@ class Tunnel:
         self.log(f"→ туннель «{side.title}» включён — запускаю его процесс")
         return self._start_side(side)
 
-    def _write_sets(self, sets):
-        """Пишет сменившиеся rule-set и ждёт, пока sing-box их перечитает.
-        False — не записались или sing-box отверг их: ошибка только в его журнале,
-        а процесс молча держит старые правила."""
+    def _write_sets(self, sets, on_reject=None):
+        """Пишет сменившиеся rule-set. False — не записались.
+
+        Отказ sing-box — только в его журнале, а процесс молча держит старые
+        правила. Журнал смотрит фоновый поток через RULE_SET_WAIT и на отказ
+        зовёт on_reject: сон здесь держал бы каждую правку и ⏻ две секунды."""
         changed = [tag for tag, rs in sets.items()
                    if json.loads(json.dumps(rs)) != buildconfig.read_json(
                        buildconfig.rule_set_json(tag))]
@@ -884,12 +890,21 @@ class Tunnel:
             self.log(f"!! rule-set не записать: {exc}")
             return False
         self.log(f"→ правила туннелей на лету: {', '.join(changed)}")
+        threading.Thread(target=self._watch_sets,
+                         args=(log_path, at, changed, on_reject),
+                         daemon=True).start()
+        return True
+
+    def _watch_sets(self, log_path, at, changed, on_reject):
+        """Журнал основного с места at через RULE_SET_WAIT: отказ перечитать
+        changed — в журнал службы и on_reject."""
         time.sleep(RULE_SET_WAIT)
         bad = [line for line in _tail(log_path, at)
                if "reload rule-set" in line and any(tag in line for tag in changed)]
         for line in bad:
             self.log(f"!! sing-box не принял rule-set: {line.strip()}")
-        return not bad
+        if bad and on_reject is not None:
+            on_reject()
 
     def _renew_nrpt(self, before):
         """Правило NRPT — по доменам теперь, если они сменились с before."""

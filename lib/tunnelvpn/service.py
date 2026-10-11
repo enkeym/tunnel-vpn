@@ -334,7 +334,7 @@ class Core:
         после перезагрузки половина интернета смотрела бы в мёртвый адаптер.
         """
         self.log("=== служба останавливается ===")
-        self.prober.stop_event.set()
+        self.prober.stop()
         self.server.stop_event.set()
         # Идущее включение бросает на следующем шаге, а не держит остановку до 30 с.
         self.tunnel.cancel.set()
@@ -919,8 +919,9 @@ class Core:
             # Круг сторожа, начатый до правки, увидел бы перезапускаемый
             # процесс лежащим и перезапустил бы его сам.
             self._human += 1
-            main = self.tunnel.main_id
-            done = self.tunnel.reload_sides(plan) if plan else None
+            main, proc = self.tunnel.main_id, self.tunnel.proc
+            done = (self.tunnel.reload_sides(
+                plan, lambda: self._sets_rejected(proc)) if plan else None)
             if done is not None:
                 errs = [err for _, err in done if err]
                 for side, err in done:
@@ -937,6 +938,27 @@ class Core:
             self.log("→ сменилось то, что держит основной процесс, — перезапускаю VPN")
             self._stop_locked()
             return {**self._start_locked(), "applied": "full"}
+        finally:
+            self.lock.release()
+
+    def _sets_rejected(self, proc):
+        """sing-box не принял rule-set правки и держит старые правила
+        (Tunnel._watch_sets, фоновый поток) — полный перезапуск под замком, как
+        в _apply. Только пока работает тот же процесс основного proc: новый (stop и
+        start после правки) прочёл rule-set заново. По _human не сверяем: вторая
+        правка с теми же списками файл не перепишет (совпал с диском), и отказ
+        первой потерялся бы со старыми правилами в работе."""
+        if not self.lock.acquire(timeout=APPLY_WAIT):
+            self.log("!! правила туннелей не приняты, а замок для перезапуска "
+                     f"занят: {self.busy or 'операция'}")
+            return
+        try:
+            if self.tunnel.proc is not proc or self.tunnel.uplink is None:
+                return
+            self._human += 1
+            self.log("→ sing-box не принял правила на лету — перезапускаю VPN")
+            self._stop_locked()
+            self._start_locked()
         finally:
             self.lock.release()
 
@@ -1326,6 +1348,8 @@ class Core:
         """
         try:
             self.prober.probe_fast()
+            # Цикл — сразу: поднятый туннель ждёт от него сетевую проверку.
+            self.prober.wake()
         except Exception:                                  # noqa: BLE001
             pass                                           # догонит цикл Prober
 
