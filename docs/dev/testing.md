@@ -64,6 +64,33 @@ into `%USERPROFILE%\.windows-mcp\config.toml`; then
 `claude mcp add -s local --transport http windows-mcp http://127.0.0.1:8790/mcp --header "Authorization: Bearer <key>"`
 — `/mcp` without the slash, `/mcp/` answers 307.
 
+## Scenarios that drop the tunnel
+
+The agent's link runs through the tunnel. Install, uninstall and update scenarios that drop it are checked by
+the user by hand; the agent hands over a list of steps. When such a run is still needed with an agent attached
+(the user drives, the agent watches), two scripts keep the link alive. Both are UTF-8 with BOM, like `build.ps1`.
+
+`installer/dev/guard.ps1` — returns the tunnel while the wizard waits for a click without it (error pages,
+⚠ on «Готово», the gap between uninstall and a new install).
+
+1. Copy the script, the setup and `dist\TunnelVPN` (the bridge) to a local `%TEMP%` folder: nothing runs from
+   `\\wsl.localhost`, and the installer kills `tunnelvpn.exe` in the install folder.
+2. Start it elevated and hidden:
+   `Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','<copy of guard.ps1>','-Work','<folder>','-Setup','<setup.exe>','-Bridge','<copy of dist\TunnelVPN>'`.
+3. Parameters: `-Fast 10` — seconds without the tunnel while the installer is closed or idle (no child
+   processes, CPU time not growing); `-Grace 90` — the wait while the installer is busy; `-Minutes 240` —
+   lifetime; `-ConfBackup <folder>` — copied back into `%ProgramData%\TunnelVPN\conf` when `tunnels.json` is gone.
+4. Order of recovery: service installed → start it and the tunnel; no service → bridge
+   `tunnelvpn.exe service console` from `-Bridge`; neither and the wizard closed → silent install of `-Setup`.
+5. `<Work>\guard.log` — journal, `<Work>\guard.alive` — time of the last loop, `<Work>\shots` — a screenshot
+   every 5 seconds while the tunnel is down. Stop: create `<Work>\stop`.
+
+`installer/dev/wait-link.ps1 [-Drop 30] [-Back 300]` — run in the same message as the click that drops the
+tunnel, so the agent's reply does not reach the API before the link is back. Waits up to `-Drop` seconds for the `0.0.0.0/1` route on
+`tun*` to vanish (it stays → exit 0, the click did not touch the tunnel), then up to `-Back` seconds for the
+route and a non-403 answer from `api.anthropic.com`. Exit 1 — the link did not return; returning it is
+`guard.ps1`'s job.
+
 ## Texts
 
 All user-facing text addresses the user as «вы»: window, tray, toasts, messages from Python, installer.

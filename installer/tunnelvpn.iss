@@ -501,7 +501,10 @@ procedure CreateTasksPage;
 var
   Top: Integer;
 begin
-  TasksPage := CreateCustomPage(wpSelectDir, 'Параметры', 'Что включить вместе с программой');
+  // После wpSelectTasks, хоть она и пропущена: список задач Inno собирает,
+  // проходя её. Раньше WizardIsTaskSelected отвечал «нет» на всё, а
+  // WizardSelectTasks менял пустой список — выбор на странице терялся.
+  TasksPage := CreateCustomPage(wpSelectTasks, 'Параметры', 'Что включить вместе с программой');
   Top := 0;
   AutorunBox := AddTaskOption(Top, 'Запускать значок в трее при входе в Windows',
     'Без запроса прав администратора при каждом входе.');
@@ -771,6 +774,8 @@ begin
     begin
       SetStatus('Включаю VPN обратно…');
       Started := False;
+      // -1 в журнале — start не запускался (тестовый хук), а не «код 0».
+      ResultCode := -1;
 #ifdef TESTHOOKS
       if not TestHook('tunnel') then
 #endif
@@ -1040,7 +1045,8 @@ begin
   Tint(OkDot, '{#ColorOk}');
   OkDot.Visible := False;
   WarnPlate := NewPlate(WizardForm.FinishedPage, WizardForm.FinishedHeadingLabel.Width, '{#ColorWarn}', '⚠',
-    'Обновление установлено, но VPN не включился сам. Откройте {#MyName} и нажмите «Включить» — ' +
+    // Без «обновления»: то же при переустановке и откате, заголовок скажет сам.
+    'VPN не включился сам после установки. Откройте {#MyName} и нажмите «Включить» — ' +
     'если не получится, причина будет в журнале.');
   WarnPlate.Left := WizardForm.FinishedHeadingLabel.Left;
   WarnPlate.Visible := False;
@@ -1189,6 +1195,24 @@ begin
   ParamsLink.Top := ActionPage.SurfaceHeight - ParamsLink.Height;
 end;
 
+// «Далее» под самую длинную подпись: «Переустановить» в стандартную ширину
+// не влезала. Правый край на месте, «Назад» сдвигается вместе с ней.
+procedure FitNextButton;
+var
+  W, Delta: Integer;
+begin
+  with WizardForm do
+  begin
+    W := CalculateButtonWidth(['Переустановить', 'Обновить', 'Откатить', 'Удалить',
+      SetupMessage(msgButtonInstall), SetupMessage(msgButtonNext), SetupMessage(msgButtonFinish)]);
+    Delta := W - NextButton.Width;
+    if Delta <= 0 then
+      Exit;
+    NextButton.SetBounds(NextButton.Left - Delta, NextButton.Top, W, NextButton.Height);
+    BackButton.Left := BackButton.Left - Delta;
+  end;
+end;
+
 procedure InitializeWizard;
 begin
   CreateTasksPage;
@@ -1197,6 +1221,7 @@ begin
   CreateResultControls;
   if RegQueryStringValue(HKLM64, UninstKey, 'UninstallString', OldUninstaller) then
     CreateActionPage;
+  FitNextButton;
 end;
 
 // Данные WebView2 окна (window.py:_storage_path) в %LOCALAPPDATA%\Name.
@@ -1281,6 +1306,8 @@ begin
     PreparingLabel.AdjustHeight;
     PreparingYesRadio.Top := PreparingLabel.Top + PreparingLabel.Height + ScaleY(12);
     PreparingNoRadio.Top := PreparingYesRadio.Top + ScaleY(24);
+    // Перезагрузка — только осознанно: по умолчанию Inno выбирает «сейчас».
+    PreparingNoRadio.Checked := True;
     BackButton.Visible := False;
     if not PrepareRestart then
     begin
