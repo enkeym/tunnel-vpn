@@ -158,8 +158,9 @@ def _fetch_releases():
 
 def check_update(current, fetch=_fetch_releases):
     """Сравнивает версию с релизами Windows на GitHub. Ответ:
-    {state: latest|update|error, latest, url}. Без скачивания: страницу
-    релиза человек открывает сам. Адрес собирается из тега, не из ответа API."""
+    {state: latest|update|error, latest, url, notes}; notes — «Что нового»
+    простым текстом. Скачивает и ставит update.py; адреса и там, и здесь
+    собираются из тега, не из ответа API."""
     try:
         releases = fetch()
     except (OSError, ValueError):
@@ -173,13 +174,34 @@ def check_update(current, fetch=_fetch_releases):
             continue
         key = _version_key(m.group(1))
         if best is None or key > best[0]:
-            best = (key, r["tag_name"])
+            best = (key, r["tag_name"], r.get("body"))
     if best is None:
         return {"state": "error"}
     tag = best[1]
     newer = best[0] > _version_key(current)
     return {"state": "update" if newer else "latest", "latest": tag[1:],
-            "url": f"{REPO_URL}/releases/tag/{tag}"}
+            "url": f"{REPO_URL}/releases/tag/{tag}", "notes": plain_notes(best[2])}
+
+
+NOTES_MAX = 4000
+
+
+def plain_notes(md):
+    """Текст релиза из Markdown — простым текстом для «Что нового»: без
+    заголовочных #, выделений, ссылок-скобок и HTML-комментариев; пункты
+    списка — «•». Окно кладёт его textContent, разметки в нём не бывает."""
+    if not isinstance(md, str):
+        return ""
+    text = re.sub(r"<!--.*?-->", "", md.replace("\r\n", "\n"), flags=re.S)
+    lines = []
+    for line in text.split("\n"):
+        line = re.sub(r"^\s{0,3}#{1,6}\s+", "", line)
+        line = re.sub(r"^(\s*)[-*+]\s+", r"\1• ", line)
+        line = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", line)
+        line = re.sub(r"(\*\*|__|`)", "", line)
+        lines.append(line.rstrip())
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    return text if len(text) <= NOTES_MAX else text[:NOTES_MAX - 1].rstrip() + "…"
 
 
 def repo_url(url):

@@ -78,7 +78,16 @@ def test_доступна_новая_версия_windows():
     r = settings.check_update("0.3.4-beta", _releases("mac-v0.9.0", "v0.3.7-beta", "v0.3.10-beta"))
 
     assert r == {"state": "update", "latest": "0.3.10-beta",
-                 "url": f"{settings.REPO_URL}/releases/tag/v0.3.10-beta"}
+                 "url": f"{settings.REPO_URL}/releases/tag/v0.3.10-beta", "notes": ""}
+
+
+def test_что_нового_простым_текстом():
+    md = ("## Что нового\r\n\r\n<!-- черновик -->\r\n- **Обновление** из окна\r\n"
+          "* ссылка [релиз](https://example.com) и `код`\r\n\r\n\r\n\r\nКонец")
+    assert settings.plain_notes(md) == ("Что нового\n\n• Обновление из окна\n"
+                                        "• ссылка релиз и код\n\nКонец")
+    assert settings.plain_notes(None) == ""
+    assert len(settings.plain_notes("а" * 10000)) == settings.NOTES_MAX
 
 
 def test_последняя_уже_стоит():
