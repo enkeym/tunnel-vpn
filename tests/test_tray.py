@@ -224,10 +224,15 @@ def test_ярлык_без_прав_без_трея_и_задачи_переза
 
 def test_ярлык_без_трея_поднимает_его_задачей_без_uac(monkeypatch):
     sent, elevated = _no_tray_yet(monkeypatch, task=True)
+    # Трей задачи ответил — ярлык поднимает туннель сам; без подмены это
+    # живая служба (на Windows) или pywintypes, которого нет в CI.
+    calls = []
+    monkeypatch.setattr(ipc, "call", lambda op, **kw: calls.append(op) or {"status": {}})
 
     tray.run()
     assert sent == [tray.instance.TRAY_OPEN]
     assert elevated == []
+    assert calls == ["status", "start"]
 
 
 def test_трей_из_задачи_не_ответил_тогда_uac(monkeypatch):
