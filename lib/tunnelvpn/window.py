@@ -139,6 +139,12 @@ class Api:
         # проверка идут из разных потоков, и статус, взятый раньше, не ляжет
         # поверх более свежего.
         self._render_lock = threading.Lock()
+        # ⏻ туннеля: мост зовёт send каждый раз в новом потоке, и запись старого
+        # нажатия могла лечь поверх нового — туннель оставался не таким, как на
+        # кнопке. Страница нумерует нажатия (seq), {id: последний записанный};
+        # сверка и запись — под одним замком.
+        self._flip_lock = threading.Lock()
+        self._flip_seq = {}
         # Файл, про место которого служба спросила (ask): (имя, текст). Ответ
         # человека приходит через place_config — диалог выбора второй раз не нужен.
         self._asked = None
@@ -164,6 +170,9 @@ class Api:
     def _dispatch(self, name, arg):
         if name == "ready":
             self.ready.set()
+            # Перезагруженная страница считает нажатия заново.
+            with self._flip_lock:
+                self._flip_seq.clear()
             self.refresh(full=True)
             self.reveal()
             if not self.hidden:
@@ -214,8 +223,9 @@ class Api:
             # Вкл/выкл туннеля, основного тоже, — без прав, как выбор конфига; на
             # живой VPN переносит тот же _apply, что и сохранение правил. Те же
             # адреса у включённого — служба ничего не записала, замену решает человек.
-            reply = ipc.call("set-enabled", tunnel=arg["tunnel"], on=bool(arg["on"]),
-                             replace=bool(arg.get("replace")))
+            reply = self._flip(arg)
+            if reply is None:
+                return None
             if reply.get("clash"):
                 self.js("askSwap", {"tunnel": arg["tunnel"], "clash": reply["clash"]})
                 return None
@@ -351,6 +361,18 @@ class Api:
             self.js("showAbout")
         elif tid:
             self.js("focusCard", tid)
+
+    def _flip(self, arg):
+        """set-enabled по нажатию ⏻. None — нажатие устарело: по этому туннелю
+        уже записано более позднее, и на VPN его переносит его же _apply."""
+        tid, seq = arg["tunnel"], arg.get("seq")
+        with self._flip_lock:
+            if seq is not None:
+                if seq <= self._flip_seq.get(tid, 0):
+                    return None
+                self._flip_seq[tid] = seq
+            return ipc.call("set-enabled", tunnel=tid, on=bool(arg["on"]),
+                            replace=bool(arg.get("replace")))
 
     @staticmethod
     def _guard(reply):

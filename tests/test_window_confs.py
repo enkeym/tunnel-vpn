@@ -207,6 +207,40 @@ def test_замена_уходит_службе_с_replace(monkeypatch):
     assert calls[0] == ("set-enabled", {"tunnel": "t2", "on": True, "replace": True})
 
 
+def test_опоздавшее_нажатие_не_ложится_поверх_нового(monkeypatch):
+    api, _, shown = _api(monkeypatch, [])
+    calls = []
+    monkeypatch.setattr(ipc, "call", lambda op, **kw: calls.append((op, kw)) or
+                        {"ok": True, "status": {}})
+
+    # Мост отдал второе нажатие раньше первого.
+    api.send("set_enabled", {"tunnel": "work", "on": True, "seq": 2})
+    api.send("set_enabled", {"tunnel": "work", "on": False, "seq": 1})
+    # Счёт у каждого туннеля свой.
+    api.send("set_enabled", {"tunnel": "home", "on": False, "seq": 1})
+
+    sets = [(kw["tunnel"], kw["on"]) for op, kw in calls if op == "set-enabled"]
+    assert sets == [("work", True), ("home", False)]
+    assert "failed" not in [fn for fn, _ in shown]
+
+
+def test_перезагруженная_страница_считает_нажатия_заново(monkeypatch):
+    api, _, _ = _api(monkeypatch, [])
+    calls = []
+    monkeypatch.setattr(ipc, "call", lambda op, **kw: calls.append((op, kw)) or
+                        {"ok": True, "status": {}})
+    monkeypatch.setattr(api, "refresh", lambda full=False: None)
+    monkeypatch.setattr(api, "reveal", lambda: None)
+    api.hidden = True
+
+    api.send("set_enabled", {"tunnel": "work", "on": False, "seq": 5})
+    api.send("ready")
+    api.send("set_enabled", {"tunnel": "work", "on": True, "seq": 1})
+
+    sets = [kw["on"] for op, kw in calls if op == "set-enabled"]
+    assert sets == [False, True]
+
+
 def test_полный_перезапуск_спрашивает_а_после_да_идёт_без_ask(monkeypatch):
     api, _, shown = _api(monkeypatch, [])
     calls = []
