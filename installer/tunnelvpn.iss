@@ -44,6 +44,7 @@
 #define ColorDim "#9a9aa6"
 #define ColorCard "#1c1c1e"
 #define ColorOff "#6b6b76"
+#define ColorOk "#3df5a7"
 #define ColorWarn "#ffd23f"
 #define ColorErr "#ff5c7a"
 ; Прежнее имя проекта: с него переезжают уже установленные копии.
@@ -289,6 +290,13 @@ Type: filesandordirs; Name: "{app}"
 [Code]
 const
   UninstKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{8F3A5C21-4E7B-4D96-9A1F-2C6B8D4E7A31}_is1';
+  WebView2Url = 'https://go.microsoft.com/fwlink/p/?LinkId=2124703';
+  // Туннель после обновления (TunnelRestore): не был включён, включён снова,
+  // поднимает служба сама (автоподключение), сам не поднялся.
+  TunnelNotUp = 0;
+  TunnelBack = 1;
+  TunnelAuto = 2;
+  TunnelLost = 3;
 
 var
   // Меню «уже установлено»; nil — ставим впервые.
@@ -315,6 +323,17 @@ var
   RetryButton, LogButton, CopyButton, ReportButton: TNewButton;
   // Что было до обновления: RestoreAfterUpdate возвращает так же.
   TunnelWasUp, TrayWasRunning: Boolean;
+  // Чем кончилось возвращение туннеля: Tunnel* выше. TunnelLost — код выхода 11.
+  TunnelRestore: Integer;
+  // «Готово» поверх установленной (CreateActionPage): заголовок и текст.
+  UpdatedHeading, FinishedText: String;
+  // ● перед «VPN снова включён» и плашка ⚠, если туннель сам не поднялся.
+  OkDot: TNewStaticText;
+  WarnPlate: TPanel;
+  // Пояснение под прогрессом, пока ставится WebView2.
+  WebView2Note: TNewStaticText;
+  // WebView2 так и не поставился — код выхода 12.
+  WebView2Missing: Boolean;
   // Что не вышло со службой; '' — работает. Не пусто — код выхода 10.
   ServiceError: String;
   // «Параметры»: задачи с пояснениями вместо стандартной страницы Inno.
@@ -384,30 +403,49 @@ begin
   AddOptionNote(TasksPage, Result, Note, Top);
 end;
 
-// Плашка, как карточка окна: фон --card и полоса --off слева. Возвращает её низ.
-function AddPlate(Page: TWizardPage; const Text: String): Integer;
+// Плашка, как карточка окна: фон --card и полоса цвета BarColor слева. Icon
+// не пустой — значок того же цвета перед текстом.
+function NewPlate(Parent: TWinControl; Width: Integer; const BarColor, Icon, Text: String): TPanel;
 var
   Plate, Bar: TPanel;
-  Body: TNewStaticText;
+  Glyph, Body: TNewStaticText;
+  X: Integer;
 begin
-  Plate := TPanel.Create(Page);
-  Plate.Parent := Page.Surface;
-  Plate.Width := Page.SurfaceWidth;
+  Plate := TPanel.Create(WizardForm);
+  Plate.Parent := Parent;
+  Plate.Width := Width;
   Plate.BevelOuter := bvNone;
   // Без стиля мастера: иначе фон панели — его, а не наш.
   Plate.StyleElements := [];
   Plate.ParentBackground := False;
   Plate.Color := StrToColor('{#ColorCard}');
-  Bar := TPanel.Create(Page);
+  Bar := TPanel.Create(WizardForm);
   Bar.Parent := Plate;
   Bar.BevelOuter := bvNone;
   Bar.StyleElements := [];
   Bar.ParentBackground := False;
-  Bar.Color := StrToColor('{#ColorOff}');
+  Bar.Color := StrToColor(BarColor);
   Bar.Align := alLeft;
   Bar.Width := ScaleX(3);
-  Body := NewText(Plate, ScaleX(13), ScaleY(8), Plate.Width - ScaleX(23), Text);
+  X := ScaleX(13);
+  if Icon <> '' then
+  begin
+    Glyph := NewText(Plate, X, ScaleY(8), ScaleX(16), Icon);
+    Tint(Glyph, BarColor);
+    Glyph.Font.Style := [fsBold];
+    X := X + ScaleX(18);
+  end;
+  Body := NewText(Plate, X, ScaleY(8), Plate.Width - X - ScaleX(10), Text);
   Plate.Height := Body.Height + ScaleY(16);
+  Result := Plate;
+end;
+
+// Плашка сверху страницы Page. Возвращает её низ.
+function AddPlate(Page: TWizardPage; const Text: String): Integer;
+var
+  Plate: TPanel;
+begin
+  Plate := NewPlate(Page.Surface, Page.SurfaceWidth, '{#ColorOff}', '', Text);
   Result := Plate.Top + Plate.Height;
 end;
 
@@ -663,34 +701,40 @@ begin
 end;
 
 // После запуска новой службы — как было до обновления. Туннель при
-// включённом автоподключении служба поднимет сама. Трей в обычном режиме
-// запускает галочка на последней странице, а тихий её не показывает:
-// возвращаем его так же, как при входе, — только значок. Трей — и без
-// службы: в нём видно, что она не работает.
+// включённом автоподключении служба поднимет сама. Чем кончилось — в
+// TunnelRestore: его показывает «Готово» (ShowFinished), тихой установке —
+// код 11. Трей в обычном режиме запускает галочка на последней странице, а
+// тихий её не показывает: возвращаем его так же, как при входе, — только
+// значок. Трей — и без службы: в нём видно, что она не работает.
 procedure RestoreAfterUpdate;
 var
   I, ResultCode: Integer;
   Started: Boolean;
 begin
-  if (ServiceError = '') and TunnelWasUp and
-     not FileExists(ExpandConstant('{commonappdata}\{#MyName}\state\autostart')) then
+  if (ServiceError = '') and TunnelWasUp then
   begin
-    SetStatus('Включаю VPN обратно…');
-    Started := False;
-    // Канал службы поднимается не сразу после service start.
-    for I := 1 to 5 do
+    if FileExists(ExpandConstant('{commonappdata}\{#MyName}\state\autostart')) then
+      TunnelRestore := TunnelAuto
+    else
     begin
-      Started := Exec(ExpandConstant('{app}\{#MyCli}'), 'start', '', SW_HIDE,
-                      ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+      SetStatus('Включаю VPN обратно…');
+      Started := False;
+      // Канал службы поднимается не сразу после service start.
+      for I := 1 to 5 do
+      begin
+        Started := Exec(ExpandConstant('{app}\{#MyCli}'), 'start', '', SW_HIDE,
+                        ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+        if Started then
+          Break;
+        Sleep(3000);
+      end;
       if Started then
-        Break;
-      Sleep(3000);
-    end;
-    if not Started then
-    begin
-      Log('Туннель до обновления был включён, а после сам не поднялся: код ' + IntToStr(ResultCode));
-      SuppressibleMsgBox('Туннель был включён до обновления, но сам не поднялся. ' +
-                         'Включи его в трее.', mbInformation, MB_OK, IDOK);
+        TunnelRestore := TunnelBack
+      else
+      begin
+        TunnelRestore := TunnelLost;
+        Log('Туннель до обновления был включён, а после сам не поднялся: код ' + IntToStr(ResultCode));
+      end;
     end;
   end;
   if TrayWasRunning and WizardSilent then
@@ -721,6 +765,61 @@ begin
   end;
 end;
 
+// Обычная «Готово». Поверх установленной — итог обновления: ● «VPN снова
+// включён» или плашка ⚠, если туннель сам не поднялся. Всё столбиком под
+// заголовком, с отступами макета: высоты зависят от текста. Перезагрузку
+// Inno показывает своим текстом и радиокнопками — её не трогаем.
+procedure ShowFinished;
+var
+  X, W, Y: Integer;
+  Restart, Lost: Boolean;
+begin
+  Restart := WizardForm.YesRadio.Visible;
+  Lost := (TunnelRestore = TunnelLost) and not Restart;
+  WarnPlate.Visible := Lost;
+  OkDot.Visible := (TunnelRestore = TunnelBack) and not Restart;
+  FinishedLink.Visible := not Lost and not Restart;
+  with WizardForm do
+  begin
+    FinishedLabel.Visible := not Lost;
+    FinishedHeadingLabel.Caption := FinishedHeading;
+    FinishedHeadingLabel.AdjustHeight;
+    if Restart then
+      Exit;
+    X := FinishedHeadingLabel.Left;
+    W := FinishedHeadingLabel.Width;
+    Y := FinishedHeadingLabel.Top + FinishedHeadingLabel.Height + ScaleY(10);
+    if Lost then
+    begin
+      WarnPlate.Top := Y;
+      Y := WarnPlate.Top + WarnPlate.Height;
+    end
+    else
+    begin
+      FinishedLabel.Caption := FinishedText;
+      if TunnelRestore = TunnelBack then
+      begin
+        FinishedLabel.Caption := 'VPN снова включён. ' + FinishedText;
+        OkDot.Left := X;
+        OkDot.Top := Y;
+        X := X + ScaleX(16);
+        W := W - ScaleX(16);
+      end
+      else if TunnelRestore = TunnelAuto then
+        FinishedLabel.Caption := FinishedText + ' VPN включится сам — автоподключение включено.';
+      FinishedLabel.Left := X;
+      FinishedLabel.Top := Y;
+      FinishedLabel.Width := W;
+      FinishedLabel.AdjustHeight;
+      Y := FinishedLabel.Top + FinishedLabel.Height;
+    end;
+    // Inno тянет RunList до низа страницы: по высоте галочек — и ссылка под ними.
+    RunList.Top := Y + ScaleY(10);
+    RunList.Height := RunList.Items.Count * ScaleY(22);
+    FinishedLink.Top := RunList.Top + RunList.Height + ScaleY(6);
+  end;
+end;
+
 // «Готово» — страница ошибки службы или обычная. Свои элементы ставим под
 // заголовком: его высота зависит от текста.
 procedure ShowServiceError(Failed: Boolean);
@@ -729,22 +828,27 @@ var
 begin
   with WizardForm do
   begin
-    if Failed then
-      FinishedHeadingLabel.Caption := 'Служба {#MyName} не запустилась'
-    else
-      FinishedHeadingLabel.Caption := FinishedHeading;
-    FinishedHeadingLabel.AdjustHeight;
-    FinishedLabel.Visible := not Failed;
-    RunList.Visible := not Failed;
+    // На её месте Inno показывает радиокнопки перезагрузки.
+    RunList.Visible := not Failed and not YesRadio.Visible;
     // Скрытая галочка всё равно сработала бы на «Готово»: трей без службы
     // открывать незачем.
     if RunList.Items.Count > 0 then
       RunList.Checked[0] := not Failed;
-    FinishedLink.Visible := not Failed;
-    FinishedLink.Top := RunList.Top + RunList.Height + ScaleY(8);
-    X := FinishedHeadingLabel.Left;
-    W := FinishedHeadingLabel.Width;
   end;
+  if not Failed then
+    ShowFinished
+  else
+    with WizardForm do
+    begin
+      FinishedHeadingLabel.Caption := 'Служба {#MyName} не запустилась';
+      FinishedHeadingLabel.AdjustHeight;
+      FinishedLabel.Visible := False;
+      FinishedLink.Visible := False;
+      OkDot.Visible := False;
+      WarnPlate.Visible := False;
+      X := FinishedHeadingLabel.Left;
+      W := FinishedHeadingLabel.Width;
+    end;
   ErrIcon.Visible := Failed;
   ErrReason.Visible := Failed;
   RetryButton.Visible := Failed;
@@ -873,6 +977,25 @@ begin
   ErrFoot.Visible := False;
 end;
 
+// Итог обновления на «Готово» и пояснение к WebView2 на странице установки:
+// скрыты, пока не понадобятся.
+procedure CreateResultControls;
+begin
+  OkDot := NewText(WizardForm.FinishedPage, 0, 0, ScaleX(14), '●');
+  Tint(OkDot, '{#ColorOk}');
+  OkDot.Visible := False;
+  WarnPlate := NewPlate(WizardForm.FinishedPage, WizardForm.FinishedHeadingLabel.Width, '{#ColorWarn}', '⚠',
+    'Обновление установлено, но VPN не включился сам. Откройте {#MyName} и нажмите «Включить» — ' +
+    'если не получится, причина будет в журнале.');
+  WarnPlate.Left := WizardForm.FinishedHeadingLabel.Left;
+  WarnPlate.Visible := False;
+  with WizardForm.ProgressGauge do
+    WebView2Note := NewText(WizardForm.InstallingPage, Left, Top + Height + ScaleY(10), Width,
+      'Без него не откроется окно {#MyName}. Туннели и значок в трее работают и без него.');
+  Tint(WebView2Note, '{#ColorDim}');
+  WebView2Note.Visible := False;
+end;
+
 // Кнопка «Далее» меню — по выбранному пункту. Пока не выбран ни один (откат
 // по умолчанию не выбран), она неактивна.
 procedure UpdateActionButtons;
@@ -966,18 +1089,22 @@ begin
   if Legacy or (Cmp < 0) then
   begin
     InstallCaption := 'Обновить';
+    UpdatedHeading := '{#MyName} обновлён до {#MyPlainVersion}';
+    FinishedLink.Caption := '<a href="{#MyRepo}/releases/tag/v{#MyVersion}">Что нового</a>';
     InstallRadio := AddActionOption(Top, 'Обновить до {#MyPlainVersion}',
       'Конфиги, правила и настройки сохранятся. VPN отключится на время обновления и включится обратно.');
   end
   else if Cmp = 0 then
   begin
     InstallCaption := 'Переустановить';
+    UpdatedHeading := '{#MyName} переустановлен';
     InstallRadio := AddActionOption(Top, 'Переустановить {#MyPlainVersion}',
       'Если что-то сломалось. Конфиги сохранятся.');
   end
   else
   begin
     InstallCaption := 'Откатить';
+    UpdatedHeading := '{#MyName} {#MyPlainVersion} установлен';
     // Формат конфигов меняется только вперёд: что записала новая версия,
     // старая может прочитать не так или не прочитать.
     InstallRadio := AddActionOption(Top, '⚠ Откатить до {#MyPlainVersion}',
@@ -1012,6 +1139,7 @@ begin
   CreateTasksPage;
   CreateFinishedLink;
   CreateServiceErrorPage;
+  CreateResultControls;
   if RegQueryStringValue(HKLM64, UninstKey, 'UninstallString', OldUninstaller) then
     CreateActionPage;
 end;
@@ -1131,9 +1259,21 @@ begin
     ShowPrepareError
   else if CurPageID = wpFinished then
   begin
-    // Высоту RunList Inno задаёт, только показывая «Готово».
+    // Раскладку «Готово» Inno делает, только показывая её: свою — после.
     if FinishedHeading = '' then
-      FinishedHeading := WizardForm.FinishedHeadingLabel.Caption;
+      with WizardForm do
+      begin
+        if ActionPage <> nil then
+        begin
+          FinishedHeading := UpdatedHeading;
+          FinishedText := 'Конфиги, правила и настройки на месте.';
+        end
+        else
+        begin
+          FinishedHeading := FinishedHeadingLabel.Caption;
+          FinishedText := FinishedLabel.Caption;
+        end;
+      end;
     ShowServiceError(ServiceError <> '');
   end;
 end;
@@ -1348,32 +1488,90 @@ begin
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
 end;
 
-// Нет WebView2 — ставим загрузчиком Microsoft (он сам скачивает Runtime под
-// систему). Не вышло — не беда для службы и туннеля: сообщаем, где взять.
+// Мегабайты с одним знаком после запятой, «2», а не «2,0».
+function Megabytes(Bytes: Int64): String;
+var
+  Tenths: Int64;
+begin
+  Tenths := Bytes * 10 div 1048576;
+  Result := IntToStr(Tenths div 10);
+  if Tenths mod 10 <> 0 then
+    Result := Result + ',' + IntToStr(Tenths mod 10);
+end;
+
+// Загрузка WebView2: сколько скачано — в строке этапа и на полосе прогресса.
+function WebView2Progress(const Url, FileName: String; const Progress, ProgressMax: Int64): Boolean;
+begin
+  if ProgressMax > 0 then
+  begin
+    WizardForm.StatusLabel.Caption := 'Скачиваю Microsoft WebView2 — ' + Megabytes(Progress) +
+                                      ' из ' + Megabytes(ProgressMax) + ' МБ';
+    WizardForm.ProgressGauge.Position := Progress * 100 div ProgressMax;
+  end
+  else
+    WizardForm.StatusLabel.Caption := 'Скачиваю Microsoft WebView2 — ' + Megabytes(Progress) + ' МБ';
+  Result := True;
+end;
+
+// Одна попытка поставить WebView2 загрузчиком Microsoft (он сам скачивает
+// Runtime под систему). '' — стоит, иначе причина для окна.
+function TryWebView2: String;
+var
+  Setup: String;
+begin
+  SetStatus('Скачиваю Microsoft WebView2…');
+  WizardForm.ProgressGauge.Position := 0;
+  try
+    DownloadTemporaryFile(WebView2Url, 'MicrosoftEdgeWebview2Setup.exe', '', @WebView2Progress);
+  except
+    Log('WebView2: не скачался — ' + GetExceptionMessage);
+    Result := 'Загрузчик не скачался с сайта Microsoft.';
+    Exit;
+  end;
+  Setup := ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe');
+  if not SignedByMicrosoft(Setup) then
+  begin
+    Result := 'У скачанного загрузчика нет действующей подписи Microsoft — запускать его небезопасно.';
+    Exit;
+  end;
+  // Сколько качает сам загрузчик, он не сообщает: полоса бегущая.
+  SetStatus('Устанавливаю Microsoft WebView2…');
+  WizardForm.ProgressGauge.Style := npbstMarquee;
+  RunStep(Setup, '/silent /install');
+  WizardForm.ProgressGauge.Style := npbstNormal;
+  if WebView2Installed then
+    Result := ''
+  else
+    Result := 'Загрузчик Microsoft не смог его поставить.';
+end;
+
+// WebView2 Runtime нужен только окну: не поставился — служба, туннели и трей
+// работают. Спрашиваем, повторить ли; тихая установка без окон идёт дальше
+// и сообщает кодом 12.
 procedure EnsureWebView2;
 var
-  Url, Setup: String;
+  Reason: String;
+  OldMax, OldPosition: Integer;
 begin
   if WebView2Installed then
     Exit;
-  Url := 'https://go.microsoft.com/fwlink/p/?LinkId=2124703';
-  WizardForm.StatusLabel.Caption := 'Устанавливаю Microsoft Edge WebView2 Runtime...';
-  try
-    DownloadTemporaryFile(Url, 'MicrosoftEdgeWebview2Setup.exe', '', nil);
-    Setup := ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe');
-    if not SignedByMicrosoft(Setup) then
-      Log('WebView2: у загрузчика нет действующей подписи Microsoft, не запускаю')
-    else
-      RunStep(Setup, '/silent /install');
-  except
-    Log('WebView2: не скачался — ' + GetExceptionMessage);
-  end;
-  if WebView2Installed then
-    Exit;
-  Log('WebView2 Runtime не установлен');
-  SuppressibleMsgBox('Не получилось установить Microsoft Edge WebView2 Runtime — без него ' +
-                     'не откроется окно {#MyName}, туннели и значок в трее работают.' + #13#10 + #13#10 +
-                     'Поставь его сам: ' + Url, mbInformation, MB_OK, IDOK);
+  OldMax := WizardForm.ProgressGauge.Max;
+  OldPosition := WizardForm.ProgressGauge.Position;
+  WizardForm.ProgressGauge.Max := 100;
+  WebView2Note.Visible := True;
+  repeat
+    Reason := TryWebView2;
+    if Reason <> '' then
+      Log('WebView2: ' + Reason);
+  until (Reason = '') or (SuppressibleTaskDialogMsgBox('Не удалось поставить WebView2',
+    Reason + #13#10#13#10 + '{#MyName} установится, но окно не откроется, пока компонента нет. ' +
+    'Туннели и значок в трее работают.' + #13#10#13#10 + 'Поставить вручную: ' + WebView2Url,
+    // Массив не с начала строки: «[» там Inno читает как начало секции.
+    mbError, MB_RETRYCANCEL, ['Повторить', 'Продолжить без него'], 0, IDCANCEL) <> IDRETRY);
+  WebView2Missing := Reason <> '';
+  WebView2Note.Visible := False;
+  WizardForm.ProgressGauge.Max := OldMax;
+  WizardForm.ProgressGauge.Position := OldPosition;
 end;
 
 // Те же шаги, что [UninstallRun], в том же порядке (трей, туннель, служба,
@@ -1433,12 +1631,18 @@ begin
   end;
 end;
 
-// Файлы на месте, а службы нет — тихая установка (процедура в CLAUDE.md)
-// узнаёт об этом по коду 10, а не по «Готово». Коды 1–8 заняты самим Inno.
+// Тихая установка (процедура в CLAUDE.md) узнаёт о сбоях по коду, а не по
+// «Готово»: 10 — файлы на месте, а служба не работает; 11 — служба работает,
+// а туннель, включённый до обновления, сам не поднялся; 12 — не поставился
+// WebView2. Сбоев несколько — код первого по списку. 1–8 заняты самим Inno.
 function GetCustomSetupExitCode: Integer;
 begin
   if ServiceError <> '' then
     Result := 10
+  else if TunnelRestore = TunnelLost then
+    Result := 11
+  else if WebView2Missing then
+    Result := 12
   else
     Result := 0;
 end;
