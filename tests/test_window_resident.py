@@ -224,6 +224,74 @@ def test_место_возвращается_только_при_первом_п
     assert win.native.Location == (900, 300)
 
 
+class _User32:
+    """Окно 7 и чужое 9 впереди; SetForegroundWindow удаётся, только когда
+    ввод сцеплен с потоком переднего окна (или право уже есть)."""
+
+    def __init__(self, front=9, allowed=False):
+        self.front, self.allowed, self.calls = front, allowed, []
+        self.attached = False
+
+    def __getattr__(self, name):
+        return lambda *a: self.calls.append((name,) + a)
+
+    def IsIconic(self, hwnd):
+        return False
+
+    def GetForegroundWindow(self):
+        return self.front
+
+    def GetWindowThreadProcessId(self, hwnd, _pid):
+        return 900
+
+    def AttachThreadInput(self, own, other, on):
+        self.calls.append(("AttachThreadInput", own, other, on))
+        self.attached = on
+        return True
+
+    def SetForegroundWindow(self, hwnd):
+        self.calls.append(("SetForegroundWindow", hwnd))
+        if self.allowed or self.attached:
+            self.front = hwnd
+            return True
+        return False
+
+
+_kernel = types.SimpleNamespace(GetCurrentThreadId=lambda: 100)
+
+
+def test_окно_без_права_на_передний_план_всё_равно_выходит_вперёд():
+    """11 октября Activate молча не сработал, и прогретое окно открылось под
+    редактором: поднимаем по z-порядку и сцепляем ввод с передним окном."""
+    u = _User32()
+
+    window._raise(7, u, _kernel)
+
+    names = [c[0] for c in u.calls]
+    assert ("SetWindowPos", 7, window.HWND_TOPMOST) == u.calls[0][:3]
+    assert ("SetWindowPos", 7, window.HWND_NOTOPMOST) == u.calls[1][:3]
+    assert u.front == 7
+    assert ("AttachThreadInput", 100, 900, False) == u.calls[-1]
+    assert names.count("AttachThreadInput") == 2
+
+
+def test_окно_с_правом_не_сцепляет_ввод():
+    u = _User32(allowed=True)
+
+    window._raise(7, u, _kernel)
+
+    assert u.front == 7
+    assert "AttachThreadInput" not in [c[0] for c in u.calls]
+
+
+def test_окно_уже_впереди_не_трогается():
+    u = _User32(front=7)
+
+    window._raise(7, u, _kernel)
+
+    assert u.calls == []
+
+
 def _forms(monkeypatch):
     """Заглушки WinForms для _park: рабочий стол 2560×1400."""
     monkeypatch.setitem(sys.modules, "System.Drawing",

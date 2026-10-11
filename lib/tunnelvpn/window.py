@@ -288,6 +288,7 @@ class Api:
         if w is not None:
             _unpark(w, self)
             w.show()
+            _to_front(w)
 
     def _focus(self):
         """Карточка туннеля, по которому щёлкнули в меню трея: id из
@@ -980,15 +981,77 @@ def _listen_drop(window, api):
         api._log(f"перетаскивание недоступно: {exc}")
 
 
-def _restore(window):
-    """Свёрнутое — развернуть. SW_RESTORE, а не restore() pywebview: тот
-    ставит Normal и уменьшил бы окно, развёрнутое до сворачивания на весь экран."""
+SW_RESTORE = 9
+HWND_TOPMOST, HWND_NOTOPMOST = -1, -2
+# SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW
+SWP_KEEP = 0x0001 | 0x0002 | 0x0010 | 0x0040
+
+
+def _user32():
+    """user32 и kernel32 с типами аргументов: HWND_TOPMOST (-1) без них ушёл
+    бы 32-битным int, и на x64 SetWindowPos получил бы не тот дескриптор."""
+    import ctypes
+    from ctypes import wintypes
+
+    u = ctypes.WinDLL("user32")
+    for name, args in (("IsIconic", [wintypes.HWND]),
+                       ("ShowWindow", [wintypes.HWND, ctypes.c_int]),
+                       ("SetForegroundWindow", [wintypes.HWND]),
+                       ("BringWindowToTop", [wintypes.HWND]),
+                       ("SetWindowPos", [wintypes.HWND, wintypes.HWND, ctypes.c_int,
+                                         ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                         wintypes.UINT]),
+                       ("GetWindowThreadProcessId", [wintypes.HWND, ctypes.c_void_p]),
+                       ("AttachThreadInput", [wintypes.DWORD, wintypes.DWORD,
+                                              wintypes.BOOL])):
+        getattr(u, name).argtypes = args
+    u.GetForegroundWindow.restype = wintypes.HWND
+    u.GetWindowThreadProcessId.restype = wintypes.DWORD
+    return u, ctypes.WinDLL("kernel32")
+
+
+def _raise(hwnd, user32, kernel32):
+    """Свёрнутое — развернуть, не первое на экране — вывести вперёд. Только в
+    потоке окна: AttachThreadInput сцепляет ввод именно этого потока.
+
+    SW_RESTORE, а не restore() pywebview: тот ставит Normal и уменьшил бы
+    окно, развёрнутое до сворачивания на весь экран.
+
+    Activate в window.show() — это SetForegroundWindow, и Windows его молча
+    отклоняет, если право на передний план от трея не дошло: щелчок или
+    клавиша между кликом по значку и показом его сбрасывают. 11 октября
+    прогретое окно так открылось под редактором. Поднять по z-порядку можно
+    и без права — TOPMOST и обратно; фокус — сцепив ввод с потоком окна,
+    которое сейчас впереди.
+    """
+    if user32.IsIconic(hwnd):
+        user32.ShowWindow(hwnd, SW_RESTORE)
+    if user32.GetForegroundWindow() == hwnd:
+        return
+    user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_KEEP)
+    user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_KEEP)
+    if user32.SetForegroundWindow(hwnd):
+        return
+    fg = user32.GetForegroundWindow()
+    other = user32.GetWindowThreadProcessId(fg, None) if fg else 0
+    own = kernel32.GetCurrentThreadId()
+    if not other or other == own or not user32.AttachThreadInput(own, other, True):
+        return
     try:
-        import win32con
-        import win32gui
-        hwnd = window.native.Handle.ToInt32()
-        if win32gui.IsIconic(hwnd):
-            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+    finally:
+        user32.AttachThreadInput(own, other, False)
+
+
+def _to_front(window):
+    """_raise в потоке окна, после window.show()."""
+    try:
+        from System import Action
+        form = window.native
+        hwnd = form.Handle.ToInt32()
+        user32, kernel32 = _user32()
+        form.Invoke(Action(lambda: _raise(hwnd, user32, kernel32)))
     except Exception:                                      # noqa: BLE001
         pass
 
@@ -1006,7 +1069,7 @@ def _show(window, api):
     api.cold = False
     _unpark(window, api)
     window.show()
-    _restore(window)
+    _to_front(window)
     # Страница ещё грузится — всё это сделает её ready.
     if not on_screen and api.ready.is_set():
         api.refresh(full=True)
