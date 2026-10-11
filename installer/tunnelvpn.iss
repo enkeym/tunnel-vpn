@@ -38,9 +38,14 @@
 ; Издатель — тот же, что CompanyName в ресурсе версии exe (tunnelvpn.spec).
 #define MyPublisher "Enkeym"
 #define MyRepo "https://github.com/sotakeiteasy/dual-vpn"
-; Палитра окна приложения (lib/tunnelvpn/ui/app.css): --bg и --dim.
+; Палитра окна приложения (lib/tunnelvpn/ui/app.css). --card там — 5 % белого
+; поверх --bg, здесь посчитан.
 #define ColorBg "#101012"
 #define ColorDim "#9a9aa6"
+#define ColorCard "#1c1c1e"
+#define ColorOff "#6b6b76"
+#define ColorWarn "#ffd23f"
+#define ColorErr "#ff5c7a"
 ; Прежнее имя проекта: с него переезжают уже установленные копии.
 #define LegacyName "DualVPN"
 #define LegacyExe "DualVPN-Tray.exe"
@@ -287,10 +292,27 @@ const
 
 var
   // Меню «уже установлено»; nil — ставим впервые.
-  ActionPage: TInputOptionWizardPage;
+  ActionPage: TWizardPage;
+  // Пункт установки (обновить, переустановить или откатить) и «Удалить». При
+  // переезде с DualVPN пункт один: RemoveRadio — nil.
+  InstallRadio, RemoveRadio: TNewRadioButton;
+  // Подпись кнопки «Далее» для пункта установки: «Обновить» и т. п.
+  InstallCaption: String;
+  ParamsLink: TNewLinkLabel;
+  // «Изменить параметры» в меню: показать «Параметры» и при обновлении.
+  ChangeTasks: Boolean;
   OldUninstaller: String;
-  // Удаление из меню прошло — закрываем мастер без «Выйти из установки?».
+  // Удаление из меню прошло или установка не началась — закрываем мастер без
+  // «Выйти из установки?».
   Leaving: Boolean;
+  // Почему PrepareToInstall не дал ставить: CurPageChanged перестраивает
+  // по ним страницу «Подготовка». '' — всё в порядке.
+  PrepareError, PrepareTitle, PrepareDesc: String;
+  PrepareRestart: Boolean;
+  // «Готово», перестроенная в страницу ошибки службы (ShowServiceError).
+  FinishedHeading: String;
+  ErrIcon, ErrReason, ErrLog, ErrFoot: TNewStaticText;
+  RetryButton, LogButton, CopyButton, ReportButton: TNewButton;
   // Что было до обновления: RestoreAfterUpdate возвращает так же.
   TunnelWasUp, TrayWasRunning: Boolean;
   // Что не вышло со службой; '' — работает. Не пусто — код выхода 10.
@@ -313,26 +335,44 @@ begin
     UninstallProgressForm.StatusLabel.Caption := S;
 end;
 
-// Пояснение под галочкой или пунктом: приглушённым цветом окна приложения.
-// seFont снят — иначе цвет шрифта задаёт стиль мастера.
-function AddNote(Page: TWizardPage; Left, Top: Integer; const Text: String): TNewStaticText;
+// Текст с переносом по ширине Width.
+function NewText(Parent: TWinControl; Left, Top, Width: Integer; const Text: String): TNewStaticText;
 begin
-  Result := TNewStaticText.Create(Page);
-  Result.Parent := Page.Surface;
+  Result := TNewStaticText.Create(WizardForm);
+  Result.Parent := Parent;
   Result.Left := Left;
   Result.Top := Top;
-  Result.Width := Page.SurfaceWidth - Left;
+  Result.Width := Width;
   Result.WordWrap := True;
   Result.Caption := Text;
-  Result.StyleElements := Result.StyleElements - [seFont];
-  Result.Font.Color := StrToColor('{#ColorDim}');
   Result.AdjustHeight;
+end;
+
+// Свой цвет текста. seFont снят — иначе цвет шрифта задаёт стиль мастера.
+procedure Tint(Text: TNewStaticText; const Color: String);
+begin
+  Text.StyleElements := Text.StyleElements - [seFont];
+  Text.Font.Color := StrToColor(Color);
+end;
+
+// Пояснение под галочкой или пунктом: приглушённым цветом окна приложения.
+function AddNote(Page: TWizardPage; Left, Top: Integer; const Text: String): TNewStaticText;
+begin
+  Result := NewText(Page.Surface, Left, Top, Page.SurfaceWidth - Left, Text);
+  Tint(Result, '{#ColorDim}');
+end;
+
+// Пояснение под пунктом Option. Top — где начнётся следующий пункт.
+procedure AddOptionNote(Page: TWizardPage; Option: TControl; const Note: String; var Top: Integer);
+var
+  Hint: TNewStaticText;
+begin
+  Hint := AddNote(Page, ScaleX(18), Option.Top + Option.Height + ScaleY(2), Note);
+  Top := Hint.Top + Hint.Height + ScaleY(14);
 end;
 
 // Галочка задачи жирным и пояснение под ней. Top — где кончился прошлый пункт.
 function AddTaskOption(var Top: Integer; const Caption, Note: String): TNewCheckBox;
-var
-  Hint: TNewStaticText;
 begin
   Result := TNewCheckBox.Create(TasksPage);
   Result.Parent := TasksPage.Surface;
@@ -341,8 +381,34 @@ begin
   Result.Height := ScaleY(17);
   Result.Caption := Caption;
   Result.Font.Style := [fsBold];
-  Hint := AddNote(TasksPage, ScaleX(18), Result.Top + Result.Height + ScaleY(2), Note);
-  Top := Hint.Top + Hint.Height + ScaleY(14);
+  AddOptionNote(TasksPage, Result, Note, Top);
+end;
+
+// Плашка, как карточка окна: фон --card и полоса --off слева. Возвращает её низ.
+function AddPlate(Page: TWizardPage; const Text: String): Integer;
+var
+  Plate, Bar: TPanel;
+  Body: TNewStaticText;
+begin
+  Plate := TPanel.Create(Page);
+  Plate.Parent := Page.Surface;
+  Plate.Width := Page.SurfaceWidth;
+  Plate.BevelOuter := bvNone;
+  // Без стиля мастера: иначе фон панели — его, а не наш.
+  Plate.StyleElements := [];
+  Plate.ParentBackground := False;
+  Plate.Color := StrToColor('{#ColorCard}');
+  Bar := TPanel.Create(Page);
+  Bar.Parent := Plate;
+  Bar.BevelOuter := bvNone;
+  Bar.StyleElements := [];
+  Bar.ParentBackground := False;
+  Bar.Color := StrToColor('{#ColorOff}');
+  Bar.Align := alLeft;
+  Bar.Width := ScaleX(3);
+  Body := NewText(Plate, ScaleX(13), ScaleY(8), Plate.Width - ScaleX(23), Text);
+  Plate.Height := Body.Height + ScaleY(16);
+  Result := Plate.Top + Plate.Height;
 end;
 
 procedure CreateTasksPage;
@@ -512,20 +578,66 @@ begin
   end;
 end;
 
+const
+  SvcRunning = 0;
+  SvcStopped = 1;
+  SvcPending = 2;
+  SvcMissing = 3;
+
+// Svc*: работает, остановлена, запускается или останавливается, её нет.
 // Через PowerShell, а не разбором вывода sc query: Get-Service отдаёт
 // состояние одинаково на любом языке Windows.
-function ServiceRunning: Boolean;
+function ServiceStatus: Integer;
 var
   ResultCode: Integer;
 begin
-  Result := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-    '-NoProfile -NonInteractive -Command "if ((Get-Service {#MyName} -ErrorAction SilentlyContinue).Status ' +
-    '-eq ''Running'') { exit 0 } else { exit 1 }"',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+  if Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -NonInteractive -Command "$s = (Get-Service {#MyName} -ErrorAction SilentlyContinue).Status; ' +
+    'if ($s -eq ''Running'') { exit 0 } elseif ($s -eq ''Stopped'') { exit 1 } elseif ($s) { exit 2 } else { exit 3 }"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Result := ResultCode
+  else
+    Result := SvcMissing;
+end;
+
+// Запускает службу и ждёт, пока она заработает. '' — работает, иначе причина
+// для страницы ошибки. Её же зовёт «Повторить запуск».
+function StartService: String;
+var
+  I: Integer;
+begin
+  SetStatus('Запускаю службу…');
+  // Уже работающая служба отвечает на start ошибкой 1056 — это не сбой.
+  if not RunStep(ExpandConstant('{app}\{#MyCli}'), 'service start') and (ServiceStatus <> SvcRunning) then
+  begin
+    Result := 'Служба установилась, но не запустилась.';
+    Exit;
+  end;
+  // service start только посылает команду — ждём, пока служба поднимется.
+  SetStatus('Проверяю, что служба работает…');
+  for I := 1 to 20 do
+  begin
+    case ServiceStatus of
+      SvcRunning:
+        begin
+          Result := '';
+          Exit;
+        end;
+      // Команду она приняла, значит, упала сама.
+      SvcStopped:
+        begin
+          Result := 'Служба установилась, но остановилась сразу после запуска.';
+          Exit;
+        end;
+    end;
+    Sleep(1000);
+  end;
+  Result := 'Служба запущена, но за 20 секунд так и не заработала. Её мог задержать антивирус ' +
+            'или другой VPN-клиент, который держит сетевой адаптер.';
 end;
 
 // Ставит и запускает службу, проверяя каждый шаг. '' — служба работает,
-// иначе — что именно не вышло.
+// иначе — что именно не вышло, фразой для страницы ошибки.
 // Прошлую не снимаем: «service install» у существующей службы сам переходит
 // в update (ChangeServiceConfig) и переписывает путь к exe. Снятие перед
 // установкой только помечало службу на удаление, если кто-то держал её
@@ -533,41 +645,21 @@ end;
 // Остановил её ещё StopEverything.
 function InstallService: String;
 var
-  Cli, Sc: String;
-  I: Integer;
+  Sc: String;
 begin
-  Cli := ExpandConstant('{app}\{#MyCli}');
   Sc := ExpandConstant('{sys}\sc.exe');
   SetStatus('Регистрирую службу…');
-  if not RunStep(Cli, 'service install') then
-    Result := 'служба не установилась'
+  if not RunStep(ExpandConstant('{app}\{#MyCli}'), 'service install') then
+    Result := 'Службу не удалось зарегистрировать в Windows.'
   // Автозапуск службы: значок в трее без неё бесполезен, а ждать ручного
   // запуска после каждой перезагрузки — не то, чего ждут от VPN-клиента.
   else if not RunStep(Sc, 'config {#MyName} start= auto') then
-    Result := 'не удалось включить автозапуск службы'
+    Result := 'Не удалось включить автозапуск службы.'
   // Служба переживает падение: маршруты без неё убрать некому.
   else if not RunStep(Sc, 'failure {#MyName} reset= 86400 actions= restart/5000/restart/10000/restart/30000') then
-    Result := 'не удалось настроить перезапуск службы при сбое'
+    Result := 'Не удалось настроить перезапуск службы при сбое.'
   else
-    Result := '';
-  if Result <> '' then
-    Exit;
-  SetStatus('Запускаю службу…');
-  // Уже работающая служба отвечает на start ошибкой 1056 — это не сбой.
-  if not RunStep(Cli, 'service start') and not ServiceRunning then
-  begin
-    Result := 'служба не запустилась';
-    Exit;
-  end;
-  // service start только посылает команду — ждём, пока служба поднимется.
-  SetStatus('Проверяю, что служба работает…');
-  for I := 1 to 20 do
-  begin
-    if ServiceRunning then
-      Exit;
-    Sleep(1000);
-  end;
-  Result := 'служба запущена, но за 20 секунд так и не заработала';
+    Result := StartService;
 end;
 
 // После запуска новой службы — как было до обновления. Туннель при
@@ -606,42 +698,322 @@ begin
          ewNoWait, ResultCode);
 end;
 
-// Повторный запуск setup: обновить или удалить. В тихом режиме страниц нет,
-// выбран первый пункт — обновление (так ставит процедура из CLAUDE.md).
-procedure InitializeWizard;
+// Для адреса новой задачи на GitHub: всё, кроме латиницы, цифр и «-._», —
+// %XX байтами UTF-8. Символов за пределами BMP в наших текстах нет.
+function UrlEncode(const S: String): String;
 var
-  OldVersion, Title, Note: String;
-  Cmp: Integer;
+  I, C: Integer;
+begin
+  Result := '';
+  for I := 1 to Length(S) do
+  begin
+    C := Ord(S[I]);
+    if ((C >= Ord('0')) and (C <= Ord('9'))) or ((C >= Ord('A')) and (C <= Ord('Z'))) or
+       ((C >= Ord('a')) and (C <= Ord('z'))) or (C = Ord('-')) or (C = Ord('.')) or (C = Ord('_')) then
+      Result := Result + S[I]
+    else if C < $80 then
+      Result := Result + Format('%%%.2X', [C])
+    else if C < $800 then
+      Result := Result + Format('%%%.2X%%%.2X', [$C0 or (C shr 6), $80 or (C and $3F)])
+    else
+      Result := Result + Format('%%%.2X%%%.2X%%%.2X', [$E0 or (C shr 12),
+        $80 or ((C shr 6) and $3F), $80 or (C and $3F)]);
+  end;
+end;
+
+// «Готово» — страница ошибки службы или обычная. Свои элементы ставим под
+// заголовком: его высота зависит от текста.
+procedure ShowServiceError(Failed: Boolean);
+var
+  X, W, Y, Half: Integer;
+begin
+  with WizardForm do
+  begin
+    if Failed then
+      FinishedHeadingLabel.Caption := 'Служба {#MyName} не запустилась'
+    else
+      FinishedHeadingLabel.Caption := FinishedHeading;
+    FinishedHeadingLabel.AdjustHeight;
+    FinishedLabel.Visible := not Failed;
+    RunList.Visible := not Failed;
+    // Скрытая галочка всё равно сработала бы на «Готово»: трей без службы
+    // открывать незачем.
+    if RunList.Items.Count > 0 then
+      RunList.Checked[0] := not Failed;
+    FinishedLink.Visible := not Failed;
+    FinishedLink.Top := RunList.Top + RunList.Height + ScaleY(8);
+    X := FinishedHeadingLabel.Left;
+    W := FinishedHeadingLabel.Width;
+  end;
+  ErrIcon.Visible := Failed;
+  ErrReason.Visible := Failed;
+  RetryButton.Visible := Failed;
+  LogButton.Visible := Failed;
+  CopyButton.Visible := Failed;
+  ReportButton.Visible := Failed;
+  ErrLog.Visible := Failed;
+  ErrFoot.Visible := Failed;
+  if not Failed then
+    Exit;
+  Y := WizardForm.FinishedHeadingLabel.Top + WizardForm.FinishedHeadingLabel.Height + ScaleY(14);
+  ErrIcon.Left := X;
+  ErrIcon.Top := Y - ScaleY(4);
+  X := X + ScaleX(26);
+  W := W - ScaleX(26);
+  ErrReason.Left := X;
+  ErrReason.Top := Y;
+  ErrReason.Width := W;
+  ErrReason.Caption := ServiceError;
+  ErrReason.AdjustHeight;
+  Y := ErrReason.Top + ErrReason.Height + ScaleY(12);
+  Half := (W - ScaleX(8)) div 2;
+  RetryButton.SetBounds(X, Y, Half, ScaleY(23));
+  LogButton.SetBounds(X + Half + ScaleX(8), Y, Half, ScaleY(23));
+  Y := Y + ScaleY(31);
+  CopyButton.SetBounds(X, Y, Half, ScaleY(23));
+  ReportButton.SetBounds(X + Half + ScaleX(8), Y, Half, ScaleY(23));
+  ErrLog.Left := X;
+  ErrLog.Top := Y + ScaleY(35);
+  ErrLog.Width := W;
+  ErrLog.AdjustHeight;
+  ErrFoot.Left := X;
+  ErrFoot.Top := ErrLog.Top + ErrLog.Height + ScaleY(16);
+  ErrFoot.Width := W;
+  ErrFoot.AdjustHeight;
+end;
+
+// «Повторить запуск»: только запуск и проверка — файлы и регистрация уже есть.
+// Помогло — та же страница становится обычной «Готово», и туннель
+// возвращается, как после обновления.
+procedure RetryClick(Sender: TObject);
+begin
+  RetryButton.Enabled := False;
+  WizardForm.NextButton.Enabled := False;
+  ErrReason.Caption := 'Запускаю службу…';
+  ServiceError := StartService;
+  RetryButton.Enabled := True;
+  WizardForm.NextButton.Enabled := True;
+  if ServiceError = '' then
+  begin
+    Log('Служба: заработала после повторного запуска');
+    RestoreAfterUpdate;
+  end
+  else
+    Log('Служба (повтор): ' + ServiceError);
+  ShowServiceError(ServiceError <> '');
+end;
+
+// Журнал и задачу на GitHub открываем от исходного пользователя, не от админа.
+procedure OpenLogClick(Sender: TObject);
+var
+  ErrorCode: Integer;
+begin
+  ShellExecAsOriginalUser('open', ExpandConstant('{log}'), '', '', SW_SHOWNORMAL, ewNoWait, ErrorCode);
+end;
+
+procedure CopyLogClick(Sender: TObject);
+var
+  Path: String;
+  ResultCode: Integer;
+begin
+  Path := ExpandConstant('{log}');
+  // %TEMP% — в профиле, а в имени пользователя бывает апостроф.
+  StringChangeEx(Path, '''', '''''', True);
+  if Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+          '-NoProfile -NonInteractive -Command "Set-Clipboard -Value ''' + Path + '''"',
+          '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0) then
+    CopyButton.Caption := 'Путь скопирован';
+end;
+
+// Версия и Windows — в заголовке задачи. Путь к журналу в адрес не кладём: в
+// нём имя пользователя.
+procedure ReportClick(Sender: TObject);
+var
+  ErrorCode: Integer;
+begin
+  ShellExecAsOriginalUser('open', '{#MyRepo}/issues/new?title=' +
+    UrlEncode('Служба не запустилась: {#MyName} {#MyVersion}, Windows ' + GetWindowsVersionString) +
+    '&body=' + UrlEncode('Причина: ' + ServiceError + #10#10 +
+                         'Журнал установки: кнопка «Открыть журнал» в установщике, приложите файл сюда.'),
+    '', '', SW_SHOWNORMAL, ewNoWait, ErrorCode);
+end;
+
+function NewFinishedButton(const Caption: String; OnClick: TNotifyEvent): TNewButton;
+begin
+  Result := TNewButton.Create(WizardForm);
+  Result.Parent := WizardForm.FinishedPage;
+  Result.Caption := Caption;
+  Result.OnClick := OnClick;
+  Result.Visible := False;
+end;
+
+// Элементы страницы ошибки службы: скрыты, пока служба работает.
+procedure CreateServiceErrorPage;
+var
+  Page: TWinControl;
+  W: Integer;
+begin
+  Page := WizardForm.FinishedPage;
+  W := WizardForm.FinishedHeadingLabel.Width;
+  ErrIcon := NewText(Page, 0, 0, ScaleX(20), '✕');
+  Tint(ErrIcon, '{#ColorErr}');
+  ErrIcon.Font.Size := 14;
+  ErrIcon.AdjustHeight;
+  ErrReason := NewText(Page, 0, 0, W, '');
+  RetryButton := NewFinishedButton('Повторить запуск', @RetryClick);
+  LogButton := NewFinishedButton('Открыть журнал', @OpenLogClick);
+  CopyButton := NewFinishedButton('Скопировать путь', @CopyLogClick);
+  ReportButton := NewFinishedButton('Сообщить о проблеме', @ReportClick);
+  ErrLog := NewText(Page, 0, 0, W, 'Журнал: ' + ExpandConstant('{log}'));
+  Tint(ErrLog, '{#ColorDim}');
+  ErrFoot := NewText(Page, 0, 0, W, 'Программа скопирована. Когда служба заработает, VPN можно будет включить.');
+  ErrIcon.Visible := False;
+  ErrReason.Visible := False;
+  ErrLog.Visible := False;
+  ErrFoot.Visible := False;
+end;
+
+// Кнопка «Далее» меню — по выбранному пункту. Пока не выбран ни один (откат
+// по умолчанию не выбран), она неактивна.
+procedure UpdateActionButtons;
+var
+  Removing: Boolean;
+begin
+  Removing := (RemoveRadio <> nil) and RemoveRadio.Checked;
+  // Неактивная ссылка в тёмном стиле не отличается от активной — прячем.
+  ParamsLink.Visible := InstallRadio.Checked;
+  WizardForm.NextButton.Enabled := InstallRadio.Checked or Removing;
+  if Removing then
+    WizardForm.NextButton.Caption := 'Удалить'
+  else if InstallRadio.Checked then
+    WizardForm.NextButton.Caption := InstallCaption
+  else
+    WizardForm.NextButton.Caption := SetupMessage(msgButtonNext);
+end;
+
+// Checked := True в CreateActionPage тоже зовёт OnClick — тогда кнопок ещё нет.
+procedure ActionChanged(Sender: TObject);
+begin
+  if WizardForm.CurPageID = ActionPage.ID then
+    UpdateActionButtons;
+end;
+
+// «Изменить параметры»: та же установка, но через страницу «Параметры».
+// Ссылка видна, только пока выбран пункт установки.
+procedure ChangeTasksClick(Sender: TObject; const Link: String; LinkType: TSysLinkType);
+begin
+  ChangeTasks := True;
+  WizardForm.NextButton.OnClick(WizardForm.NextButton);
+end;
+
+// Папку конфигов показываем выделенной в ProgramData\TunnelVPN, а не
+// открываем: conf\ закрыт для пользователя (icacls в [Run]), и Проводник
+// предложил бы «получить доступ» — то есть переписать её права.
+procedure OpenConfClick(Sender: TObject; const Link: String; LinkType: TSysLinkType);
+var
+  ErrorCode: Integer;
+begin
+  ShellExecAsOriginalUser('open', ExpandConstant('{win}\explorer.exe'),
+    '/select,"' + ExpandConstant('{commonappdata}\{#MyName}\conf') + '"', '', SW_SHOWNORMAL, ewNoWait, ErrorCode);
+end;
+
+function AddActionOption(var Top: Integer; const Caption, Note: String): TNewRadioButton;
+begin
+  Result := TNewRadioButton.Create(ActionPage);
+  Result.Parent := ActionPage.Surface;
+  Result.Top := Top;
+  Result.Width := ActionPage.SurfaceWidth;
+  Result.Height := ScaleY(17);
+  Result.Caption := Caption;
+  Result.Font.Style := [fsBold];
+  Result.OnClick := @ActionChanged;
+  AddOptionNote(ActionPage, Result, Note, Top);
+end;
+
+// Версия без хвоста «-beta»: так её показывает мастер.
+function PlainVersion(const Version: String): String;
+begin
+  Result := Version;
+  if Pos('-', Result) > 0 then
+    Result := Copy(Result, 1, Pos('-', Result) - 1);
+end;
+
+// Повторный запуск setup: обновить (переустановить, откатить) или удалить.
+// В тихом режиме страниц нет — ставим этот файл, даже если это откат (так
+// ставит процедура из CLAUDE.md), см. NextButtonClick.
+procedure CreateActionPage;
+var
+  OldVersion, Versions: String;
+  Cmp, Top: Integer;
+  Legacy: Boolean;
+  Link: TNewLinkLabel;
+begin
+  RegQueryStringValue(HKLM64, UninstKey, 'DisplayVersion', OldVersion);
+  OldVersion := PlainVersion(OldVersion);
+  if OldVersion = '' then
+    OldVersion := 'неизвестная версия';
+  Legacy := IsLegacyDir(PreviousAppDir);
+  if Legacy then
+    Versions := 'Установлено: {#LegacyName} ' + OldVersion + ' · В этом файле: {#MyName} {#MyPlainVersion}'
+  else
+    Versions := 'Установлено: ' + OldVersion + ' · В этом файле: {#MyPlainVersion}';
+  ActionPage := CreateCustomPage(wpWelcome, '{#MyName} уже установлен', Versions);
+  Top := 0;
+  if Legacy then
+    Top := AddPlate(ActionPage, 'Прошлая версия называлась {#LegacyName}. Конфиги и ключи перенесём, ' +
+                                'старую службу и ярлыки уберём.') + ScaleY(14);
+  Cmp := CompareVersions(OldVersion, '{#MyVersion}');
+  if Legacy or (Cmp < 0) then
+  begin
+    InstallCaption := 'Обновить';
+    InstallRadio := AddActionOption(Top, 'Обновить до {#MyPlainVersion}',
+      'Конфиги, правила и настройки сохранятся. VPN отключится на время обновления и включится обратно.');
+  end
+  else if Cmp = 0 then
+  begin
+    InstallCaption := 'Переустановить';
+    InstallRadio := AddActionOption(Top, 'Переустановить {#MyPlainVersion}',
+      'Если что-то сломалось. Конфиги сохранятся.');
+  end
+  else
+  begin
+    InstallCaption := 'Откатить';
+    // Формат конфигов меняется только вперёд: что записала новая версия,
+    // старая может прочитать не так или не прочитать.
+    InstallRadio := AddActionOption(Top, '⚠ Откатить до {#MyPlainVersion}',
+      'Старая версия может не понять настройки, сохранённые новой. Перед откатом сделайте копию ' +
+      ExpandConstant('{commonappdata}\{#MyName}\conf') + '.');
+    InstallRadio.StyleElements := InstallRadio.StyleElements - [seFont];
+    InstallRadio.Font.Color := StrToColor('{#ColorWarn}');
+    Link := TNewLinkLabel.Create(ActionPage);
+    Link.Parent := ActionPage.Surface;
+    Link.Left := ScaleX(18);
+    Link.Top := Top - ScaleY(12);
+    Link.Caption := '<a href="conf">Открыть папку</a>';
+    Link.UseVisualStyle := HighContrastActive;
+    Link.OnLinkClick := @OpenConfClick;
+    Top := Link.Top + Link.Height + ScaleY(14);
+  end;
+  // Откат — только осознанно: пункт не выбран.
+  InstallRadio.Checked := Legacy or (Cmp <= 0);
+  if not Legacy then
+    RemoveRadio := AddActionOption(Top, 'Удалить {#MyName}',
+      'Конфиги с ключами останутся, если не попросите удалить.');
+  ParamsLink := TNewLinkLabel.Create(ActionPage);
+  ParamsLink.Parent := ActionPage.Surface;
+  ParamsLink.Caption := '<a href="tasks">Изменить параметры</a>';
+  ParamsLink.UseVisualStyle := HighContrastActive;
+  ParamsLink.OnLinkClick := @ChangeTasksClick;
+  ParamsLink.Top := ActionPage.SurfaceHeight - ParamsLink.Height;
+end;
+
+procedure InitializeWizard;
 begin
   CreateTasksPage;
   CreateFinishedLink;
-  if not RegQueryStringValue(HKLM64, UninstKey, 'UninstallString', OldUninstaller) then
-    Exit;
-  RegQueryStringValue(HKLM64, UninstKey, 'DisplayVersion', OldVersion);
-  Note := 'При обновлении конфиги, ключи VPN и настройки остаются на месте.';
-  Cmp := CompareVersions(OldVersion, '{#MyVersion}');
-  if Cmp = 0 then
-    Title := 'Переустановить версию {#MyVersion}'
-  else if Cmp > 0 then
-  begin
-    Title := 'Откатить до версии {#MyVersion}';
-    // Формат конфигов меняется только вперёд: что записала новая версия,
-    // старая может прочитать не так или не прочитать.
-    Note := 'Установлена более новая версия. Конфиги и ключи VPN останутся, но то, что ' +
-            'в них записала новая версия, эта может не понять. Перед откатом сохрани копию ' +
-            ExpandConstant('{commonappdata}\{#MyName}\conf') + '.';
-  end
-  else
-    Title := 'Обновить до версии {#MyVersion}';
-  if OldVersion = '' then
-    OldVersion := 'прошлая';
-  ActionPage := CreateInputOptionPage(wpWelcome,
-    '{#MyName} уже установлен', 'Установлена версия ' + OldVersion + '. Что сделать?',
-    Note, True, False);
-  ActionPage.Add(Title);
-  ActionPage.Add('Удалить {#MyName}, конфиги и ключи VPN оставить');
-  ActionPage.Add('Удалить {#MyName} полностью, вместе с конфигами и ключами VPN');
-  ActionPage.SelectedValueIndex := 0;
+  CreateServiceErrorPage;
+  if RegQueryStringValue(HKLM64, UninstKey, 'UninstallString', OldUninstaller) then
+    CreateActionPage;
 end;
 
 // Данные WebView2 окна (window.py:_storage_path) в %LOCALAPPDATA%\Name.
@@ -657,10 +1029,27 @@ begin
   RemoveDir(Dir);
 end;
 
+// Конфиги по умолчанию переживают удаление: в них ключи, и после
+// переустановки человек не обязан их восстанавливать. Но если удаляют совсем,
+// оставлять каталог молча — это мусор. Спрашиваем до удаления, двумя
+// кнопками-ссылками с пояснениями; по умолчанию «Оставить». Без кнопки
+// «Отмена»: удаление уже подтверждено, и отсюда его не прервать. Тихое
+// удаление не спрашивает и конфиги оставляет. True — «Удалить навсегда».
+function AskPurgeData: Boolean;
+begin
+  Result := TaskDialogMsgBox('Что сделать с конфигами и ключами?',
+    'Папка: ' + ExpandConstant('{commonappdata}\{#MyName}\conf'),
+    // Массив не с начала строки: «[» там Inno читает как начало секции.
+    mbConfirmation, MB_YESNO, ['Оставить'#13#10'Их подхватит следующая установка {#MyName}.',
+      'Удалить навсегда'#13#10'Приватные ключи будут удалены. Восстановить их можно только у того, кто выдал конфиг.'],
+    0) = IDNO;
+  Log('Конфиги при удалении: ' + IntToStr(Ord(Result)));
+end;
+
 // Удаление прежней установкой: её деинсталлятор знает, что она ставила.
 // Трей, окно и службу гасим сами, папки окна чистим тоже — деинсталляторы
 // до этой версии не делали ни того, ни другого. /SILENT: вопрос про конфиги
-// уже задан в меню, а прогресс пусть будет виден.
+// уже задан (AskPurgeData), а прогресс пусть будет виден.
 function RunUninstaller(Purge: Boolean): Boolean;
 var
   ResultCode: Integer;
@@ -670,8 +1059,8 @@ begin
                  '', SW_SHOW, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
   if not Result then
   begin
-    MsgBox('Удалить не получилось: деинсталлятор вернул ' + IntToStr(ResultCode) + '.' + #13#10 +
-           'Попробуй через «Параметры → Приложения».', mbError, MB_OK);
+    MsgBox('Удалить не получилось: деинсталлятор вернул код ' + IntToStr(ResultCode) + '.' + #13#10 + #13#10 +
+           'Удалите {#MyName} через «Параметры → Приложения».', mbError, MB_OK);
     Exit;
   end;
   // Удалять могли и установку под прежним именем: её данные — под ним же.
@@ -685,41 +1074,95 @@ begin
 end;
 
 // Стандартная страница задач — вместо неё «Параметры» (TasksPage).
-// Приветствие и параметры — только при новой установке: обновление — в два
-// клика, задачи остаются как у прошлой установки (UsePreviousTasks).
+// Приветствие, папка и параметры — только при новой установке: обновление —
+// в два клика, в папке прошлой установки, с её задачами (UsePreviousTasks).
+// Параметры поверх установленной — по ссылке «Изменить параметры».
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := (PageID = wpSelectTasks) or
-            ((ActionPage <> nil) and ((PageID = wpWelcome) or (PageID = TasksPage.ID)));
+            ((ActionPage <> nil) and ((PageID = wpWelcome) or (PageID = wpSelectDir) or
+                                      ((PageID = TasksPage.ID) and not ChangeTasks)));
+end;
+
+// Отказ PrepareToInstall: свои заголовок и текст вместо «Подготовки к
+// установке». CurPageChanged(wpPreparing) приходит второй раз уже после
+// отказа. С перезагрузкой Inno сам ставит «Перезагрузить сейчас / Позже» и
+// «Готово» — их только сдвигаем под текст; без неё остаётся одна «Закрыть».
+procedure ShowPrepareError;
+begin
+  with WizardForm do
+  begin
+    PageNameLabel.Caption := PrepareTitle;
+    PageDescriptionLabel.Caption := PrepareDesc;
+    PreparingLabel.Caption := PrepareError;
+    PreparingLabel.AdjustHeight;
+    PreparingYesRadio.Top := PreparingLabel.Top + PreparingLabel.Height + ScaleY(12);
+    PreparingNoRadio.Top := PreparingYesRadio.Top + ScaleY(24);
+    BackButton.Visible := False;
+    if not PrepareRestart then
+    begin
+      NextButton.Visible := False;
+      CancelButton.Caption := 'Закрыть';
+      Leaving := True;
+    end;
+  end;
 end;
 
 procedure CurPageChanged(CurPageID: Integer);
 begin
-  if CurPageID = TasksPage.ID then
+  if (ActionPage <> nil) and (CurPageID = ActionPage.ID) then
+  begin
+    // Вернулись с «Параметров» — следующее «Обновить» снова без них.
+    ChangeTasks := False;
+    UpdateActionButtons;
+  end
+  else if CurPageID = TasksPage.ID then
   begin
     // Задачи прошлой установки Inno уже отметил (UsePreviousTasks).
     AutorunBox.Checked := WizardIsTaskSelected('autorun');
     DesktopBox.Checked := WizardIsTaskSelected('desktopicon');
     // Страницы «Готово к установке» нет: отсюда сразу установка.
-    WizardForm.NextButton.Caption := SetupMessage(msgButtonInstall);
+    if ActionPage <> nil then
+      WizardForm.NextButton.Caption := InstallCaption
+    else
+      WizardForm.NextButton.Caption := SetupMessage(msgButtonInstall);
   end
+  else if (CurPageID = wpPreparing) and (PrepareError <> '') then
+    ShowPrepareError
   else if CurPageID = wpFinished then
-    FinishedLink.Top := WizardForm.RunList.Top + WizardForm.RunList.Height + ScaleY(8);
+  begin
+    // Высоту RunList Inno задаёт, только показывая «Готово».
+    if FinishedHeading = '' then
+      FinishedHeading := WizardForm.FinishedHeadingLabel.Caption;
+    ShowServiceError(ServiceError <> '');
+  end;
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  Purge: Boolean;
 begin
   Result := True;
   if CurPageID = TasksPage.ID then
     WizardSelectTasks(TaskSpec('autorun', AutorunBox.Checked) + ',' +
                       TaskSpec('desktopicon', DesktopBox.Checked));
-  if (ActionPage = nil) or (CurPageID <> ActionPage.ID) or
-     (ActionPage.SelectedValueIndex = 0) then
+  if (ActionPage = nil) or (CurPageID <> ActionPage.ID) then
     Exit;
-  Result := False;
-  if RunUninstaller(ActionPage.SelectedValueIndex = 2) then
+  // Тихий режим ничего не выбирает и не показывает: ставим, даже откат.
+  if (RemoveRadio = nil) or not RemoveRadio.Checked then
   begin
-    MsgBox('{#MyName} удалён.', mbInformation, MB_OK);
+    Result := InstallRadio.Checked or WizardSilent;
+    Exit;
+  end;
+  Result := False;
+  Purge := AskPurgeData;
+  if RunUninstaller(Purge) then
+  begin
+    if Purge then
+      MsgBox('{#MyName} удалён вместе с конфигами и ключами.', mbInformation, MB_OK)
+    else
+      MsgBox('{#MyName} удалён. Конфиги остались в ' + ExpandConstant('{commonappdata}\{#MyName}\conf') + '.',
+             mbInformation, MB_OK);
     Leaving := True;
     WizardForm.Close;
   end;
@@ -786,8 +1229,9 @@ begin
   // Переименование на том же томе сохраняет права conf\ и state\run\.
   if DirExists(OldData) and not DirExists(NewData) and not RenameFile(OldData, NewData) then
   begin
-    Result := 'Не получилось перенести данные ' + OldData + ' в ' + NewData +
-              ': их держит другая программа. Перезагрузи компьютер и запусти установку снова.';
+    Result := 'Не удалось перенести данные из ' + OldData + ': их держит другая программа. ' +
+              'После перезагрузки {#LegacyName} заработает как раньше — перезагрузите компьютер ' +
+              'и запустите установку снова.';
     Exit;
   end;
   Exec(ExpandConstant('{sys}\sc.exe'), 'delete {#LegacyName}',
@@ -818,7 +1262,13 @@ begin
   StopEverything;
   Result := MigrateLegacy;
   if Result <> '' then
+  begin
+    Result := Result + #13#10#13#10 + 'Журнал: ' + ExpandConstant('{log}');
+    PrepareTitle := 'Установка не началась';
+    PrepareDesc := 'Файлы и настройки не тронуты';
+    PrepareError := Result;
     Exit;
+  end;
 
   // Дескриптор мог держать только что убитый трей — даём Windows дочистить.
   for I := 1 to 20 do
@@ -829,8 +1279,14 @@ begin
   end;
   if ServicePendingDelete then
   begin
-    Result := 'Windows ещё не удалила прежнюю службу {#MyName}: её держит другая программа. ' +
-              'Перезагрузи компьютер и запусти установку снова.';
+    // Inno предложит перезагрузку и выйдет с кодом 8.
+    NeedsRestart := True;
+    PrepareRestart := True;
+    Result := 'Windows ещё удаляет прежнюю службу {#MyName}: её держит другая программа. ' +
+              'Перезагрузите компьютер и запустите установку снова.';
+    PrepareTitle := 'Нужна перезагрузка';
+    PrepareDesc := 'Установка не начиналась';
+    PrepareError := Result;
     Exit;
   end;
 
@@ -920,23 +1376,6 @@ begin
                      'Поставь его сам: ' + Url, mbInformation, MB_OK, IDOK);
 end;
 
-// Конфиги по умолчанию переживают удаление: в них ключи, и после
-// переустановки человек не обязан их восстанавливать. Но если удаляют совсем,
-// оставлять каталог молча — это мусор. Спрашиваем до удаления, двумя
-// кнопками-ссылками с пояснениями; по умолчанию «Оставить». Без кнопки
-// «Отмена»: удаление уже подтверждено, и отсюда его не прервать. Тихое
-// удаление (и меню прошлой установки) конфиги оставляет.
-procedure AskAboutData;
-begin
-  PurgeData := TaskDialogMsgBox('Что сделать с конфигами и ключами?',
-    'Папка: ' + ExpandConstant('{commonappdata}\{#MyName}\conf'),
-    // Массив не с начала строки: «[» там Inno читает как начало секции.
-    mbConfirmation, MB_YESNO, ['Оставить'#13#10'Их подхватит следующая установка {#MyName}.',
-      'Удалить навсегда'#13#10'Приватные ключи будут удалены. Восстановить их можно только у того, кто выдал конфиг.'],
-    0) = IDNO;
-  Log('Конфиги при удалении: ' + IntToStr(Ord(PurgeData)));
-end;
-
 // Те же шаги, что [UninstallRun], в том же порядке (трей, туннель, служба,
 // окно), но с этапами в строке над прогрессом: [UninstallRun] этапов не
 // показывает. Он идёт следом и проходит вхолостую.
@@ -958,7 +1397,7 @@ begin
   if CurUninstallStep = usUninstall then
   begin
     if not UninstallSilent then
-      AskAboutData;
+      PurgeData := AskPurgeData;
     StopForUninstall;
   end
   else if CurUninstallStep = usPostUninstall then
@@ -976,14 +1415,11 @@ var
 begin
   if CurStep = ssPostInstall then
   begin
+    // Сбой показывает «Готово», перестроенная в страницу ошибки
+    // (ShowServiceError); тихая установка узнаёт о нём по коду 10.
     ServiceError := InstallService;
     if ServiceError <> '' then
-    begin
       Log('Служба: ' + ServiceError);
-      SuppressibleMsgBox('{#MyName} установлен, но ' + ServiceError + '.' + #13#10 + #13#10 +
-                         'Перезагрузи компьютер и запусти установку снова. Подробности — в журнале:' + #13#10 +
-                         ExpandConstant('{log}'), mbError, MB_OK, IDOK);
-    end;
     RestoreAfterUpdate;
     // После службы и туннеля: загрузка Runtime долгая, а соединение и так
     // лежит с начала установки.
