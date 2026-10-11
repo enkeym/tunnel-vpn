@@ -32,10 +32,8 @@ LOG_TAIL_BYTES = 256 * 1024
 # Итог последней проверки по каждому конфигу: без туннеля мерить нечем, но
 # «как он отработал в прошлый раз» видно и при выключенном VPN.
 LAST_CHECK_FILE = os.path.join(paths.STATE, "last-check.json")
-# Записей в одном списке правил через канал. Запрос канала — одно чтение
-# ipc._BUF (64 КБ), а каждая запись — правило в конфиге sing-box: тысячи —
-# скорее вставленный по ошибке файл, чем замысел. Руками в tunnels.json — сколько угодно.
-MAX_RULES = 500
+# Записей в одном списке правил через канал — тот же предел, что видит лист окна.
+MAX_RULES = routelist.MAX_RULES
 # Сколько кругов пробера (по FAST_EVERY) новая сеть должна продержаться,
 # прежде чем переподключаться: Wi-Fi при смене точки и пробуждении моргает,
 # и на каждый пропавший на секунду маршрут перезапуск только мешал бы.
@@ -222,12 +220,13 @@ def _clash(t, other, conf, conf_name=""):
     found = []
     for entry in t["include"]:
         if entry in other["include"]:
-            found.append((entry, f"«{entry}» уже в {where}"))
+            found.append((entry, f"«{entry}» уже в {where} → одна запись — у одного "
+                                 f"туннеля: удали её там или здесь"))
         elif (any(_taken(a, b, out) for a in _nets([entry]) for b in nets)
               or any(_domain_taken(a, b, out_domains)
                      for a in _domains([entry]) for b in domains)):
             found.append((entry, f"«{entry}» из «{t['name']}» уже идёт через "
-                                 f"{where} — убери его здесь или впиши "
+                                 f"{where} → убери его здесь или впиши "
                                  f"туда в «не пускать»"))
     return found
 
@@ -418,6 +417,8 @@ class Core:
             elif reply.get("ok") and ("include" in payload or "mode" in payload):
                 self._test_active(tid)
             return reply
+        if op == "check-rules":
+            return self._check_rules(tid, payload)
         if op == "remove-tunnel":
             return self._remove_tunnel(tid)
         if op == "set-log-level":
@@ -1690,16 +1691,38 @@ class Core:
         переносится: у запасного своих списков нет, молча его не теряем.
         """
         try:
-            data, t = self._load_target(tunnel)
-            rejected = {}
-            for key in ("include", "exclude"):
-                if key in payload:
-                    t[key], rejected[key] = self._rules(payload[key])
-            changed = [t]
-            if payload.get("mode") == "all" and t["mode"] != "all":
-                changed += self._make_main(data, t)
+            p = self._plan_tunnel(tunnel, payload)
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
+        data, t, main, problems = p["data"], p["t"], p["main"], p["problems"]
+        if not problems and p["spare"]:
+            r = self._to_spare(data, t, main)
+            if r["ok"]:
+                return r
+            problems = [{"field": "include", "text": r["error"]}]
+        if problems:
+            return {"ok": False, "problems": problems,
+                    "error": "; ".join(x["text"] for x in problems)}
+        r = self._save_tunnels(data, f"изменён туннель {t['id']}"
+                               + (" — без «пускать» стал основным" if p["promoted"] else ""))
+        # Сохранённые списки — окну: поля показывают записи в том виде, как
+        # их понял routelist, рядом с непонятыми; mode — туннель мог стать основным.
+        return ({**r, "rejected": p["rejected"], "include": t["include"],
+                 "exclude": t["exclude"], "mode": t["mode"]} if r["ok"] else r)
+
+    def _plan_tunnel(self, tunnel, payload):
+        """Правка set-tunnel без записи: свежий tunnels.json с ней и что из неё
+        выйдет — {data, t, main, rejected, promoted, spare, problems}. promoted —
+        без «пускать» станет основным, spare — уйдёт запасным к main. Отказ
+        разбора (нет туннеля, больше MAX_RULES, нет 0.0.0.0/0 для all) — ValueError."""
+        data, t = self._load_target(tunnel)
+        rejected = {}
+        for key in ("include", "exclude"):
+            if key in payload:
+                t[key], rejected[key] = self._rules(payload[key])
+        changed = [t]
+        if payload.get("mode") == "all" and t["mode"] != "all":
+            changed += self._make_main(data, t)
         for key in ("name", "mode"):
             if key in payload:
                 t[key] = payload[key]
@@ -1711,28 +1734,29 @@ class Core:
         problems = self._clash_of(data, changed)
         if spare:
             problems += self._spare_blocks(t, main, rejected)
-        if not problems and spare:
-            r = self._to_spare(data, t, main)
-            if r["ok"]:
-                return r
-            problems = [{"field": "include", "text": r["error"]}]
-        if problems:
-            return {"ok": False, "problems": problems,
-                    "error": "; ".join(p["text"] for p in problems)}
-        r = self._save_tunnels(data, f"изменён туннель {t['id']}"
-                               + (" — без «пускать» стал основным"
-                                  if idle and main is None else ""))
-        # Сохранённые списки — окну: поля показывают записи в том виде, как
-        # их понял routelist, рядом с непонятыми; mode — туннель мог стать основным.
-        return ({**r, "rejected": rejected, "include": t["include"],
-                 "exclude": t["exclude"], "mode": t["mode"]} if r["ok"] else r)
+        return {"data": data, "t": t, "main": main, "rejected": rejected,
+                "promoted": idle and main is None, "spare": spare, "problems": problems}
+
+    def _check_rules(self, tunnel, payload):
+        """check-rules: что set-tunnel сказал бы о списках, ничего не записывая, —
+        лист окна проверяет дубли с другими туннелями на лету. fate — куда
+        туннель уйдёт без «пускать»: {to: main} или {to: spare, main: имя}."""
+        lists = {k: payload[k] for k in ("include", "exclude") if k in payload}
+        try:
+            p = self._plan_tunnel(tunnel, lists)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        fate = ({"to": "main"} if p["promoted"]
+                else {"to": "spare", "main": p["main"]["name"]} if p["spare"] else {})
+        return {"ok": True, "include": p["t"]["include"], "exclude": p["t"]["exclude"],
+                "rejected": p["rejected"], "problems": p["problems"], "fate": fate}
 
     @staticmethod
     def _spare_blocks(t, main, rejected):
         """Почему полный конфиг t без «пускать» не уходит запасным к main —
         [{field, text}] для листа окна. Непонятое в полях тоже держит: с
         удалённым туннелем оно пропало бы молча."""
-        out = [{"field": k, "text": "не понял: " + ", ".join(bad)}
+        out = [{"field": k, "text": f"Не распознано: {', '.join(bad)} → подробности под полем"}
                for k, bad in rejected.items() if bad]
         texts = []
         if t["exclude"]:
@@ -1796,8 +1820,8 @@ class Core:
 
     def _clash_of(self, data, changed):
         """Все дубли записей «пускать» между туннелями «по списку», где
-        хоть один из changed, — [{field: "include", text}] для листа окна; [] —
-        дублей нет. Старые дубли других пар правку не держат: их порядок в
+        хоть один из changed, — [{field: "include", text, entry}] для листа окна
+        (entry — спорная запись: есть в листе — окно найдёт её строку); [] — дублей нет. Старые дубли других пар правку не держат: их порядок в
         файле не менялся. Изменённые — первыми: одна и та же запись у двух
         туннелей — одна причина, словами листа изменённого («уже в «Лаб»»)."""
         confs = {t["id"]: c for t, c in self._list_confs(data)}
@@ -1807,7 +1831,7 @@ class Core:
         # лежат рядом, включён один; второй — заменой (_set_enabled).
         lists = sorted((t for t in data["tunnels"] if t["mode"] == "list" and t["enabled"]),
                        key=lambda t: t["id"] not in ids)
-        seen, texts = set(), []
+        seen, found = set(), []
         for t in lists:
             for other in lists:
                 if other is t or not {t["id"], other["id"]} & ids:
@@ -1822,8 +1846,8 @@ class Core:
                     key = (frozenset((t["id"], other["id"])), entry)
                     if key not in seen:
                         seen.add(key)
-                        texts.append(why)
-        return [{"field": "include", "text": w} for w in texts]
+                        found.append((entry, why))
+        return [{"field": "include", "text": w, "entry": e} for e, w in found]
 
     def _clashing(self, data, t):
         """Включённые туннели «по списку», чьи записи пересекаются с

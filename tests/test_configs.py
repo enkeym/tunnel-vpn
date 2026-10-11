@@ -708,7 +708,7 @@ def test_вложенный_домен_дубль_по_суффиксу(core):
     # domain_suffix «a.ru» забирает и x.a.ru: ушёл бы в тот туннель, что выше в файле.
     # Одна причина на пересечение: не ещё и «a.ru из «Лаб» … убери его здесь».
     assert not r["ok"] and [p["text"] for p in r["problems"]] == [
-        "«x.a.ru» из «Работа» уже идёт через «Лаб» — убери его здесь или впиши "
+        "«x.a.ru» из «Работа» уже идёт через «Лаб» → убери его здесь или впиши "
         "туда в «не пускать»"]
     assert _tunnel("work")["include"] == []
 
@@ -810,7 +810,8 @@ def test_все_дубли_полями_а_не_первый(core):
     assert not r["ok"]
     texts = [p["text"] for p in r["problems"]]
     assert {p["field"] for p in r["problems"]} == {"include"} and len(texts) == 2
-    assert texts[0] == "«a.ru» уже в «Лаб» (конфиг lab)"
+    assert texts[0] == ("«a.ru» уже в «Лаб» (конфиг lab) → одна запись — у одного "
+                        "туннеля: удали её там или здесь")
     assert "«10.53.1.5/32»" in texts[1] and "«Лаб» (конфиг lab)" in texts[1]
     assert all(t in r["error"] for t in texts)
     assert _tunnel("work")["include"] == []
@@ -863,7 +864,8 @@ def test_полный_с_непонятым_в_пускать_не_уходит_
 
     # Список пуст, но человек что-то вписал: с удалённым туннелем это пропало бы.
     assert not r["ok"]
-    assert r["problems"] == [{"field": "include", "text": "не понял: foo_bar"}]
+    assert r["problems"] == [{"field": "include",
+                              "text": "Не распознано: foo_bar → подробности под полем"}]
     assert _ids() == ["work", "home"]
 
 
@@ -877,6 +879,66 @@ def test_полный_без_пускать_с_тем_же_именем_в_ос�
     assert not r["ok"]
     assert r["problems"] == [{"field": "include", "text": "в «Личный» уже есть nl.conf"}]
     assert _ids() == ["work", "home"] and _tunnel("work")["include"] == ["a.ru"]
+
+
+# ------------------------------------------------- check-rules: без записи
+
+def test_проверка_правил_находит_дубль_с_записью_и_ничего_не_пишет(core):
+    core._add_tunnel("Лаб", "list")
+    core._set_tunnel("t1", {"include": "a.ru"})
+
+    r = core.handle("check-rules", {"tunnel": "work", "include": "b.ru a.ru"}, True)
+
+    # entry — по ней окно найдёт строку дубля в поле.
+    assert r["ok"] and r["include"] == ["b.ru", "a.ru"]
+    assert [(p["field"], p["entry"]) for p in r["problems"]] == [("include", "a.ru")]
+    assert r["fate"] == {}
+    assert _tunnel("work")["include"] == []
+
+
+def test_проверка_правил_без_дублей_чиста(core):
+    r = core.handle("check-rules", {"tunnel": "work", "include": "a.ru 10.0.0.0/8",
+                                    "exclude": "x_y"}, True)
+
+    assert r["ok"] and r["problems"] == [] and r["rejected"] == {"include": [], "exclude": ["x_y"]}
+
+
+def test_проверка_правил_говорит_что_полный_без_пускать_станет_основным(core):
+    tunnels.save({"tunnels": [{**WORK, "include": ["a.ru"]}]})
+    _put("work", "nl.conf", FULL)
+
+    r = core.handle("check-rules", {"tunnel": "work", "include": ""}, True)
+
+    assert r["ok"] and r["fate"] == {"to": "main"}
+    assert _tunnel("work")["mode"] == "list" and _tunnel("work")["include"] == ["a.ru"]
+
+
+def test_проверка_правил_говорит_что_полный_уйдёт_запасным_и_не_переносит(core):
+    tunnels.save({"tunnels": [{**WORK, "include": ["a.ru"]}, {**HOME, "active": "de"}]})
+    _put("work", "nl.conf", FULL)
+    _put("home", "de.conf", FULL)
+
+    r = core.handle("check-rules", {"tunnel": "work", "include": ""}, True)
+
+    assert r["ok"] and r["fate"] == {"to": "spare", "main": "Личный"}
+    assert _ids() == ["work", "home"] and tunnels.list_confs("work") == ["nl"]
+
+
+def test_проверка_правил_берёт_только_списки(core):
+    tunnels.save({"tunnels": [WORK, HOME]})
+
+    core.handle("check-rules", {"tunnel": "work", "mode": "all", "name": "X"}, True)
+
+    # mode и name — дело set-tunnel: проверка их не применяет даже в памяти.
+    assert _tunnel("work")["mode"] == "list" and _tunnel("work")["name"] == WORK["name"]
+
+
+def test_проверка_правил_больше_предела_отказ(core, monkeypatch):
+    monkeypatch.setattr("tunnelvpn.service.MAX_RULES", 2)
+
+    r = core.handle("check-rules", {"tunnel": "work", "include": "a.ru b.ru c.ru"}, True)
+
+    assert not r["ok"] and "больше 2" in r["error"]
 
 
 def test_полный_без_пускать_с_несколькими_конфигами_не_переносится(core):

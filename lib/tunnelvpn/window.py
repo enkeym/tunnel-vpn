@@ -18,7 +18,7 @@ import tempfile
 import threading
 import time
 
-from . import instance, ipc, paths, portable, tunnels
+from . import instance, ipc, paths, portable, routelist, tunnels
 
 POLL_EVERY = 2.0
 # Сколько ждём отчёта страницы о готовности. Не дождались — WebView2 не
@@ -231,6 +231,9 @@ class Api:
             self._tunnel_rules(arg)
         elif name == "save_rules":
             self._save_rules(arg)
+        elif name == "validate_rules":
+            # Ответ — возвратом send (request): лист проверяет поля на лету.
+            return self._validate_rules(arg)
         elif name == "load_rules":
             self._load_rules()
         elif name == "export_rules":
@@ -560,7 +563,7 @@ class Api:
             # стоит под полями — по problems у своего поля, лист остаётся
             # открытым с набранным.
             self.js("rulesFailed", {"error": reply.get("error") or "служба отказала",
-                                    "problems": reply.get("problems", [])})
+                                    "problems": _locate(reply.get("problems", []), lists)})
             return
         if reply.get("moved"):
             # Без «пускать» ушёл запасным к основному: туннеля, чей это лист, нет.
@@ -573,6 +576,35 @@ class Api:
                                "rejected": reply.get("rejected", {}),
                                "mode": reply.get("mode", "")})
         self._apply()
+
+    def _validate_rules(self, arg):
+        """Поля листа на лету: разбор — здесь же, тем же routelist, что у службы,
+        без канала и прав. Дубли с другими туннелями (check-rules) — только когда
+        окно уже с правами и разбор чистый: иначе UAC спрашивал бы на каждой
+        паузе ввода; без прав их покажет «Сохранить». fate — куда туннель уйдёт
+        без «пускать» (Core._check_rules)."""
+        texts = {k: str(arg.get(k) or "") for k in ("include", "exclude") if k in arg}
+        fields = {k: routelist.check(v) for k, v in texts.items()}
+        out = {"ok": True, "fields": fields, "max": routelist.MAX_RULES, "fate": {}}
+        if not fields or not _is_admin() or any(f["problems"] for f in fields.values()):
+            return out
+        try:
+            reply = ipc.call("check-rules", tunnel=arg["tunnel"], **texts)
+        except ipc.NotRunning:
+            return out
+        # Чего нет в листе (поле «пускать» у основного) — под первым полем.
+        first = next(iter(fields))
+        if not reply.get("ok"):
+            # Нет туннеля, больше MAX_RULES — то же скажет «Сохранить»; лист не
+            # говорит, что всё чисто.
+            fields[first]["problems"].append({"line": None, "token": "",
+                                              "text": reply.get("error") or "служба отказала"})
+            return out
+        for p in _locate(reply.get("problems", []), texts):
+            field = p.pop("field")
+            fields[field if field in fields else first]["problems"].append(p)
+        out["fate"] = reply.get("fate") or {}
+        return out
 
     def _load_rules(self):
         path = self._pick(_RULES_TYPES)
@@ -615,6 +647,20 @@ class Api:
                 fh.write(f"{time.strftime('%H:%M:%S')} {line}\n")
         except OSError:
             pass
+
+
+def _locate(problems, texts):
+    """Отказы службы [{field, text, entry}] — с номером строки и токеном записи
+    entry в тексте своего поля, как у непонятого (routelist.check): лист по ним
+    выделяет запись. Не нашлась или entry нет — line None."""
+    out = []
+    for p in problems:
+        field, entry = p.get("field", ""), p.get("entry")
+        hit = next(((n, tok) for n, tok, found in routelist.tokens(texts.get(field, ""))
+                    if entry and found == entry), (None, ""))
+        out.append({"field": field, "text": p.get("text", ""),
+                    "line": hit[0], "token": hit[1]})
+    return out
 
 
 def _conf_summary(text):

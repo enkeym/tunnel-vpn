@@ -106,3 +106,62 @@ def test_готовый_список_разбирается_так_же():
     assert routelist.parse_list(["a.ru", "1.2.3.4", "x_y"]) == (
         ["a.ru", "1.2.3.4/32"], ["x_y"])
     assert routelist.parse_list(None) == ([], [])
+
+
+# ------------------------------------------- сводка и причины для листа окна
+
+def test_токены_с_номером_строки_как_у_textarea():
+    assert routelist.tokens("a.ru, x_y\n\n1.2.3.4") == [
+        (1, "a.ru", "a.ru"), (1, "x_y", None), (3, "1.2.3.4", "1.2.3.4/32")]
+
+
+def test_сводка_считает_домены_адреса_и_подсети():
+    r = routelist.check("a.ru *.b.ru 1.2.3.4 2001:db8::1 10.0.0.0/8 2001:db8::/32 a.ru")
+
+    assert (r["count"], r["domains"], r["ips"], r["nets"]) == (6, 2, 2, 2)
+    assert r["problems"] == []
+
+
+def test_непонятое_с_номером_строки_по_разу():
+    r = routelist.check("a.ru\ngit\ngit 10.0.0.0/33")
+
+    assert [(p["line"], p["token"]) for p in r["problems"]] == [(2, "git"), (3, "10.0.0.0/33")]
+    assert r["count"] == 1
+
+
+def test_больше_предела_одной_строкой_без_номера(monkeypatch):
+    monkeypatch.setattr(routelist, "MAX_RULES", 2)
+
+    r = routelist.check("a.ru b.ru c.ru")
+
+    assert r["problems"] == [{"line": None, "token": "",
+                              "text": "Больше 2 записей → раздели список или правь "
+                                      "tunnels.json вручную"}]
+
+
+@pytest.mark.parametrize("token, part", [
+    ("git", "короткое имя не сработает → укажи полный домен, например git.company.ru"),
+    ("10.0.0.0/33", "маска больше 32 → для IPv4 маска от 0 до 32"),
+    ("2001:db8::/129", "маска больше 128"),
+    ("10.0.0.0/", "после «/» нет маски"),
+    ("1.2.3", "четыре числа через точку"),
+    ("300.1.1.1", "больше 255"),
+    ("foo_bar", "не бывает «_»"),
+    ("a..ru", "две точки подряд"),
+    ("-a.ru", "дефисом"),
+    ("a.123", "зона из букв"),
+    ("*.", "после «*.» нужен домен"),
+    ("https://", "в ссылке нет сайта"),
+    ("a" * 64 + ".ru", "слишком длинный домен"),
+])
+def test_причина_говорит_что_не_так_и_как_исправить(token, part):
+    text = routelist.explain(token)
+
+    assert text.startswith(f"«{token}» — ") and part in text and "→" in text
+
+
+def test_у_каждого_непонятого_есть_причина():
+    """Всё, что parse отверг, explain объясняет — без пустых строк."""
+    for token in ["::::", "a:b:c:z", "x.y:abc", "ý.ru-"]:
+        assert routelist.parse(token)[1] == [token]
+        assert "→" in routelist.explain(token)

@@ -463,6 +463,36 @@ body.kbd :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
 .kv dt { color: var(--dim); }
 .kv dd { margin: 0; min-width: 0; font-size: var(--fs-m); word-break: break-all; }
 
+/* «Туннелирование»: поле списка, сводка и причины под ним. Ошибка — красная
+   рамка с мягким свечением; янтарь сюда не идёт. */
+.rules { display: grid; gap: var(--sp-5); }
+.rules-field { display: grid; gap: var(--sp-1); }
+.rules-label { font-weight: 600; }
+.rules-area {
+  width: 100%; min-height: 9.5em; resize: vertical; margin-top: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3); border-radius: var(--r-m);
+  background: var(--field); color: var(--text); border: 1px solid var(--line-strong);
+  font: var(--fs-m)/1.6 var(--mono);
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+.rules-area:focus { border-color: color-mix(in srgb, var(--white) 32%, transparent); }
+.rules-area.bad { border-color: var(--err); box-shadow: var(--glow) color-mix(in srgb, var(--err) 30%, transparent); }
+.rules-hint { color: var(--dim); font-size: var(--fs-s); }
+.rules-sum { color: var(--dim); font-size: var(--fs-s); }
+.rules-sum.over { color: var(--err); }
+.rules-fate { margin: var(--sp-1) 0 0; font-size: var(--fs-m); }
+.rules-probs { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-1); }
+.rules-probs:empty { display: none; }
+.rules-prob {
+  display: flex; gap: var(--sp-2); align-items: flex-start; width: 100%; text-align: left;
+  padding: var(--sp-1) var(--sp-2); border-radius: var(--r-s); color: var(--err); font-size: var(--fs-m);
+}
+.rules-prob:hover:not(:disabled) { background: var(--hover); }
+.rules-prob:disabled { cursor: default; }
+.rules-prob .ic { margin-top: 2px; }
+.rules-prob .val { color: var(--text); }
+.rules-line { color: var(--dim); white-space: nowrap; }
+
 /* Перетаскивание .conf: поверх всего, кроме подсказки и уведомлений. */
 .drop {
   position: fixed; inset: 0; z-index: var(--z-drop); background: var(--scrim);

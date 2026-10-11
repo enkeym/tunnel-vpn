@@ -142,14 +142,18 @@ def test_отказ_службы_показан_в_листе_и_ничего_н
     assert "apply" not in ops
 
 
-def test_проблемы_по_полям_доходят_до_листа(monkeypatch):
-    problems = [{"field": "include", "text": "«a.ru» уже в «Лаб»"},
+def test_проблемы_по_полям_доходят_до_листа_со_строкой_записи(monkeypatch):
+    problems = [{"field": "include", "text": "«a.ru» уже в «Лаб»", "entry": "a.ru"},
                 {"field": "include", "text": "очисти и «не пускать»"}]
     _, _, shown = _save_rules(monkeypatch, up=True,
                               reply={"ok": False, "error": "x", "problems": problems})
 
-    # По полям, а не одной строкой: лист красит поле и пишет причины под ним.
-    assert ("rulesFailed", {"error": "x", "problems": problems}) in shown
+    # По полям, а не одной строкой: лист красит поле и пишет причины под ним;
+    # у дубля — строка и токен, чтобы выделить запись в поле.
+    assert ("rulesFailed", {"error": "x", "problems": [
+        {"field": "include", "text": "«a.ru» уже в «Лаб»", "line": 1, "token": "a.ru"},
+        {"field": "include", "text": "очисти и «не пускать»", "line": None, "token": ""},
+    ]}) in shown
 
 
 def test_ушёл_запасным_лист_закрывается_и_применяется(monkeypatch):
@@ -179,3 +183,67 @@ def test_правка_при_включённом_vpn_применяет_её_с
     assert "apply" in ops
     assert "start" not in ops and "stop" not in ops
     assert "restarting" not in [fn for fn, _ in shown]
+
+
+# ------------------------------------------------- validate_rules: на лету
+
+def _validate(monkeypatch, arg, admin=True, reply=None):
+    """validate_rules со службой, отвечающей reply; вернуть ответ и команды."""
+    calls = []
+
+    def call(op, **kw):
+        calls.append((op, kw))
+        return reply or {"ok": True, "problems": [], "fate": {}}
+
+    monkeypatch.setattr(ipc, "call", call)
+    monkeypatch.setattr(window, "_is_admin", lambda: admin)
+    return window.Api({}).send("validate_rules", arg), calls
+
+
+def test_разбор_полей_без_службы_и_со_строкой_непонятого(monkeypatch):
+    r, calls = _validate(monkeypatch, {"tunnel": "work", "include": "a.ru\ngit",
+                                       "exclude": "1.2.3.4"})
+
+    # Непонятое — до службы: дубли с ним проверять незачем.
+    assert calls == []
+    inc = r["fields"]["include"]
+    assert inc["count"] == 1 and [(p["line"], p["token"]) for p in inc["problems"]] == [(2, "git")]
+    assert r["fields"]["exclude"]["ips"] == 1 and r["max"] == 500
+
+
+def test_дубли_с_правами_через_check_rules_со_строкой(monkeypatch):
+    reply = {"ok": True, "fate": {"to": "main"},
+             "problems": [{"field": "include", "text": "«a.ru» уже в «Лаб»", "entry": "a.ru"}]}
+
+    r, calls = _validate(monkeypatch, {"tunnel": "work", "include": "b.ru\n A.RU"},
+                         reply=reply)
+
+    assert calls == [("check-rules", {"tunnel": "work", "include": "b.ru\n A.RU"})]
+    assert r["fields"]["include"]["problems"] == [
+        {"text": "«a.ru» уже в «Лаб»", "line": 2, "token": "A.RU"}]
+    assert r["fate"] == {"to": "main"}
+
+
+def test_без_прав_дубли_не_спрашиваются(monkeypatch):
+    r, calls = _validate(monkeypatch, {"tunnel": "work", "include": "a.ru"}, admin=False)
+
+    # Иначе UAC на каждую паузу ввода: дубли покажет «Сохранить».
+    assert calls == [] and r["ok"] and r["fields"]["include"]["problems"] == []
+
+
+def test_отказ_check_rules_под_первым_полем(monkeypatch):
+    r, _ = _validate(monkeypatch, {"tunnel": "home", "exclude": "a.ru"},
+                     reply={"ok": False, "error": "нет туннеля home"})
+
+    assert r["fields"]["exclude"]["problems"] == [
+        {"line": None, "token": "", "text": "нет туннеля home"}]
+
+
+def test_проблема_чужого_поля_встаёт_под_своё(monkeypatch):
+    reply = {"ok": True, "fate": {},
+             "problems": [{"field": "include", "text": "дубль", "entry": "a.ru"}]}
+
+    r, _ = _validate(monkeypatch, {"tunnel": "home", "exclude": "a.ru"}, reply=reply)
+
+    # У основного в листе одно поле — причина всё равно видна.
+    assert r["fields"]["exclude"]["problems"] == [{"text": "дубль", "line": None, "token": ""}]
