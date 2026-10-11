@@ -18,9 +18,12 @@ import tempfile
 import threading
 import time
 
-from . import instance, ipc, paths, portable, routelist, settings, tunnels
+from . import instance, ipc, paths, portable, routelist, settings, tunnels, update
 
 POLL_EVERY = 2.0
+# Ход скачивания обновления — не чаще: куски по 256 КБ идут десятками в
+# секунду, а каждый вызов страницы — evaluate_js.
+PROGRESS_EVERY = 0.2
 # Сколько ждём отчёта страницы о готовности. Не дождались — WebView2 не
 # поднялся, и окно так и висело бы серым: выходим с READY_LOST, трей
 # перезапустит окно.
@@ -126,6 +129,13 @@ class Api:
         # Файл, про место которого служба спросила (ask): (имя, текст). Ответ
         # человека приходит через place_config — диалог выбора второй раз не нужен.
         self._asked = None
+        # Обновление из «О программе»: версия, которую предложила проверка, и
+        # проверенный установщик (путь, версия). Страница их не присылает —
+        # скачивается и запускается только то, что запомнено здесь.
+        self._offer = None
+        self._setup = None
+        self._upd_cancel = threading.Event()
+        self._upd_thread = None
 
     # ------------------------------------------------------- приём из JS
 
@@ -263,7 +273,21 @@ class Api:
         elif name == "open_logs":
             return self._open_logs()
         elif name == "check_update":
-            return {"ok": True, **settings.check_update(paths.version())}
+            return self._check_update()
+        elif name == "update_download":
+            return self._update_download()
+        elif name == "update_cancel":
+            self._upd_cancel.set()
+        elif name == "update_install":
+            return self._update_install()
+        elif name == "update_outcome":
+            return {"ok": True, "pending": update.pending()}
+        elif name == "update_seen":
+            # Итог показан. Пока setup работает, метку не трогаем: по ней трей
+            # после обновления откроет окно.
+            p = update.pending()
+            if p and p["state"] != "installing":
+                update.clear()
         elif name == "open_url":
             # Адрес приходит со страницы: наружу — только свой репозиторий.
             if not settings.repo_url(arg):
@@ -467,6 +491,71 @@ class Api:
                 "tray_autostart": None if port else bool(settings.tray_task()),
                 "data_dir": paths.DATA, "logs_dir": paths.LOGS,
                 "repo": settings.REPO_URL}
+
+    def _check_update(self):
+        """Проверка по кнопке. install — скачать и поставить можно отсюда:
+        подписанная установленная сборка (update.can_install) и окно с правами —
+        писать в state\\update\\ может только администратор. Иначе страница даёт
+        только ссылку на релиз. downtime — сколько VPN пролежит, оценка."""
+        r = settings.check_update(paths.version())
+        install = r.get("state") == "update" and _is_admin() and update.can_install()
+        self._offer = r["latest"] if install else None
+        return {"ok": True, **r, "install": install, "downtime": update.DOWNTIME}
+
+    def _update_download(self):
+        """«Скачать и установить»: версия из последней проверки. Качает поток;
+        ход и итог страница получает вызовами updateProgress, updateStage,
+        updateReady, updateFailed."""
+        version = self._offer
+        if not version:
+            return {"ok": False, "error": "обновление не предложено → сначала проверь обновления"}
+        if self._upd_thread is not None and self._upd_thread.is_alive():
+            return {"ok": True}
+        self._setup = None
+        # Свой Event на каждое скачивание: «Отмена» прошлого не задевает новое.
+        self._upd_cancel = threading.Event()
+        self._upd_thread = threading.Thread(target=self._download,
+                                            args=(version, self._upd_cancel), daemon=True)
+        self._upd_thread.start()
+        return {"ok": True}
+
+    def _download(self, version, cancel):
+        last = [0.0]
+
+        def progress(got, total):
+            now = time.monotonic()
+            if now - last[0] >= PROGRESS_EVERY or got == total:
+                last[0] = now
+                self.js("updateProgress", {"got": got, "total": total})
+
+        try:
+            path = update.prepare(version, progress, cancel,
+                                  stage=lambda name: self.js("updateStage", name))
+        except update.Cancelled:
+            self.js("updateFailed", {"stage": "cancel", "text": ""})
+            return
+        except Exception as exc:                       # noqa: BLE001
+            # stage verify — файл не прошёл проверку и уже удалён (update.prepare).
+            self._log(f"обновление {version}: {exc}")
+            self.js("updateFailed", {"stage": getattr(exc, "stage", "download"), "text": str(exc)})
+            return
+        self._setup = (path, version)
+        self.js("updateReady", {"version": version})
+
+    def _update_install(self):
+        """«Установить сейчас»: только файл, проверенный в этом окне. Дальше
+        setup снимет и окно, и трей; до того страница держит «Обновляю TunnelVPN…»."""
+        if not self._setup or not os.path.isfile(self._setup[0]):
+            self._setup = None
+            return {"ok": False, "error": "файла обновления нет → скачай его снова"}
+        path, version = self._setup
+        try:
+            update.launch(path, version)
+        except update.UpdateError as exc:
+            self._log(f"обновление {version}: {exc}")
+            return {"ok": False, "error": str(exc)}
+        self._setup = None
+        return {"ok": True}
 
     @staticmethod
     def _set_tray_autostart(on):

@@ -227,8 +227,112 @@ def test_проверка_обновлений_идёт_ответом(monkeypat
                         lambda cur: {"state": "latest", "latest": cur, "url": settings.REPO_URL})
     monkeypatch.setattr(paths, "version", lambda: "0.3.7-beta")
 
+    monkeypatch.setattr(window.update, "can_install", lambda: (_ for _ in ()).throw(AssertionError))
+
     assert _api(monkeypatch).send("check_update") == {
-        "ok": True, "state": "latest", "latest": "0.3.7-beta", "url": settings.REPO_URL}
+        "ok": True, "state": "latest", "latest": "0.3.7-beta", "url": settings.REPO_URL,
+        "install": False, "downtime": window.update.DOWNTIME}
+
+
+# ------------------------------------------------------- обновление из окна
+
+def _offer(monkeypatch, admin=True, signed=True):
+    monkeypatch.setattr(settings, "check_update",
+                        lambda cur: {"state": "update", "latest": "0.3.8", "url": settings.REPO_URL})
+    monkeypatch.setattr(window, "_is_admin", lambda: admin)
+    monkeypatch.setattr(window.update, "can_install", lambda: signed)
+    calls = []
+    api = window.Api({})
+    monkeypatch.setattr(api, "js", lambda fn, arg=None: calls.append((fn, arg)))
+    return api, calls, api.send("check_update")
+
+
+def _download(api):
+    assert api.send("update_download") == {"ok": True}
+    api._upd_thread.join(5)
+
+
+def test_без_прав_обновление_только_ссылкой(monkeypatch):
+    api, _calls, r = _offer(monkeypatch, admin=False)
+
+    assert r["install"] is False
+    assert api.send("update_download")["ok"] is False
+
+
+def test_неподписанная_сборка_не_качает(monkeypatch):
+    api, _calls, r = _offer(monkeypatch, signed=False)
+
+    assert r["install"] is False
+    assert api.send("update_download")["ok"] is False
+
+
+def test_скачанное_и_проверенное_ставится(tmp_path, monkeypatch):
+    setup = tmp_path / "TunnelVPN-0.3.8-setup.exe"
+    setup.write_bytes(b"MZ")
+
+    def prepare(version, progress, cancel, stage):
+        progress(1, 2)
+        progress(2, 2)
+        stage("verify")
+        return str(setup)
+
+    launched = []
+    monkeypatch.setattr(window.update, "prepare", prepare)
+    monkeypatch.setattr(window.update, "launch", lambda path, version: launched.append((path, version)))
+    api, calls, r = _offer(monkeypatch)
+    assert r["install"] is True
+
+    _download(api)
+
+    names = [fn for fn, _ in calls]
+    assert ("updateProgress", {"got": 2, "total": 2}) in calls
+    assert names.index("updateStage") < names.index("updateReady")
+    assert calls[-1] == ("updateReady", {"version": "0.3.8"})
+    assert api.send("update_install") == {"ok": True}
+    assert launched == [(str(setup), "0.3.8")]
+
+
+def test_файл_не_прошёл_проверку(monkeypatch):
+    def prepare(version, progress, cancel, stage):
+        raise window.update.UpdateError("подпись установщика: NotSigned", "verify")
+
+    monkeypatch.setattr(window.update, "prepare", prepare)
+    monkeypatch.setattr(window.update, "launch", lambda *a: (_ for _ in ()).throw(AssertionError))
+    monkeypatch.setattr(window.Api, "_log", lambda self, line: None)
+    api, calls, _r = _offer(monkeypatch)
+
+    _download(api)
+
+    assert calls[-1] == ("updateFailed", {"stage": "verify", "text": "подпись установщика: NotSigned"})
+    assert api.send("update_install")["ok"] is False
+
+
+def test_отмена_скачивания(monkeypatch):
+    def prepare(version, progress, cancel, stage):
+        assert cancel.wait(5)
+        raise window.update.Cancelled()
+
+    monkeypatch.setattr(window.update, "prepare", prepare)
+    api, calls, _r = _offer(monkeypatch)
+
+    assert api.send("update_download") == {"ok": True}
+    api.send("update_cancel")
+    api._upd_thread.join(5)
+
+    assert calls[-1] == ("updateFailed", {"stage": "cancel", "text": ""})
+
+
+def test_итог_не_стирается_пока_setup_работает(monkeypatch):
+    cleared = []
+    monkeypatch.setattr(window.update, "clear", lambda: cleared.append(True))
+    monkeypatch.setattr(window.update, "pending", lambda: {"version": "0.3.8", "state": "installing"})
+
+    _api(monkeypatch).send("update_seen")
+    assert cleared == []
+
+    monkeypatch.setattr(window.update, "pending", lambda: {"version": "0.3.8", "state": "tunnel"})
+    _api(monkeypatch).send("update_seen")
+    assert cleared == [True]
 
 
 def test_диагностика_без_службы_через_мост(monkeypatch):
