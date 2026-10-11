@@ -15,7 +15,7 @@ from tunnelvpn import buildconfig, probe, service, tunnel
 OFFICE = (12, "192.168.19.1")
 HOME = (7, "192.168.0.1")
 # Выход через основной туннель home.
-HOME_SOCKS = buildconfig.socks_tag("home")
+HOME_VIA = buildconfig.via_tag("home")
 
 
 @pytest.fixture(autouse=True)
@@ -63,7 +63,7 @@ class _Tunnel:
         self.main_id = "home"
         for side in self.sides:
             side.proc = _Alive()
-        self.out = HOME_SOCKS
+        self.out = HOME_VIA
         self.outs = []           # переключения выхода по порядку
         self.restarts = []       # id перезапущенных туннелей
         self.side_fail = ""
@@ -544,7 +544,7 @@ def test_повтор_раньше_паузы_не_перезапускает(mo
     state = _rounds(core, 1)
     assert core.tunnel.restarts == ["home"]
 
-    core.tunnel.out = HOME_SOCKS
+    core.tunnel.out = HOME_VIA
     _append(log, *_three_dead())
     _rounds(core, 3, state)
 
@@ -625,10 +625,10 @@ def test_ожил_личный_выход_возвращается_на_него
 
     _rounds(core, 1)
 
-    assert core.tunnel.outs == [HOME_SOCKS]
+    assert core.tunnel.outs == [HOME_VIA]
     assert core.tunnel.restarts == []
     assert _said(core, "«Личный» везёт (проверка за 120 мс)")
-    assert core.prober.snapshot()["out"] == HOME_SOCKS
+    assert core.prober.snapshot()["out"] == HOME_VIA
 
 
 def test_уведённый_выход_не_мечется_обратно_раньше_паузы(monkeypatch, tmp_path):
@@ -647,7 +647,7 @@ def test_уведённый_выход_не_мечется_обратно_ран
     core._back_at = 0.0                          # пауза прошла
     _rounds(core, 1, state)
 
-    assert core.tunnel.outs == [buildconfig.DIRECT_TAG, HOME_SOCKS]
+    assert core.tunnel.outs == [buildconfig.DIRECT_TAG, HOME_VIA]
 
 
 def test_живой_но_не_везущий_личный_перезапускается(monkeypatch):
@@ -1166,7 +1166,7 @@ def test_таймауты_без_шлюза_не_копятся(monkeypatch, tmp
 def test_выключенный_туннель_выход_в_статусе_пуст(monkeypatch):
     core = _core(monkeypatch)
     _rounds(core, 1)
-    assert core.prober.snapshot()["out"] == HOME_SOCKS
+    assert core.prober.snapshot()["out"] == HOME_VIA
 
     core.tunnel.uplink = None
     _rounds(core, 1)

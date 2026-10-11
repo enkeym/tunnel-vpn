@@ -617,7 +617,7 @@ class Prober:
         if not p or not p["running"]:
             return "", ""
         if p["mode"] == "all":
-            ms = delay(buildconfig.socks_tag(tid))
+            ms = delay(buildconfig.via_tag(tid))
             return ("up", f"{ms} мс") if ms else ("error", "сервер не отвечает")
         got = {}
         if p["dns"] or p["host"]:

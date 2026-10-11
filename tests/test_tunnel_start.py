@@ -120,11 +120,18 @@ class FakeIfconfig:
 
 
 HOME_SOCKS = buildconfig.socks_tag("home")
+HOME_VIA = buildconfig.via_tag("home")
 BUILT = [("work", "Работа"), ("home", "Личный")]
 
 
 def _side(tun, tid):
     return next(s for s in tun.sides if s.tid == tid)
+
+
+def _side_cfg(ip, port=1080):
+    return {"inbounds": [{"type": "socks", "tag": "socks-in", "listen_port": port,
+                         "users": [{"username": "u", "password": "p"}]}],
+            "endpoints": [{"peers": [{"address": ip}]}]}
 
 
 @pytest.fixture
@@ -136,17 +143,19 @@ def env(monkeypatch, tmp_path):
     cfg = tmp_path / "config.json"
     cfg.write_text(json.dumps({
         "outbounds": [{"type": "selector", "tag": buildconfig.OUT_TAG,
-                       "outbounds": [HOME_SOCKS, buildconfig.DIRECT_TAG],
-                       "default": HOME_SOCKS},
+                       "outbounds": [HOME_VIA, buildconfig.DIRECT_TAG],
+                       "default": HOME_VIA},
                       {"type": "socks", "tag": "socks-work", "server_port": 1080},
-                      {"type": "socks", "tag": HOME_SOCKS, "server_port": 1081}],
+                      {"type": "socks", "tag": HOME_SOCKS, "server_port": 1081},
+                      {"type": "socks", "tag": "socks2-work", "server_port": 1082},
+                      {"type": "socks", "tag": "socks2-home", "server_port": 1083}],
     }))
     monkeypatch.setattr(paths, "CONFIG_JSON", str(cfg))
     monkeypatch.setattr(paths, "STATE", str(tmp_path))
     monkeypatch.setattr(paths, "RUN", str(tmp_path))
-    for tid, ip in (("work", "203.0.113.20"), ("home", "203.0.113.10")):
+    for tid, ip, port in (("work", "203.0.113.20", 1080), ("home", "203.0.113.10", 1081)):
         with open(buildconfig.side_json(tid), "w", encoding="utf-8") as fh:
-            json.dump({"endpoints": [{"peers": [{"address": ip}]}]}, fh)
+            json.dump(_side_cfg(ip, port), fh)
     monkeypatch.setattr(paths, "OWNED_FILE", str(tmp_path / "owned"))
     monkeypatch.setattr(paths, "REAL_IP_FILE", str(tmp_path / "real-ip"))
     logs = tmp_path / "logs"
@@ -190,7 +199,8 @@ def env(monkeypatch, tmp_path):
             with open(paths.REAL_IP_FILE, encoding="utf-8") as fh:
                 seen["real_ip"] = fh.read()
             net.singbox_running = True
-        elif any(buildconfig.side_json(tid) == cfg_path for tid in seen["dies"]):
+        elif any(buildconfig.side_json(tid, slot) == cfg_path for tid in seen["dies"]
+                 for slot in range(buildconfig.SLOTS)):
             proc.returncode = 1
         return proc
 
@@ -206,6 +216,10 @@ def env(monkeypatch, tmp_path):
     seen["log"] = lines
     seen["net"] = net
     monkeypatch.setattr(tun, "_keep_awake", lambda _on: None)
+    # Выбор via-<id> — clash_api основного, здесь его нет.
+    seen["picks"] = []
+    monkeypatch.setattr(tun, "_select", lambda group, tag: (
+        seen["picks"].append((group, tag)), True)[1])
     yield tun, build, seen
     for fh in (tun.logfile, *(side.logfile for side in tun.sides)):
         if fh is not None:
@@ -501,7 +515,7 @@ def test_повторное_включение_возвращает_выход_�
 
     assert seen["started"][-1] == buildconfig.side_json("home")
     assert tun.main.alive() and _side(tun, "work").alive()
-    assert outs == [HOME_SOCKS]
+    assert outs == [HOME_VIA]
 
 
 @pytest.mark.parametrize("which, rest", [("work", "home"), ("home", "work")])
@@ -517,12 +531,25 @@ def test_перезапуск_туннеля_не_трогает_остальн�
                             raising=False)
     monkeypatch.setattr(winnet, "resolve4", lambda name: "203.0.113.99")
 
+    picked_while_old = []
+    monkeypatch.setattr(tun, "_select", lambda group, tag: (
+        picked_while_old.append((group, tag, old.terminated)), True)[1])
+
     assert tun.restart_side(side) == ""
 
     assert old.terminated
     assert not main.terminated and not other_proc.terminated
     assert tun.proc is main and other.proc is other_proc
     assert side.proc is not old and side.alive()
+    # Без разрыва: новый — на втором слоте, via на него ещё при живом старом.
+    assert side.slot == 1
+    assert seen["started"][-1] == buildconfig.side_json(which, 1)
+    assert picked_while_old == [(buildconfig.via_tag(which),
+                                 buildconfig.socks_tag(which, 1), False)]
+    slot2 = buildconfig.read_json(buildconfig.side_json(which, 1))
+    assert slot2["inbounds"][0]["listen_port"] == {"work": 1082, "home": 1083}[which]
+    assert slot2["endpoints"] == buildconfig.read_json(
+        buildconfig.side_json(which))["endpoints"]
     assert not any(r[0] == "203.0.113.99/32" for r in seen["net"].added)
     assert not any("203.0.113.99" in parts for parts in tun.owned_lines())
 
@@ -718,8 +745,7 @@ def live(env, monkeypatch):
 
     def assemble(data, confs, log, links, api, resolve):
         seen["asked"].append({"links": links, "resolve": resolve})
-        sides = {tid: {"endpoints": [{"peers": [{"address": f"{tid}.example"}]}]}
-                 for tid in confs}
+        sides = {tid: _side_cfg(f"{tid}.example") for tid in confs}
         built = [(t["id"], t["name"]) for t in data["tunnels"] if t["enabled"]]
         return seen["main_cfg"], sides, seen["sets"], built, []
 
@@ -755,8 +781,9 @@ def test_смена_конфига_основного_перезапускает
     assert [(side.tid, err) for side, err in done] == [("home", "")]
     assert home.terminated and tun.main.alive() and tun.main.proc is not home
     assert not main.terminated and not work.terminated and tun.proc is main
-    # Пока процесс основного лежит — выход напрямую, потом обратно.
-    assert seen["outs"] == [buildconfig.DIRECT_TAG, HOME_SOCKS]
+    # Без разрыва: выход наружу не уходит напрямую, переключается via основного.
+    assert seen["outs"] == []
+    assert seen["picks"] == [(HOME_VIA, buildconfig.socks_tag("home", 1))]
     assert _peer("home")["address"] == "203.0.113.30"
     assert ("203.0.113.30/32", 18, "192.168.0.1", 1) in seen["net"].added
     assert any(parts[:2] == ["host", "203.0.113.30"] for parts in tun.owned_lines())
@@ -771,8 +798,9 @@ def test_сборка_берёт_связи_работающего_запуск�
 
     [asked] = seen["asked"]
     assert asked["resolve"] is False
-    assert {tid: link["port"] for tid, link in asked["links"].items()} == {
-        "work": 1080, "home": 1081}
+    assert {tid: [link["port"] for link in pair]
+            for tid, pair in asked["links"].items()} == {
+        "work": [1080, 1082], "home": [1081, 1083]}
 
 
 def test_переписанный_файл_того_же_конфига_тоже_смена(live):
@@ -833,7 +861,7 @@ def test_смена_уровня_журнала_без_полного_перез
     assert sorted((side.tid, err) for side, err in done) == [("home", ""), ("work", "")]
     assert work.terminated and home.terminated
     assert not main.terminated and tun.proc is main
-    assert seen["outs"] == [buildconfig.DIRECT_TAG, HOME_SOCKS]
+    assert seen["outs"] == []
     # Работающий конфиг, сменён только журнал: пир заново не резолвился.
     assert _peer("work")["address"] == "203.0.113.20" and _peer("home")["address"] == "203.0.113.10"
     assert all(buildconfig.read_json(buildconfig.side_json(tid))["log"] == level
@@ -950,9 +978,9 @@ def test_основной_выключен_выход_напрямую_без_п
 
     seen["main_cfg"] = json.loads(json.dumps(seen["main_cfg"]))
     next(o for o in seen["main_cfg"]["outbounds"]
-         if o["tag"] == buildconfig.OUT_TAG)["default"] = HOME_SOCKS
+         if o["tag"] == buildconfig.OUT_TAG)["default"] = HOME_VIA
     assert tun.reload_sides() == []
-    assert seen["outs"] == [buildconfig.DIRECT_TAG, HOME_SOCKS] and tun.main_id == "home"
+    assert seen["outs"] == [buildconfig.DIRECT_TAG, HOME_VIA] and tun.main_id == "home"
 
 
 def test_испорченный_tunnels_json_нужен_полный_перезапуск(live):
@@ -987,9 +1015,12 @@ def test_пир_не_резолвится_прежний_процесс_рабо
     assert [s.tid for s, _ in tun.reload_sides()] == ["home"]
 
 
-def test_не_поднявшийся_на_новом_конфиге_следующая_правка_не_трогает(live):
-    """Его конфиг уже на диске: поднимать будет сторож, лишний перезапуск не нужен."""
+def test_не_поднявшийся_на_новом_конфиге_старый_работает_правка_повторяется(live):
+    """Новый процесс упал — туннель везёт старый, via не трогаем; метка
+    прежняя, и следующая правка пробует снова."""
     tun, seen = live
+    work = _side(tun, "work")
+    old = work.proc
     seen["dies"] = {"work"}
     with open(tunnels.active_conf(tunnels.find(tunnels.load(), "work")), "a",
               encoding="utf-8") as fh:
@@ -997,8 +1028,25 @@ def test_не_поднявшийся_на_новом_конфиге_следую
 
     [(side, err)] = tun.reload_sides()
 
-    assert side.tid == "work" and "упал" in err
-    assert tun.reload_sides() == []
+    assert side is work and "упал" in err
+    assert work.proc is old and not old.terminated and work.slot == 0
+    assert seen["picks"] == []
+    seen["dies"] = set()
+    assert [(s.tid, e) for s, e in tun.reload_sides()] == [("work", "")]
+    assert old.terminated and work.slot == 1
+
+
+def test_via_не_переключился_новый_гасим_старый_работает(env, monkeypatch):
+    tun, _build, seen = env
+    assert tun.start() == ""
+    work = _side(tun, "work")
+    old = work.proc
+    monkeypatch.setattr(tun, "_select", lambda _group, _tag: False)
+
+    assert "не переключиться" in tun.restart_side(work)
+
+    assert work.proc is old and not old.terminated and work.slot == 0
+    assert seen["proc"].terminated
 
 
 def test_пир_с_маршрутом_второй_раз_не_ставится(live):
@@ -1063,11 +1111,12 @@ class FakeClash(http.server.BaseHTTPRequestHandler):
 
 
 @pytest.fixture
-def clash(env):
+def clash(env, monkeypatch):
     tun, _build, seen = env
+    monkeypatch.delattr(tun, "_select")
     server = http.server.HTTPServer(("127.0.0.1", 0), FakeClash)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    FakeClash.now = HOME_SOCKS
+    FakeClash.now = HOME_VIA
     FakeClash.paths_seen = []
     with open(paths.CONFIG_JSON, encoding="utf-8") as fh:
         cfg = json.load(fh)
@@ -1084,11 +1133,11 @@ def clash(env):
 def test_переключение_выхода_на_direct_и_обратно(clash):
     tun, _seen = clash
 
-    assert tun.out_now() == HOME_SOCKS
+    assert tun.out_now() == HOME_VIA
     assert tun.set_out(buildconfig.DIRECT_TAG)
     assert tun.out_now() == buildconfig.DIRECT_TAG
-    assert tun.set_out(HOME_SOCKS)
-    assert tun.out_now() == HOME_SOCKS
+    assert tun.set_out(HOME_VIA)
+    assert tun.out_now() == HOME_VIA
 
 
 def test_задержка_живого_и_мёртвого_выхода(clash):
@@ -1115,11 +1164,12 @@ def test_системный_прокси_не_перехватывает_clash_a
     monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
     monkeypatch.setenv("NO_PROXY", "")
 
-    assert tun.out_now() == HOME_SOCKS
+    assert tun.out_now() == HOME_VIA
 
 
-def test_без_clash_api_выход_не_переключается(env):
+def test_без_clash_api_выход_не_переключается(env, monkeypatch):
     tun, _build, _seen = env
+    monkeypatch.delattr(tun, "_select")
 
     assert tun.set_out(buildconfig.DIRECT_TAG) is False
     assert tun.out_now() == ""

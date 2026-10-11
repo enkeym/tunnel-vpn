@@ -1157,7 +1157,7 @@ class Core:
                 continue
             if (side is main and hits and not stuck and side.alive()
                     and out != buildconfig.DIRECT_TAG
-                    and self.tunnel.delay(buildconfig.socks_tag(side.tid)) is not None):
+                    and self.tunnel.delay(buildconfig.via_tag(side.tid)) is not None):
                 # Лежит чужой адрес, а не туннель: выход не трогаем.
                 self._dead_hits = tuple(h for h in self._dead_hits
                                         if h[1] != side.tag)
@@ -1223,7 +1223,7 @@ class Core:
         if now < self._back_at:
             return buildconfig.DIRECT_TAG, None
         self._back_at = now + BACK_EVERY
-        tag = buildconfig.socks_tag(main.tid)
+        tag = buildconfig.via_tag(main.tid)
         ms = self.tunnel.delay(tag)
         if ms is None:
             return buildconfig.DIRECT_TAG, False

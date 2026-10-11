@@ -101,6 +101,9 @@ class Side:
         # Метка .conf, из которого собран процесс (_conf_stamp): по ней
         # reload_sides узнаёт, у кого сменился конфиг.
         self.source = None
+        # Слот socks, на котором работает процесс, — его выбирает selector
+        # via-<id>; перезапуск живого идёт на другой (Tunnel.restart_side).
+        self.slot = 0
 
     @property
     def tag(self):
@@ -332,7 +335,7 @@ class Tunnel:
                     err = self._start_side(side)
                     self._report_side(side, err)
                     if side is self.main and not err:
-                        self.set_out(buildconfig.socks_tag(side.tid))
+                        self.set_out(buildconfig.via_tag(side.tid))
             return ""
 
         # Уборка за прошлым запуском — до того, как поднимем свой. Прошлый мог
@@ -601,35 +604,62 @@ class Tunnel:
     # ---------------------------------------------------- боковые процессы
 
     def _start_side(self, side):
-        """Запускает боковой процесс и ждёт, пока он откроет socks. '' или ошибка.
+        """Запускает боковой процесс на его слоте с новым журналом и ждёт
+        socks (_spawn). '' или ошибка."""
+        link = self._link(side, side.slot)
+        if not link:
+            return f"в собранном конфиге нет связи с процессом {side.tag}"
+        self._stop_side(side)
+        side.logfile = self.open_log(side.log_prefix)
+        side.log_start = (side.logfile.name, side.logfile.tell())
+        side.proc, err = self._spawn(side, side.slot, link, side.logfile)
+        if side.proc is None:
+            self._stop_side(side)
+        return err
+
+    @staticmethod
+    def _link(side, slot):
+        """Связь socks слота slot из собранного конфига, иначе None."""
+        link = buildconfig.side_link(buildconfig.read_json(paths.CONFIG_JSON),
+                                     side.tid, slot)
+        return link if link and link.get("port") else None
+
+    def _spawn(self, side, slot, link, logfile):
+        """Процесс туннеля side на слоте slot (связь link) с выводом в logfile:
+        (процесс, '') или (упавший процесс или None, ошибка); не открыл socks
+        за SIDE_WAIT — погашен, None.
 
         Ждём именно socks, а не просто живой процесс: основной отдаёт трафик
         на этот порт, и до его открытия первые запросы получили бы отказ.
         """
-        link = buildconfig.side_link(buildconfig.read_json(paths.CONFIG_JSON), side.tid)
-        if not link or not link.get("port"):
-            return f"в собранном конфиге нет связи с процессом {side.tag}"
-        self._stop_side(side)
-        side.logfile = self.open_log(side.log_prefix)
-        log_path = side.logfile.name
-        side.log_start = (log_path, side.logfile.tell())
-        self.log(f"→ запускаю процесс «{side.title}», журнал: {log_path}")
-        side.proc = subprocess.Popen(
-            [paths.SINGBOX, "run", "-c", buildconfig.side_json(side.tid),
-             "--disable-color"],
+        cfg_path = buildconfig.side_json(side.tid)
+        if slot:
+            # Сборка пишет конфиг первого слота; другой — тот же с его связью.
+            cfg = buildconfig.read_json(cfg_path)
+            if not cfg.get("inbounds"):
+                return None, f"конфиг процесса «{side.title}» не прочитать"
+            cfg_path = buildconfig.side_json(side.tid, slot)
+            try:
+                buildconfig.write_json(cfg_path, buildconfig.slot_config(cfg, link))
+            except OSError as exc:
+                return None, f"конфиг процесса «{side.title}» не записать: {exc}"
+        self.log(f"→ запускаю процесс «{side.title}», журнал: {logfile.name}")
+        proc = subprocess.Popen(
+            [paths.SINGBOX, "run", "-c", cfg_path, "--disable-color"],
             cwd=paths.BIN,
-            stdout=side.logfile, stderr=subprocess.STDOUT,
+            stdout=logfile, stderr=subprocess.STDOUT,
             creationflags=_NO_WINDOW,
         )
         deadline = time.time() + SIDE_WAIT
         while time.time() < deadline:
-            if side.proc.poll() is not None:
-                return f"процесс «{side.title}» упал на старте: {_fatal_line(log_path)}"
+            if proc.poll() is not None:
+                return proc, (f"процесс «{side.title}» упал на старте: "
+                              f"{_fatal_line(logfile.name)}")
             if _port_open(link["port"]):
-                return ""
+                return proc, ""
             time.sleep(0.25)
-        self._stop_side(side)
-        return f"процесс «{side.title}» не открыл socks за {SIDE_WAIT}с"
+        _end(proc)
+        return None, f"процесс «{side.title}» не открыл socks за {SIDE_WAIT}с"
 
     def side_with_key(self, key):
         """id работающего бокового процесса с приватным ключом key, иначе None.
@@ -763,6 +793,10 @@ class Tunnel:
     def restart_side(self, side):
         """Перезапускает один боковой процесс. '' или текст ошибки.
 
+        Живой — без разрыва (_swap_slot): новый процесс на свободном слоте,
+        via-<id> на него, стоп старого; не вышло — старый работает дальше.
+        Лежащий — заново на своём слоте: его via-<id> уже туда смотрит.
+
         tun, маршруты и второй туннель не трогаем: интернет на это время не
         падает. Пира заново не резолвим: DNS сейчас туннельный, а не сети, и
         7 октября в офисе отдал корп-имя внешним адресом вместо внутреннего —
@@ -773,11 +807,32 @@ class Tunnel:
         """
         if self.uplink is None:
             return "туннель не поднят"
-        self._stop_side(side)
-        err = self._start_side(side)
+        err = self._swap_slot(side) if side.alive() else self._start_side(side)
         if not err:
             self.log(f"→ процесс «{side.title}» перезапущен")
         return err
+
+    def _swap_slot(self, side):
+        """Живой боковой side — на новый процесс на свободном слоте. '' или ошибка.
+
+        Журнал — тот же открытый файл: с двумя дескрипторами одного файла
+        процессы писали бы каждый со своего места и затирали друг друга, а сторож
+        читает его дальше с прежнего log_start.
+        """
+        slot = (side.slot + 1) % buildconfig.SLOTS
+        link = self._link(side, slot)
+        if not link:
+            return f"в собранном конфиге нет связи с процессом {side.tag}"
+        proc, err = self._spawn(side, slot, link, side.logfile)
+        if not err and not self._select(buildconfig.via_tag(side.tid),
+                                        buildconfig.socks_tag(side.tid, slot)):
+            err = f"на новый процесс «{side.title}» не переключиться"
+        if err:
+            _end(proc)
+            return err
+        _end(side.proc)
+        side.proc, side.slot = proc, slot
+        return ""
 
     def live_plan(self):
         """Сборка правки для reload_sides или None, если на лету её не
@@ -786,8 +841,7 @@ class Tunnel:
         if self.uplink is None or self.proc is None or self.proc.poll() is not None:
             return None
         running = buildconfig.read_json(paths.CONFIG_JSON)
-        links = {tid: buildconfig.side_link(running, tid)
-                 for tid in buildconfig.side_ids(running)}
+        links = buildconfig.links_of(running)
         try:
             data, confs = buildconfig.sources()
             # Имена пиров не резолвим: в основном конфиге адресов пиров нет,
@@ -815,7 +869,8 @@ class Tunnel:
         основного (его вкл/выкл — на лету, rule-set no-v6), — или rule-set не
         записать. Отказ sing-box принять rule-set виден только через
         RULE_SET_WAIT — его встречает on_reject.
-        Пока лежит процесс основного туннеля, выход идёт напрямую.
+        Сменившийся боковой перезапускается без разрыва (restart_side), основной
+        тоже: выход наружу на это время напрямую не уходит.
 
         Порядок: включённый — старт бокового и socks до rule-set, иначе первые
         соединения получили бы отказ; выключенный — пустой rule-set до остановки.
@@ -930,7 +985,7 @@ class Tunnel:
             return
         self.main_id = new
         main = self.main
-        tag = (buildconfig.socks_tag(new) if main and main.alive()
+        tag = (buildconfig.via_tag(new) if main and main.alive()
                else buildconfig.DIRECT_TAG)
         self.log(f"→ основной туннель: {main.title if main else 'нет, остальное напрямую'}")
         self.set_out(tag)
@@ -950,17 +1005,22 @@ class Tunnel:
         except OSError as exc:
             return f"конфиг процесса «{side.title}» не записать: {exc}"
         self.log(f"→ сменился уровень журнала — перезапускаю процесс «{side.title}»")
-        return self._restart_out(side)
+        return self.restart_side(side)
 
     def _swap_side(self, side, cfg, stamp):
         """Боковой процесс на новый конфиг cfg (пир ещё именем) из .conf с меткой
-        stamp. '' или ошибка; при ошибке до записи конфига старый процесс работает
-        дальше, а метка прежняя — следующая правка попробует снова."""
+        stamp. '' или ошибка; не записался конфиг или не поднялся новый процесс при
+        живом старом — старый работает дальше, а метка прежняя — следующая правка
+        попробует снова."""
+        before = side.source
         err = self._place_side(side, cfg, stamp)
         if err:
             return err
         self.log(f"→ сменился конфиг «{side.title}» — перезапускаю только его процесс")
-        return self._restart_out(side)
+        err = self.restart_side(side)
+        if err and side.alive():
+            side.source = before
+        return err
 
     def _place_side(self, side, cfg, stamp):
         """Конфиг бокового на диск до старта: пир резолвлен, host-маршрут к нему
@@ -987,16 +1047,6 @@ class Tunnel:
         # На диске уже новый: не поднимется — сторож поднимет его из этого файла.
         side.source = stamp
         return ""
-
-    def _restart_out(self, side):
-        """restart_side; пока лежит процесс основного туннеля — выход напрямую."""
-        is_main = side is self.main
-        if is_main:
-            self.set_out(buildconfig.DIRECT_TAG)
-        err = self.restart_side(side)
-        if is_main and not err:
-            self.set_out(buildconfig.socks_tag(side.tid))
-        return err
 
     def _peers_owned(self):
         """Адреса пиров, host-маршруты к которым мы уже ставили."""
@@ -1051,12 +1101,18 @@ class Tunnel:
 
     def set_out(self, tag):
         """Переключает выход наружу на tag без перезапуска. True — вышло."""
-        try:
-            self._clash(f"/proxies/{buildconfig.OUT_TAG}", "PUT", {"name": tag})
-        except (OSError, ValueError) as exc:
-            self.log(f"!! выход на {tag} не переключить: {exc}")
+        if not self._select(buildconfig.OUT_TAG, tag):
             return False
         self.log(f"→ выход наружу: {tag}")
+        return True
+
+    def _select(self, group, tag):
+        """Выбор selector group — tag через clash_api. True — вышло."""
+        try:
+            self._clash(f"/proxies/{group}", "PUT", {"name": tag})
+        except (OSError, ValueError) as exc:
+            self.log(f"!! {group} на {tag} не переключить: {exc}")
+            return False
         return True
 
     def out_now(self):

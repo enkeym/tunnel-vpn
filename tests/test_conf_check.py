@@ -102,11 +102,11 @@ def _plan(monkeypatch, **p):
     monkeypatch.setattr(probe.Prober, "check_plan", staticmethod(lambda: [item]))
 
 
-def test_живой_основной_проверяется_задержкой_через_его_socks(monkeypatch):
+def test_живой_основной_проверяется_задержкой_через_его_via(monkeypatch):
     _plan(monkeypatch, mode="all")
     tags = []
     assert probe.Prober().check_one("t1", lambda tag: tags.append(tag) or 42) == ("up", "42 мс")
-    assert tags == [buildconfig.socks_tag("t1")]
+    assert tags == [buildconfig.via_tag("t1")]
 
 
 def test_живой_по_списку_dns_ответил(monkeypatch):

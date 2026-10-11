@@ -434,13 +434,13 @@ def test_без_dns_и_прошлого_адреса_сборка_прекращ
 
 # ---------------------------------------------------------------- DNS
 
-def test_dns_туннеля_по_tcp_через_его_socks():
+def test_dns_туннеля_по_tcp_через_его_via():
     """По UDP ответы корп-DNS терялись, и запрос висел до таймаута sing-box."""
     servers, rules = buildconfig.dns_section(
         [("work", "10.0.0.53", ["corp.example"])], "out")
 
     assert servers[0] == {"type": "tcp", "tag": "dns-work",
-                          "server": "10.0.0.53", "detour": "socks-work"}
+                          "server": "10.0.0.53", "detour": "via-work"}
     assert servers[1] == {"type": "udp", "tag": "dns", "server": "8.8.8.8",
                           "detour": "out"}
     assert rules == [{"rule_set": ["names-work"], "server": "dns-work"}]
@@ -542,6 +542,26 @@ def test_у_каждого_туннеля_свой_socks_с_паролем(build
     assert len(passwords) == 3
 
 
+def test_второй_слот_свой_socks_и_файл(build):
+    """Перезапуск без разрыва поднимает новый процесс рядом со старым: у него
+    свой порт и пароль, а туннель им socks2 для side_ids не становится."""
+    main, sides = build(THREE)
+
+    first, second = buildconfig.side_link(main, "work"), buildconfig.side_link(main, "work", 1)
+    assert second["port"] != first["port"] and second["password"] != first["password"]
+    cfg = buildconfig.slot_config(sides["work"], second)
+    assert cfg["inbounds"][0]["listen_port"] == second["port"]
+    assert cfg["inbounds"][0]["users"] == [{"username": second["username"],
+                                          "password": second["password"]}]
+    assert cfg["endpoints"] == sides["work"]["endpoints"]
+    assert sides["work"]["inbounds"][0]["listen_port"] == first["port"]
+    assert buildconfig.side_ids(main) == ["work", "lab", "home"]
+    assert _by_tag(main["outbounds"], "via-work") == {
+        "type": "selector", "tag": "via-work", "outbounds": ["socks-work", "socks2-work"],
+        "default": "socks-work", "interrupt_exist_connections": True}
+    assert buildconfig.side_json("work", 1).endswith("tunnel2-work.json")
+
+
 def test_пароль_socks_новый_на_каждую_сборку(build):
     first, _ = build(THREE)
     second, _ = build(THREE)
@@ -556,10 +576,10 @@ def test_порядок_правил_списки_локальная_сеть_м
         {"action": "sniff"},
         {"protocol": "dns", "action": "hijack-dns"},
         {"rule_set": ["no-v6"], "action": "reject"},
-        {"rule_set": ["rules-work"], "outbound": "socks-work"},
-        {"rule_set": ["rules-lab"], "outbound": "socks-lab"},
+        {"rule_set": ["rules-work"], "outbound": "via-work"},
+        {"rule_set": ["rules-lab"], "outbound": "via-lab"},
         # У основного — с пустым rule-set: его смена меняет файл, а не конфиг.
-        {"rule_set": ["rules-home"], "outbound": "socks-home"},
+        {"rule_set": ["rules-home"], "outbound": "via-home"},
         {"ip_cidr": buildconfig.LOCAL_NETS, "outbound": "direct"},
         {"rule_set": ["bypass"], "outbound": "direct"},
     ]
@@ -597,7 +617,7 @@ def test_пускать_нечего_правило_есть_rule_set_пусто
 
     main, _ = build(items, texts=texts)
 
-    assert {"rule_set": ["rules-lab"], "outbound": "socks-lab"} in main["route"]["rules"]
+    assert {"rule_set": ["rules-lab"], "outbound": "via-lab"} in main["route"]["rules"]
     assert _load(tmp_path / "rules-lab.json") == {"version": 3, "rules": []}
 
 
@@ -608,8 +628,8 @@ def test_остальное_через_основной_с_запасным_dire
     out = _by_tag(main["outbounds"], "out")
     assert out["type"] == "selector"
     # Все туннели: основным становится любой переключением, без перезапуска.
-    assert out["outbounds"] == ["socks-work", "socks-lab", "socks-home", "direct"]
-    assert out["default"] == "socks-home"
+    assert out["outbounds"] == ["via-work", "via-lab", "via-home", "direct"]
+    assert out["default"] == "via-home"
     assert main["inbounds"][0]["mtu"] == buildconfig.TUN_MTU == 1280
     assert buildconfig.api_of(main)[0].startswith("127.0.0.1:")
     assert buildconfig.api_of(main)[1]
@@ -620,7 +640,7 @@ def test_dns_только_у_туннелей_по_списку_с_dns_в_conf(b
 
     assert main["dns"]["servers"] == [
         {"type": "tcp", "tag": "dns-work", "server": "10.0.0.53",
-         "detour": "socks-work"},
+         "detour": "via-work"},
         {"type": "udp", "tag": "dns", "server": "8.8.8.8", "detour": "out"},
     ]
     assert main["dns"]["rules"] == [{"rule_set": ["names-work"], "server": "dns-work"}]
@@ -770,9 +790,9 @@ def _again(main, tmp_path, texts, items=THREE):
     имена пиров не резолвим."""
     data = tunnels.validate({"tunnels": items})
     confs = {tid: _write(tmp_path, f"{tid}-2.conf", text) for tid, text in texts.items()}
-    links = {tid: buildconfig.side_link(main, tid) for tid in buildconfig.side_ids(main)}
     config, sides, sets, _, _ = buildconfig.assemble(
-        data, confs, lambda line: None, links, tunnel._api_link(main), resolve=False)
+        data, confs, lambda line: None, buildconfig.links_of(main),
+        tunnel._api_link(main), resolve=False)
     return json.loads(json.dumps(config)), sides, sets
 
 
@@ -819,7 +839,7 @@ def test_другой_mtu_туннеля_основной_процесс_не_м
 
 @pytest.mark.parametrize("change, out", [
     ({"home": {"mode": "list"}}, "direct"),
-    ({"home": {"mode": "list"}, "lab": {"mode": "all"}}, "socks-lab"),
+    ({"home": {"mode": "list"}, "lab": {"mode": "all"}}, "via-lab"),
     ({"home": {"enabled": False}}, "direct"),
 ])
 def test_смена_основного_меняет_только_rule_set_и_выход(build, tmp_path, change, out):
@@ -857,7 +877,8 @@ def test_выключение_основного_с_v6_на_лету(build, tmp_
 
 
 @pytest.mark.parametrize("tag, ep", [
-    ("socks-work", "wg-work"), ("socks-", "socks-"), ("direct", "direct"),
+    ("socks-work", "wg-work"), ("socks2-work", "wg-work"), ("via-work", "wg-work"),
+    ("socks-", "socks-"), ("direct", "direct"),
 ])
 def test_socks_выход_в_статистике_под_тегом_туннеля(tag, ep):
     assert buildconfig.ep_of_socks(tag) == ep
@@ -899,6 +920,10 @@ def _load(path):
 
 
 def test_собирает_туннели_из_tunnels_json(state):
+    # Конфиг второго слота прошлого запуска: в нём ключ и старый пароль.
+    state.mkdir(parents=True)
+    (state / "tunnel2-home.json").write_text("{}", encoding="utf-8")
+
     built = buildconfig.main(log=lambda line: None)
 
     assert built == [("work", "Work"), ("home", "Home")]
@@ -906,10 +931,11 @@ def test_собирает_туннели_из_tunnels_json(state):
     assert buildconfig.side_ids(main) == ["work", "home"]
     assert (state / "tunnel-work.json").exists()
     assert (state / "tunnel-home.json").exists()
+    assert not (state / "tunnel2-home.json").exists()
     [rule] = buildconfig.rule_set_rules(main, "rules-work")
     assert rule["rules"][0]["domain_suffix"] == ["corp.example"]
     assert rule["rules"][1] == {"ip_cidr": ["10.10.5.9/32"], "invert": True}
-    assert _by_tag(main["outbounds"], "out")["default"] == "socks-home"
+    assert _by_tag(main["outbounds"], "out")["default"] == "via-home"
     assert buildconfig.main_id(main) == "home"
 
 

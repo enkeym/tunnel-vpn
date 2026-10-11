@@ -606,7 +606,7 @@ def dns_section(by_tunnel, public_detour):
     servers, rules = [], []
     for tid, server, _domains in by_tunnel:
         servers.append({"type": "tcp", "tag": dns_tag(tid),
-                        "server": server, "detour": socks_tag(tid)})
+                        "server": server, "detour": via_tag(tid)})
         rules.append({"rule_set": [names_tag(tid)], "server": dns_tag(tid)})
     # Публичный DNS идёт тем же выходом, что и трафик: упал основной туннель —
     # переключатель OUT_TAG уводит в direct и его. Иначе без основного не
@@ -625,7 +625,10 @@ LOCAL_NETS = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
 
 # Каждый туннель живёт в своём процессе sing-box (боковой: state/run/tunnel-<id>.json):
 # сторож перезапускает упавший один, не трогая tun, маршруты и другие туннели.
-# Основной процесс ходит в каждый через свой socks на loopback.
+# Основной процесс ходит в каждый через selector via-<id> над двумя socks на
+# loopback — слотами: перезапуск поднимает новый процесс на свободном слоте,
+# переключает via-<id> и только потом гасит старый (Tunnel.restart_side), и
+# соединения не ждут, пока процесса нет совсем.
 #
 # Теги туннеля строятся из его id. id — только [a-z0-9-] (tunnels.check_id),
 # поэтому тег туннеля не совпадёт с постоянными: у тех нет префикса с дефисом.
@@ -633,8 +636,17 @@ def ep_tag(tid):
     return f"wg-{tid}"
 
 
-def socks_tag(tid):
-    return f"socks-{tid}"
+SLOTS = 2
+
+
+def socks_tag(tid, slot=0):
+    """socks-<id> и socks2-<id>: префикс второго слота не начинается с
+    «socks-», и side_ids не примет его за туннель."""
+    return f"socks{slot + 1 if slot else ''}-{tid}"
+
+
+def via_tag(tid):
+    return f"via-{tid}"
 
 
 def dns_tag(tid):
@@ -717,10 +729,11 @@ def read_json(path):
     return data if isinstance(data, dict) else {}
 
 
-def side_json(tid):
+def side_json(tid, slot=0):
     """Путь к конфигу бокового процесса туннеля. С префиксом: id «config»
-    иначе затёр бы config.json рядом."""
-    return os.path.join(paths.RUN, f"tunnel-{tid}.json")
+    иначе затёр бы config.json рядом. Второй слот — tunnel2-<id>.json: его
+    пишет запуск из первого (slot_config), сборка — только первый."""
+    return os.path.join(paths.RUN, f"tunnel{slot + 1 if slot else ''}-{tid}.json")
 
 
 def side_config(ep, link, level="info"):
@@ -742,6 +755,14 @@ def side_config(ep, link, level="info"):
             "auto_detect_interface": False,
         },
     }
+
+
+def slot_config(cfg, link):
+    """Боковой конфиг cfg со входом socks на связь link другого слота."""
+    inbound = {**cfg["inbounds"][0], "listen_port": link["port"],
+               "users": [{"username": link["username"],
+                          "password": link["password"]}]}
+    return {**cfg, "inbounds": [inbound]}
 
 
 def trial_config(ep, link):
@@ -770,14 +791,22 @@ def rule_set_rules(main_cfg, tag):
     return []
 
 
-def side_link(main_cfg, tid):
-    """Порт и логин socks бокового процесса из основного конфига, иначе None."""
+def side_link(main_cfg, tid, slot=0):
+    """Порт и логин socks слота slot бокового процесса из основного конфига,
+    иначе None."""
     for ob in main_cfg.get("outbounds", []):
-        if ob.get("tag") == socks_tag(tid):
+        if ob.get("tag") == socks_tag(tid, slot):
             return {"port": ob.get("server_port"),
                     "username": ob.get("username"),
                     "password": ob.get("password")}
     return None
+
+
+def links_of(main_cfg):
+    """{id: [связь каждого слота]} туннелей основного конфига — links для
+    assemble: с ними основной выходит тем же."""
+    return {tid: [side_link(main_cfg, tid, s) for s in range(SLOTS)]
+            for tid in side_ids(main_cfg)}
 
 
 def side_ids(main_cfg):
@@ -790,7 +819,7 @@ def side_ids(main_cfg):
 
 def main_id(main_cfg):
     """id основного туннеля — того, что за selector out, — иначе None."""
-    prefix = socks_tag("")
+    prefix = via_tag("")
     for ob in main_cfg.get("outbounds", []):
         if ob.get("tag") == OUT_TAG:
             tag = ob.get("default") or ""
@@ -799,10 +828,11 @@ def main_id(main_cfg):
 
 
 def ep_of_socks(tag):
-    """Тег endpoint туннеля по тегу его socks-выхода; чужой тег — как есть."""
-    prefix = socks_tag("")
-    if tag.startswith(prefix) and len(tag) > len(prefix):
-        return ep_tag(tag[len(prefix):])
+    """Тег endpoint туннеля по тегу его socks-выхода любого слота или его
+    via-<id>; чужой тег — как есть."""
+    for prefix in (*(socks_tag("", s) for s in range(SLOTS)), via_tag("")):
+        if tag.startswith(prefix) and len(tag) > len(prefix):
+            return ep_tag(tag[len(prefix):])
     return tag
 
 
@@ -924,7 +954,7 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True):
     """(основной конфиг, {id: боковой конфиг}, {тег: rule-set}, [(id, имя)],
     строки сводки) без записи на диск.
 
-    links — {id: связь socks} и api — clash_api работающего запуска: с ними
+    links — {id: [связи socks слотов]} (links_of) и api — clash_api работающего запуска: с ними
     основной конфиг выходит тем же, если туннели не менялись. resolve=False —
     имена пиров в боковых не резолвятся.
     """
@@ -1018,7 +1048,7 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True):
         # остальное напрямую» требовали бы полного перезапуска (Tunnel.live_plan).
         sets[rules_tag(t["id"])] = rule_set(rule)
         rules.append({"rule_set": [rules_tag(t["id"])],
-                      "outbound": socks_tag(t["id"])})
+                      "outbound": via_tag(t["id"])})
         # DNS туннеля: из [Interface] DNS его .conf, иначе не поднимаем.
         servers = conf_dns(conf)
         if servers:
@@ -1041,20 +1071,28 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True):
     rules.append({"rule_set": [BYPASS_TAG], "outbound": DIRECT_TAG})
     sets[NO_V6_TAG] = rule_set({"ip_cidr": ["::/0"]} if tun_v6 and not v6 else None)
 
-    links = {t["id"]: links.get(t["id"]) or new_link() for t, _, _ in built}
+    # Связи всех слотов: прежние — если у работающего запуска они все есть.
+    links = {t["id"]: _slot_links(links.get(t["id"])) for t, _, _ in built}
     api = api or new_api()
     outbounds = [{"type": "direct", "tag": DIRECT_TAG}]
-    outbounds += [{"type": "socks", "tag": socks_tag(tid), "version": "5",
-                   "server": "127.0.0.1", "server_port": link["port"],
-                   "username": link["username"], "password": link["password"]}
-                  for tid, link in links.items()]
+    for tid, pair in links.items():
+        outbounds += [{"type": "socks", "tag": socks_tag(tid, slot), "version": "5",
+                       "server": "127.0.0.1", "server_port": link["port"],
+                       "username": link["username"], "password": link["password"]}
+                      for slot, link in enumerate(pair)]
+        # Слот выбирает Tunnel.restart_side. Соединения старого процесса рвём
+        # при переключении: он сейчас будет остановлен.
+        outbounds.append({"type": "selector", "tag": via_tag(tid),
+                          "outbounds": [socks_tag(tid, s) for s in range(SLOTS)],
+                          "default": socks_tag(tid),
+                          "interrupt_exist_connections": True})
     # Selector — и без основного, с выбором direct, и со всеми туннелями:
     # основной включается, выключается и меняется переключением через clash_api
     # (Tunnel.reload_sides), без перезапуска. Рвать соединения при смене
     # выхода: открытые через мёртвый основной туннель иначе висят до своих таймаутов.
     outbounds.append({"type": "selector", "tag": OUT_TAG,
-                      "outbounds": [socks_tag(tid) for tid in links] + [DIRECT_TAG],
-                      "default": socks_tag(main[0]["id"]) if main else DIRECT_TAG,
+                      "outbounds": [via_tag(tid) for tid in links] + [DIRECT_TAG],
+                      "default": via_tag(main[0]["id"]) if main else DIRECT_TAG,
                       "interrupt_exist_connections": True})
     dns_servers, dns_rules = dns_section(dns_tunnels, OUT_TAG)
 
@@ -1106,19 +1144,30 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True):
         {"type": "local", "tag": tag, "format": "source",
          "path": rule_set_json(tag)} for tag in sets]
 
-    sides = {t["id"]: side_config(ep, links[t["id"]], level) for t, _, ep in built}
+    sides = {t["id"]: side_config(ep, links[t["id"]][0], level) for t, _, ep in built}
     return (config, sides, sets,
             [(t["id"], t["name"]) for t, _, _ in built if t["enabled"]], report)
 
 
+def _slot_links(pair):
+    """Связи слотов туннеля: pair, если в нём все SLOTS, иначе новые."""
+    if pair and len(pair) == SLOTS and all(pair):
+        return list(pair)
+    return [new_link() for _ in range(SLOTS)]
+
+
 def _drop_stale_sides(keep):
     """Боковые конфиги и rule-set туннелей, которых больше нет, — с диска:
-    в боковых приватные ключи."""
+    в боковых приватные ключи. Второй слот — и у оставшихся: его конфиг
+    пишет запуск, а этот запуск — новый, все процессы на первом слоте."""
     try:
         names = os.listdir(paths.RUN)
     except OSError:
         return
+    slot2 = os.path.basename(side_json("", 1))[:-len(".json")]
     for f in names:
+        if f.startswith(slot2) and f.endswith(".json"):
+            _remove(os.path.join(paths.RUN, f))
         for prefix in ("tunnel-", rules_tag(""), names_tag("")):
             if (f.startswith(prefix) and f.endswith(".json")
                     and f[len(prefix):-len(".json")] not in keep):
