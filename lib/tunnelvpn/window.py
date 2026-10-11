@@ -24,6 +24,8 @@ POLL_EVERY = 2.0
 # Ход скачивания обновления — не чаще: куски по 256 КБ идут десятками в
 # секунду, а каждый вызов страницы — evaluate_js.
 PROGRESS_EVERY = 0.2
+# Тост при сбое скачивания: причина (тайм-аут, DNS, обрыв) — в журнал.
+DOWNLOAD_FAILED = "Не удалось скачать обновление → проверьте интернет и повторите"
 # Сколько ждём отчёта страницы о готовности. Не дождались — WebView2 не
 # поднялся, и окно так и висело бы серым: выходим с READY_LOST, трей
 # перезапустит окно.
@@ -541,9 +543,12 @@ class Api:
             self.js("updateFailed", {"stage": "cancel", "text": ""})
             return
         except Exception as exc:                       # noqa: BLE001
-            # stage verify — файл не прошёл проверку и уже удалён (update.prepare).
+            # stage verify — файл не прошёл проверку и уже удалён (update.prepare),
+            # страница пишет об этом сама. Подробность — только в журнал.
             self._log(f"обновление {version}: {exc}")
-            self.js("updateFailed", {"stage": getattr(exc, "stage", "download"), "text": str(exc)})
+            stage = getattr(exc, "stage", "download")
+            text = str(exc) if stage == "verify" else DOWNLOAD_FAILED
+            self.js("updateFailed", {"stage": stage, "text": text})
             return
         self._setup = (path, version)
         self.js("updateReady", {"version": version})
@@ -559,7 +564,7 @@ class Api:
             update.launch(path, version)
         except update.UpdateError as exc:
             self._log(f"обновление {version}: {exc}")
-            return {"ok": False, "error": str(exc)}
+            return {"ok": False, "error": "Установщик не запустился → скачайте обновление снова"}
         self._setup = None
         return {"ok": True}
 

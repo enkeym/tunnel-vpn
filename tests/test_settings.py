@@ -307,6 +307,41 @@ def test_файл_не_прошёл_проверку(monkeypatch):
     assert api.send("update_install")["ok"] is False
 
 
+def test_сбой_скачивания_без_исключения_в_тосте(monkeypatch):
+    def prepare(version, progress, cancel, stage):
+        raise window.update.UpdateError("не скачался x.exe: <urlopen error timed out>", "download")
+
+    logged = []
+    monkeypatch.setattr(window.update, "prepare", prepare)
+    monkeypatch.setattr(window.Api, "_log", lambda self, line: logged.append(line))
+    api, calls, _r = _offer(monkeypatch)
+
+    _download(api)
+
+    assert calls[-1] == ("updateFailed", {"stage": "download", "text": window.DOWNLOAD_FAILED})
+    assert "urlopen error timed out" in logged[-1]
+
+
+def test_установщик_не_запустился_без_исключения_в_тосте(tmp_path, monkeypatch):
+    setup = tmp_path / "TunnelVPN-0.3.8-setup.exe"
+    setup.write_bytes(b"MZ")
+
+    def launch(path, version):
+        raise window.update.UpdateError("установщик не запустился: [WinError 5]", "launch")
+
+    logged = []
+    monkeypatch.setattr(window.update, "prepare", lambda version, progress, cancel, stage: str(setup))
+    monkeypatch.setattr(window.update, "launch", launch)
+    monkeypatch.setattr(window.Api, "_log", lambda self, line: logged.append(line))
+    api, _calls, _r = _offer(monkeypatch)
+    _download(api)
+
+    r = api.send("update_install")
+
+    assert r["ok"] is False and "WinError" not in r["error"]
+    assert "WinError 5" in logged[-1]
+
+
 def test_отмена_скачивания(monkeypatch):
     def prepare(version, progress, cancel, stage):
         assert cancel.wait(5)
