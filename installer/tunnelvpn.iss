@@ -17,9 +17,30 @@
   #define MyVersion "0.0.0"
 #endif
 
+; Тёмный вид мастера: WizardStyle dark — с Inno 6.6, WizardBackColor — с 6.7.0.
+; В CI закреплена 6.7.1 (.github/workflows/build.yml). На старой ISCC сборка
+; дала бы другой вид или ошибку в директиве — лучше упасть здесь, понятно.
+#if Ver < EncodeVer(6, 7, 1)
+  #error Нужен Inno Setup 6.7.1 или новее
+#endif
+
+; Версия без хвоста «-beta»: её показывает мастер, и только числа принимает
+; VersionInfoVersion.
+#if Pos("-", MyVersion) > 0
+  #define MyPlainVersion Copy(MyVersion, 1, Pos("-", MyVersion) - 1)
+#else
+  #define MyPlainVersion MyVersion
+#endif
+
 #define MyName "TunnelVPN"
 #define MyExe "TunnelVPN-Tray.exe"
 #define MyCli "tunnelvpn.exe"
+; Издатель — тот же, что CompanyName в ресурсе версии exe (tunnelvpn.spec).
+#define MyPublisher "Enkeym"
+#define MyRepo "https://github.com/sotakeiteasy/dual-vpn"
+; Палитра окна приложения (lib/tunnelvpn/ui/app.css): --bg и --dim.
+#define ColorBg "#101012"
+#define ColorDim "#9a9aa6"
 ; Прежнее имя проекта: с него переезжают уже установленные копии.
 #define LegacyName "DualVPN"
 #define LegacyExe "DualVPN-Tray.exe"
@@ -30,8 +51,20 @@
 AppId={{8F3A5C21-4E7B-4D96-9A1F-2C6B8D4E7A31}
 AppName={#MyName}
 AppVersion={#MyVersion}
-AppPublisher=Enkeym
-AppUpdatesURL=https://github.com/sotakeiteasy/dual-vpn
+AppPublisher={#MyPublisher}
+; «Приложения и возможности»: ссылки «Сайт», «Справка» и «Обновления».
+AppPublisherURL={#MyRepo}
+AppSupportURL={#MyRepo}/issues
+AppUpdatesURL={#MyRepo}/releases
+; Без версии в имени: она в своём поле.
+UninstallDisplayName={#MyName}
+; Ресурс версии setup.exe: его описание показывает окно UAC.
+VersionInfoVersion={#MyPlainVersion}
+VersionInfoTextVersion={#MyVersion}
+VersionInfoProductTextVersion={#MyVersion}
+VersionInfoCompany={#MyPublisher}
+VersionInfoDescription=Установка {#MyName}
+VersionInfoProductName={#MyName}
 ; Папка прошлой установки TunnelVPN — из реестра, см. DefaultAppDir в [Code].
 DefaultDirName={code:DefaultAppDir}
 DefaultGroupName={#MyName}
@@ -46,7 +79,20 @@ OutputBaseFilename={#MyName}-{#MyVersion}-setup
 SetupIconFile=gen\TunnelVPN.ico
 Compression=lzma2/max
 SolidCompression=yes
-WizardStyle=modern
+; Только тёмный, как окно приложения, и с тёмным заголовком окна; без
+; линий-разделителей. Цвет фона — --bg окна, для мастера и деинсталлятора.
+WizardStyle=modern dark includetitlebar hidebevels
+WizardBackColor={#ColorBg}
+; Все масштабы из installer\gen (make_icon.py: WIZARD, WIZARD_SMALL): Inno
+; берёт ближайший к DPI экрана. Список — тот же, что проверяет build.ps1.
+WizardImageFile=gen\wizard-202x386.png,gen\wizard-269x515.png,gen\wizard-336x643.png,gen\wizard-403x772.png,gen\wizard-430x824.png,gen\wizard-534x1022.png
+WizardSmallImageFile=gen\wizard-small-58.png,gen\wizard-small-77.png,gen\wizard-small-97.png,gen\wizard-small-116.png,gen\wizard-small-124.png,gen\wizard-small-159.png
+; Новая установка: приветствие → папка → параметры (своя страница в [Code])
+; → установка. Поверх установленной приветствие и папку пропускаем, см.
+; ShouldSkipPage. «Готово к установке» нет: «Установить» — на параметрах.
+DisableWelcomePage=no
+DisableProgramGroupPage=yes
+DisableReadyPage=yes
 ; Служба ставится в систему и правит маршруты — без администратора никак.
 PrivilegesRequired=admin
 ; x64os, а не x64compatible: на ARM64 эмуляция x64 запустила бы программу, но
@@ -68,11 +114,72 @@ SignTool=tvpn
 [Languages]
 Name: "ru"; MessagesFile: "compiler:Languages\Russian.isl"
 
+; Стандартные тексты Inno, которые видны в наших сценариях: тем же языком,
+; что окно приложения, на «вы». Остальные — из Russian.isl.
+[Messages]
+SetupWindowTitle=Установка — %1
+UninstallAppTitle=Удаление
+UninstallAppFullTitle=Удаление — %1
+; Проверки до первой страницы: ArchitecturesAllowed и MinVersion в [Setup].
+OnlyOnTheseArchitectures=TunnelVPN работает только на 64-битной Windows для процессоров Intel и AMD. На Windows для ARM он пока не работает: драйвер сетевого адаптера нельзя запустить через эмуляцию — туннель не поднимется.
+WinVersionTooLowError=Нужна Windows 10 версии 1809 или новее.%n%nНа старых версиях не работают компоненты, без которых TunnelVPN не поднимет туннель.
+ExitSetupTitle=Прервать установку
+ExitSetupMessage=Установка не закончена. Если выйти сейчас, TunnelVPN не будет установлен.%n%nВыйти?
+SetupAborted=Установка не закончена.%n%nУстраните причину и запустите установку снова.
+ButtonBack=&Назад
+ButtonNext=&Далее
+ButtonFinish=&Готово
+ButtonWizardBrowse=&Обзор…
+WelcomeLabel1=[name] {#MyPlainVersion}
+#if Pos("beta", MyVersion) > 0
+WelcomeLabel2=Несколько туннелей WireGuard и AmneziaWG одновременно: каждый сайт идёт через свой выход, остальное — напрямую.%n%nБета-версия.
+#else
+WelcomeLabel2=Несколько туннелей WireGuard и AmneziaWG одновременно: каждый сайт идёт через свой выход, остальное — напрямую.
+#endif
+WizardSelectDir=Папка программы
+SelectDirDesc=Куда поставить [name]
+SelectDirLabel3=[name] встанет в эту папку.
+SelectDirBrowseLabel=Конфиги и ключи хранятся отдельно — в C:\ProgramData\TunnelVPN.
+DiskSpaceMBLabel=Нужно [mb] МБ на диске.
+DiskSpaceGBLabel=Нужно [gb] ГБ на диске.
+WizardPreparing=Подготовка
+PreparingDesc=Останавливаю прежнюю версию, если она работает
+CannotContinue=Установка остановлена. Нажмите «Отмена», чтобы выйти.
+WizardInstalling=Установка
+InstallingLabel=Ставлю [name] {#MyPlainVersion}
+FinishedHeadingLabel=[name] установлен
+FinishedLabelNoIcons=Откройте [name] и добавьте конфиг .conf — его выдаёт администратор сети или AmneziaVPN.
+FinishedLabel=Откройте [name] и добавьте конфиг .conf — его выдаёт администратор сети или AmneziaVPN.
+ClickFinish=
+FinishedRestartLabel=Чтобы закончить установку, нужно перезагрузить компьютер. Перезагрузить сейчас?
+FinishedRestartMessage=Чтобы закончить установку, нужно перезагрузить компьютер.%n%nПерезагрузить сейчас?
+YesRadio=&Перезагрузить сейчас
+NoRadio=П&озже
+; Этапы установки в строке над прогрессом. Свои этапы — StatusMsg в [Run] и
+; SetStatus в [Code].
+StatusClosingApplications=Закрываю приложения…
+StatusCreateDirs=Создаю папки…
+StatusExtractFiles=Копирую файлы…
+StatusCreateIcons=Создаю ярлыки…
+StatusCreateRegistryEntries=Записываю параметры…
+StatusSavingUninstall=Запоминаю, что удалять потом…
+StatusRunProgram=Заканчиваю установку…
+StatusRollback=Отменяю изменения…
+; Удаление. Финальная фраза одна на оба ответа про конфиги (CurUninstallStepChanged).
+ConfirmUninstall=Удалить %1?%n%nVPN отключится, служба и автозапуск будут удалены.
+WizardUninstalling=Удаление
+UninstallStatusLabel=Убираю %1 с компьютера
+StatusUninstalling=Отключаю VPN…
+UninstalledAll=%1 удалён. Если конфиги оставлены, они в C:\ProgramData\TunnelVPN\conf.
+UninstalledMost=%1 удалён, но часть файлов удалить не получилось — удалите их вручную. Если конфиги оставлены, они в C:\ProgramData\TunnelVPN\conf.
+UninstalledAndNeedsRestart=Чтобы закончить удаление %1, нужно перезагрузить компьютер.%n%nПерезагрузить сейчас?
+
+; Описание задач здесь — для журнала и /TASKS. Пользователь видит их на
+; странице «Параметры» с пояснениями (TasksPage в [Code]): стандартную
+; страницу задач Inno пропускаем.
 [Tasks]
-Name: "autorun"; Description: "Запускать значок в трее при входе в систему"; \
-  GroupDescription: "Дополнительно:"
-Name: "desktopicon"; Description: "Значок на рабочем столе"; \
-  GroupDescription: "Дополнительно:"; Flags: unchecked
+Name: "autorun"; Description: "Запускать значок в трее при входе в Windows"
+Name: "desktopicon"; Description: "Значок на рабочем столе"; Flags: unchecked
 
 [Files]
 ; uninsrestartdelete: файл, который при удалении занят (служба журнала событий
@@ -113,7 +220,7 @@ Type: filesandordirs; Name: "{app}\examples"
 Filename: "{sys}\icacls.exe"; \
   Parameters: """{commonappdata}\{#MyName}\conf"" /inheritance:r \
     /grant:r ""*S-1-5-18"":(OI)(CI)F /grant:r ""*S-1-5-32-544"":(OI)(CI)F"; \
-  Flags: runhidden waituntilterminated; StatusMsg: "Настраиваю права доступа..."
+  Flags: runhidden waituntilterminated; StatusMsg: "Настраиваю права на папку с ключами…"
 ; state\ читают трей и окно от обычного пользователя: там status.json и логи.
 Filename: "{sys}\icacls.exe"; \
   Parameters: """{commonappdata}\{#MyName}\state"" /inheritance:r \
@@ -135,7 +242,7 @@ Filename: "{sys}\icacls.exe"; \
 ; runascurrentuser: трей работает от администратора, а установщик уже с правами.
 ; По умолчанию postinstall запускает от исходного пользователя без прав, и
 ; трей спросил бы UAC ещё раз (см. tray.run).
-Filename: "{app}\{#MyExe}"; Description: "Запустить {#MyName}"; \
+Filename: "{app}\{#MyExe}"; Description: "Открыть {#MyName}"; \
   Flags: nowait postinstall skipifsilent runascurrentuser
 
 [UninstallRun]
@@ -144,6 +251,9 @@ Filename: "{app}\{#MyExe}"; Description: "Запустить {#MyName}"; \
 ; падает на «файл занят» — снятие службы ниже этого не решает вовсе, служба
 ; и трей друг с другом никак не связаны. Убиваем первым делом, до всего.
 ; /T — вместе с окном, которое трей держит прогретым (tunnelvpn.exe window).
+; Те же шаги в том же порядке, но с этапами в строке над прогрессом, до этого
+; делает StopForUninstall в [Code]: здесь они проходят вхолостую. BeforeInstall
+; тут не поможет — у [UninstallRun] его зовёт установка, а не удаление.
 Filename: "{sys}\taskkill.exe"; Parameters: "/IM {#MyExe} /F /T"; \
   Flags: runhidden waituntilterminated; RunOnceId: "KillTray"
 Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""{#MyName} Tray"" /F"; \
@@ -185,6 +295,94 @@ var
   TunnelWasUp, TrayWasRunning: Boolean;
   // Что не вышло со службой; '' — работает. Не пусто — код выхода 10.
   ServiceError: String;
+  // «Параметры»: задачи с пояснениями вместо стандартной страницы Inno.
+  TasksPage: TWizardPage;
+  AutorunBox, DesktopBox: TNewCheckBox;
+  FinishedLink: TNewLinkLabel;
+  // Удаление: «Удалить навсегда» в вопросе про конфиги.
+  PurgeData: Boolean;
+
+// Этап в строке над прогрессом — и установки, и удаления. Он же в журнал:
+// при тихом удалении формы прогресса может не быть.
+procedure SetStatus(const S: String);
+begin
+  Log('Этап: ' + S);
+  if not IsUninstaller then
+    WizardForm.StatusLabel.Caption := S
+  else if UninstallProgressForm <> nil then
+    UninstallProgressForm.StatusLabel.Caption := S;
+end;
+
+// Пояснение под галочкой или пунктом: приглушённым цветом окна приложения.
+// seFont снят — иначе цвет шрифта задаёт стиль мастера.
+function AddNote(Page: TWizardPage; Left, Top: Integer; const Text: String): TNewStaticText;
+begin
+  Result := TNewStaticText.Create(Page);
+  Result.Parent := Page.Surface;
+  Result.Left := Left;
+  Result.Top := Top;
+  Result.Width := Page.SurfaceWidth - Left;
+  Result.WordWrap := True;
+  Result.Caption := Text;
+  Result.StyleElements := Result.StyleElements - [seFont];
+  Result.Font.Color := StrToColor('{#ColorDim}');
+  Result.AdjustHeight;
+end;
+
+// Галочка задачи жирным и пояснение под ней. Top — где кончился прошлый пункт.
+function AddTaskOption(var Top: Integer; const Caption, Note: String): TNewCheckBox;
+var
+  Hint: TNewStaticText;
+begin
+  Result := TNewCheckBox.Create(TasksPage);
+  Result.Parent := TasksPage.Surface;
+  Result.Top := Top;
+  Result.Width := TasksPage.SurfaceWidth;
+  Result.Height := ScaleY(17);
+  Result.Caption := Caption;
+  Result.Font.Style := [fsBold];
+  Hint := AddNote(TasksPage, ScaleX(18), Result.Top + Result.Height + ScaleY(2), Note);
+  Top := Hint.Top + Hint.Height + ScaleY(14);
+end;
+
+procedure CreateTasksPage;
+var
+  Top: Integer;
+begin
+  TasksPage := CreateCustomPage(wpSelectDir, 'Параметры', 'Что включить вместе с программой');
+  Top := 0;
+  AutorunBox := AddTaskOption(Top, 'Запускать значок в трее при входе в Windows',
+    'Без запроса прав администратора при каждом входе.');
+  DesktopBox := AddTaskOption(Top, 'Значок на рабочем столе', 'Ярлык {#MyName} рядом с остальными.');
+end;
+
+// '!name' снимает задачу в WizardSelectTasks.
+function TaskSpec(const Name: String; Selected: Boolean): String;
+begin
+  if Selected then
+    Result := Name
+  else
+    Result := '!' + Name;
+end;
+
+// Ссылка на «Готово». На GitHub — от исходного пользователя, не от админа.
+procedure LinkClick(Sender: TObject; const Link: String; LinkType: TSysLinkType);
+var
+  ErrorCode: Integer;
+begin
+  ShellExecAsOriginalUser('open', Link, '', '', SW_SHOWNORMAL, ewNoWait, ErrorCode);
+end;
+
+// Место — в CurPageChanged: высоту RunList Inno задаёт, только показывая «Готово».
+procedure CreateFinishedLink;
+begin
+  FinishedLink := TNewLinkLabel.Create(WizardForm);
+  FinishedLink.Parent := WizardForm.FinishedPage;
+  FinishedLink.Left := WizardForm.RunList.Left;
+  FinishedLink.Caption := '<a href="{#MyRepo}#readme">Инструкция на GitHub</a>';
+  FinishedLink.UseVisualStyle := HighContrastActive;
+  FinishedLink.OnLinkClick := @LinkClick;
+end;
 
 // Убивает процессы Image вместе с дочерними. True — было что убить.
 function KillImage(const Image: String): Boolean;
@@ -340,7 +538,7 @@ var
 begin
   Cli := ExpandConstant('{app}\{#MyCli}');
   Sc := ExpandConstant('{sys}\sc.exe');
-  WizardForm.StatusLabel.Caption := 'Устанавливаю службу...';
+  SetStatus('Регистрирую службу…');
   if not RunStep(Cli, 'service install') then
     Result := 'служба не установилась'
   // Автозапуск службы: значок в трее без неё бесполезен, а ждать ручного
@@ -350,14 +548,19 @@ begin
   // Служба переживает падение: маршруты без неё убрать некому.
   else if not RunStep(Sc, 'failure {#MyName} reset= 86400 actions= restart/5000/restart/10000/restart/30000') then
     Result := 'не удалось настроить перезапуск службы при сбое'
-  // Уже работающая служба отвечает на start ошибкой 1056 — это не сбой.
-  else if not RunStep(Cli, 'service start') and not ServiceRunning then
-    Result := 'служба не запустилась'
   else
     Result := '';
   if Result <> '' then
     Exit;
+  SetStatus('Запускаю службу…');
+  // Уже работающая служба отвечает на start ошибкой 1056 — это не сбой.
+  if not RunStep(Cli, 'service start') and not ServiceRunning then
+  begin
+    Result := 'служба не запустилась';
+    Exit;
+  end;
   // service start только посылает команду — ждём, пока служба поднимется.
+  SetStatus('Проверяю, что служба работает…');
   for I := 1 to 20 do
   begin
     if ServiceRunning then
@@ -380,6 +583,7 @@ begin
   if (ServiceError = '') and TunnelWasUp and
      not FileExists(ExpandConstant('{commonappdata}\{#MyName}\state\autostart')) then
   begin
+    SetStatus('Включаю VPN обратно…');
     Started := False;
     // Канал службы поднимается не сразу после service start.
     for I := 1 to 5 do
@@ -409,6 +613,8 @@ var
   OldVersion, Title, Note: String;
   Cmp: Integer;
 begin
+  CreateTasksPage;
+  CreateFinishedLink;
   if not RegQueryStringValue(HKLM64, UninstKey, 'UninstallString', OldUninstaller) then
     Exit;
   RegQueryStringValue(HKLM64, UninstKey, 'DisplayVersion', OldVersion);
@@ -478,9 +684,35 @@ begin
   end;
 end;
 
+// Стандартная страница задач — вместо неё «Параметры» (TasksPage).
+// Приветствие и параметры — только при новой установке: обновление — в два
+// клика, задачи остаются как у прошлой установки (UsePreviousTasks).
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := (PageID = wpSelectTasks) or
+            ((ActionPage <> nil) and ((PageID = wpWelcome) or (PageID = TasksPage.ID)));
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if CurPageID = TasksPage.ID then
+  begin
+    // Задачи прошлой установки Inno уже отметил (UsePreviousTasks).
+    AutorunBox.Checked := WizardIsTaskSelected('autorun');
+    DesktopBox.Checked := WizardIsTaskSelected('desktopicon');
+    // Страницы «Готово к установке» нет: отсюда сразу установка.
+    WizardForm.NextButton.Caption := SetupMessage(msgButtonInstall);
+  end
+  else if CurPageID = wpFinished then
+    FinishedLink.Top := WizardForm.RunList.Top + WizardForm.RunList.Height + ScaleY(8);
+end;
+
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
+  if CurPageID = TasksPage.ID then
+    WizardSelectTasks(TaskSpec('autorun', AutorunBox.Checked) + ',' +
+                      TaskSpec('desktopicon', DesktopBox.Checked));
   if (ActionPage = nil) or (CurPageID <> ActionPage.ID) or
      (ActionPage.SelectedValueIndex = 0) then
     Exit;
@@ -615,6 +847,7 @@ procedure RegisterTrayTask;
 var
   ResultCode: Integer;
 begin
+  SetStatus('Включаю значок в трее при входе…');
   Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
     '-NoProfile -ExecutionPolicy Bypass -Command "' +
     '$u = [Security.Principal.WindowsIdentity]::GetCurrent().Name; ' +
@@ -689,18 +922,52 @@ end;
 
 // Конфиги по умолчанию переживают удаление: в них ключи, и после
 // переустановки человек не обязан их восстанавливать. Но если удаляют совсем,
-// оставлять каталог молча — это мусор. Спрашиваем; по умолчанию «Нет».
+// оставлять каталог молча — это мусор. Спрашиваем до удаления, двумя
+// кнопками-ссылками с пояснениями; по умолчанию «Оставить». Без кнопки
+// «Отмена»: удаление уже подтверждено, и отсюда его не прервать. Тихое
+// удаление (и меню прошлой установки) конфиги оставляет.
+procedure AskAboutData;
+begin
+  PurgeData := TaskDialogMsgBox('Что сделать с конфигами и ключами?',
+    'Папка: ' + ExpandConstant('{commonappdata}\{#MyName}\conf'),
+    // Массив не с начала строки: «[» там Inno читает как начало секции.
+    mbConfirmation, MB_YESNO, ['Оставить'#13#10'Их подхватит следующая установка {#MyName}.',
+      'Удалить навсегда'#13#10'Приватные ключи будут удалены. Восстановить их можно только у того, кто выдал конфиг.'],
+    0) = IDNO;
+  Log('Конфиги при удалении: ' + IntToStr(Ord(PurgeData)));
+end;
+
+// Те же шаги, что [UninstallRun], в том же порядке (трей, туннель, служба,
+// окно), но с этапами в строке над прогрессом: [UninstallRun] этапов не
+// показывает. Он идёт следом и проходит вхолостую.
+procedure StopForUninstall;
+var
+  ResultCode: Integer;
+begin
+  SetStatus('Отключаю VPN…');
+  KillImage('{#MyExe}');
+  Exec(ExpandConstant('{app}\{#MyCli}'), 'stop', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  SetStatus('Останавливаю службу…');
+  StopService('{#MyName}');
+  KillImage('{#MyCli}');
+  SetStatus('Удаляю файлы…');
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
-  if CurUninstallStep = usPostUninstall then
+  if CurUninstallStep = usUninstall then
+  begin
+    if not UninstallSilent then
+      AskAboutData;
+    StopForUninstall;
+  end
+  else if CurUninstallStep = usPostUninstall then
+  begin
     DeleteWindowData('{#MyName}');
-  if (CurUninstallStep = usPostUninstall) and not UninstallSilent then
-    if MsgBox('Удалить также конфиги и ключи VPN?' + #13#10 + #13#10 +
-              ExpandConstant('{commonappdata}\{#MyName}') + #13#10 + #13#10 +
-              'Если собираешься поставить {#MyName} заново, ответь «Нет» — ' +
-              'конфиги останутся и подхватятся.',
-              mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
+    // После файлов: если удаление сорвётся раньше, ключи останутся.
+    if PurgeData then
       DelTree(ExpandConstant('{commonappdata}\{#MyName}'), True, True, True);
+  end;
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

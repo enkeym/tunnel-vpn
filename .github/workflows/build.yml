@@ -76,9 +76,13 @@ jobs:
 
           Get-ChildItem lib\bin
 
+      # Закреплена: тёмный вид мастера (WizardStyle dark — с 6.6,
+      # WizardBackColor — с 6.7.0). Старее tunnelvpn.iss не соберётся (#error),
+      # новее — обновлять закрепление осознанно. 6.7.1 — последняя в Chocolatey;
+      # 6.7.2–6.7.3 правили Wine и ISPP, нас это не касается.
       - name: Inno Setup
         shell: pwsh
-        run: choco install innosetup --no-progress -y
+        run: choco install innosetup --version 6.7.1 --no-progress -y
 
       # Подпись — только если в настройках репозитория заданы секреты
       # SIGN_PFX_BASE64 (.pfx в base64) и SIGN_PASSWORD. Без них сборка идёт

@@ -222,6 +222,18 @@ if ($SignTool) {
 & $Iscc @IsccArgs (Join-Path $Inst 'tunnelvpn.iss')
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup вернул $LASTEXITCODE" }
 $Setup = Join-Path $Inst "Output\TunnelVPN-$Version-setup.exe"
+# Издатель и продукт setup.exe (VersionInfo* в tunnelvpn.iss) — те же, что в
+# ресурсе версии exe (tunnelvpn.spec): окно UAC и «Приложения» не расходятся.
+$SetupInfo = (Get-Item $Setup).VersionInfo
+$AppInfo = (Get-Item (Join-Path $Root 'dist\TunnelVPN\tunnelvpn.exe')).VersionInfo
+# Строки ресурса setup.exe Inno добивает пробелами до длины поля.
+foreach ($field in 'CompanyName', 'ProductName') {
+    $got = "$($SetupInfo.$field)".Trim()
+    if ($got -ne $AppInfo.$field) {
+        throw "setup.exe ${field}: «$got», у tunnelvpn.exe «$($AppInfo.$field)»"
+    }
+}
+if (-not "$($SetupInfo.FileDescription)".Trim()) { throw 'у setup.exe нет FileDescription' }
 Write-Host "-> готово: installer\Output\TunnelVPN-$Version-setup.exe"
 
 # --- Контрольные суммы к релизу, в формате sha256sum: проверить скачанное —
