@@ -64,7 +64,7 @@ document.write(`<link rel="stylesheet" href="app.css${location.search}">`);
 <main id="panes">
   <div id="pane-tunnels" class="pane scroll" role="tabpanel"></div>
   <div id="pane-log" class="pane" role="tabpanel" hidden></div>
-  <div id="pane-settings" class="pane" role="tabpanel" hidden></div>
+  <div id="pane-settings" class="pane scroll" role="tabpanel" hidden></div>
 </main>
 
 <div id="layer-sheet"></div>
@@ -81,7 +81,7 @@ document.write(`<link rel="stylesheet" href="app.css${location.search}">`);
   const mock = /[?&]mock=/.test(q) && !window.pywebview
     ? `<script src="dev/mock-api.js${q}"><\/script>` : '';
   // Порядок важен: core — первым, main (шлёт ready) — последним.
-  const parts = ['core', 'model', 'topbar', 'cards', 'sheets', 'rules', 'log', 'main'];
+  const parts = ['core', 'model', 'topbar', 'cards', 'sheets', 'rules', 'log', 'settings', 'main'];
   document.write(mock + parts.map(p => `<script src="js/${p}.js${q}"><\/script>`).join(''));
 }
 </script>

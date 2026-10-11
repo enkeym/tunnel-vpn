@@ -60,27 +60,31 @@ def _check_text(t):
 
 
 def _print_status(st):
+    print("\n".join(status_lines(st)))
+
+
+def status_lines(st):
+    """Строки `tunnelvpn status`; их же окно кладёт в диагностику."""
     up = st.get("up")
-    print(f"TunnelVPN {st.get('version', '?')}: "
-          f"{'работает' if up else 'выключен'}")
+    out = [f"TunnelVPN {st.get('version', '?')}: {'работает' if up else 'выключен'}"]
     if st.get("busy"):
-        print(f"  сейчас   : {st['busy']}")
+        out.append(f"  сейчас   : {st['busy']}")
     if st.get("last_error"):
-        print(f"  ошибка   : {st['last_error']}")
-    print(f"  профиль  : {st.get('profile') or 'единственный конфиг основного'}")
+        out.append(f"  ошибка   : {st['last_error']}")
+    out.append(f"  профиль  : {st.get('profile') or 'единственный конфиг основного'}")
     for t in st.get("tunnels") or []:
         check = ("выключен" if t.get("enabled") is False
                  else _check_text(t) if up else "")
-        print(f"  туннель  : {t.get('name')} [{t.get('id')}], {_MODES.get(t.get('mode'), '?')}"
-              f" — {t.get('active') or 'конфиг не выбран'}"
-              + (f"; {check}" if check else ""))
-    print(f"  sing-box : {st.get('pid') or 'не запущен'}")
-    print(f"  tun      : {st.get('tun') or 'нет'}")
-    print(f"  аплинк   : интерфейс {st.get('iface')} / шлюз {st.get('gw') or '—'}")
-    print(f"  маршруты : 0.0.0.0/1 {'есть' if st.get('r_low') else 'нет'}, "
-          f"128.0.0.0/1 {'есть' if st.get('r_high') else 'нет'}")
-    print(f"  IPv6     : {'заблокирован' if st.get('v6_off') else 'как есть'}"
-          + (f"  !! утечка {st['v6_leak']}" if st.get("v6_leak") else ""))
+        out.append(f"  туннель  : {t.get('name')} [{t.get('id')}], {_MODES.get(t.get('mode'), '?')}"
+                   f" — {t.get('active') or 'конфиг не выбран'}"
+                   + (f"; {check}" if check else ""))
+    out.append(f"  sing-box : {st.get('pid') or 'не запущен'}")
+    out.append(f"  tun      : {st.get('tun') or 'нет'}")
+    out.append(f"  аплинк   : интерфейс {st.get('iface')} / шлюз {st.get('gw') or '—'}")
+    out.append(f"  маршруты : 0.0.0.0/1 {'есть' if st.get('r_low') else 'нет'}, "
+               f"128.0.0.0/1 {'есть' if st.get('r_high') else 'нет'}")
+    out.append(f"  IPv6     : {'заблокирован' if st.get('v6_off') else 'как есть'}"
+               + (f"  !! утечка {st['v6_leak']}" if st.get("v6_leak") else ""))
     if up:
         state = {"tunnel": "через туннель", "leak": "!! УТЕЧКА, адрес провайдера",
                  "direct": "запасной, напрямую: личный не работает",
@@ -90,13 +94,14 @@ def _print_status(st):
             state = "запасной, напрямую: личный не работает"
         elif not any(t.get("mode") == "all" for t in st.get("tunnels") or []):
             state = "напрямую: основного туннеля нет"
-        print(f"  выход    : {st.get('exit_ip') or '—'} "
-              f"{st.get('exit_country') or ''} {st.get('exit_city') or ''} — {state}")
+        out.append(f"  выход    : {st.get('exit_ip') or '—'} "
+                   f"{st.get('exit_country') or ''} {st.get('exit_city') or ''} — {state}")
         # HTTPS проверяют только у туннеля без DNS.
         http = f"   HTTP {st['corp_http']}" if st.get("corp_http") else ""
-        print(f"  корп-DNS : {st.get('corp_dns') or 'нет'} "
-              f"→ {st.get('corp_ip') or '—'}{http}")
-    print(f"  автозапуск: {'да' if st.get('autostart') else 'нет'}")
+        out.append(f"  корп-DNS : {st.get('corp_dns') or 'нет'} "
+                   f"→ {st.get('corp_ip') or '—'}{http}")
+    out.append(f"  автозапуск: {'да' if st.get('autostart') else 'нет'}")
+    return out
 
 
 def _call(op, **payload):

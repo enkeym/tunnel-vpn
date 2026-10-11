@@ -799,12 +799,14 @@ def tunnel_dns(main_cfg):
             if s.get("tag", "").startswith(prefix)}
 
 
-def tunnel_domains(main_cfg):
-    """Домены, которые основной конфиг отдаёт DNS туннелей, — для NRPT."""
+def tunnel_domains(main_cfg, tid=None):
+    """Домены, которые основной конфиг отдаёт DNS туннелей, — для NRPT;
+    с tid — только DNS этого туннеля (сводка «Сейчас подключено» в окне)."""
     prefix = dns_tag("")
     names = []
     for rule in main_cfg.get("dns", {}).get("rules", []):
-        if rule.get("server", "").startswith(prefix):
+        server = rule.get("server", "")
+        if server.startswith(prefix) and (tid is None or server == dns_tag(tid)):
             for tag in rule.get("rule_set", []):
                 for inner in rule_set_rules(main_cfg, tag):
                     names += inner.get("domain_suffix", [])

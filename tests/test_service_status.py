@@ -186,7 +186,8 @@ def run_dir(tmp_path, monkeypatch):
         "route": {"rules": [{"rule_set": ["rules-work"], "outbound": "socks-work"}],
                   "rule_set": [{"type": "local", "tag": tag, "format": "source",
                                  "path": buildconfig.rule_set_json(tag)} for tag in sets]},
-        "dns": {"rules": [{"rule_set": ["names-work"], "server": "dns-work"}]},
+        "dns": {"servers": [{"tag": "dns-work", "server": "10.1.1.5"}],
+                "rules": [{"rule_set": ["names-work"], "server": "dns-work"}]},
     }), encoding="utf-8")
     for tid, extra in (("work", {}), ("home", {"jc": 4})):
         buildconfig.write_json(buildconfig.side_json(tid), {"endpoints": [{
@@ -200,14 +201,12 @@ def test_howto_отдаёт_собранное_без_ключей(run_dir, monk
     """Окно больше не читает state\\run\\ само — служба отдаёт только показ."""
     reply = _core(monkeypatch, up=False).handle("howto", {}, True)
 
-    assert reply == {"ok": True, "howto": {
-        "endpoints": [
-            {"tag": "wg-work", "address": "10.8.0.2/32", "mtu": 1280, "awg": False,
-             "peer": "203.0.113.9"},
-            {"tag": "wg-home", "address": "10.8.0.2/32", "mtu": 1280, "awg": True,
-             "peer": "203.0.113.9"}],
-        "corp_nets": ["10.10.0.0/16"],
-        "corp_domains": ["corp.example"]}}
+    assert reply == {"ok": True, "howto": {"endpoints": [
+        {"tag": "wg-work", "address": "10.8.0.2/32", "mtu": 1280, "awg": False,
+         "peer": "203.0.113.9", "dns": "10.1.1.5",
+         "nets": ["10.10.0.0/16"], "domains": ["corp.example"]},
+        {"tag": "wg-home", "address": "10.8.0.2/32", "mtu": 1280, "awg": True,
+         "peer": "203.0.113.9", "dns": "", "nets": [], "domains": []}]}}
     assert "секрет" not in json.dumps(reply) and "ключ" not in json.dumps(reply)
 
 
@@ -215,7 +214,7 @@ def test_howto_без_прав_без_списков_рабочей_сети(run
     """Подсети и домены туннеля — как get-tunnels, только администратору."""
     howto = _core(monkeypatch, up=False).handle("howto", {}, False)["howto"]
 
-    assert howto["corp_nets"] == [] and howto["corp_domains"] == []
+    assert all(e["nets"] == [] and e["domains"] == [] for e in howto["endpoints"])
     assert [e["tag"] for e in howto["endpoints"]] == ["wg-work", "wg-home"]
 
 
@@ -229,14 +228,12 @@ def test_howto_без_выключенного_туннеля(run_dir, monkeypat
     howto = service.Core._howto(True)
 
     assert [e["tag"] for e in howto["endpoints"]] == ["wg-home"]
-    assert howto["corp_nets"] == []
 
 
 def test_howto_до_первой_сборки_пуст(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "CONFIG_JSON", str(tmp_path / "нет.json"))
 
-    assert service.Core._howto(True) == {
-        "endpoints": [], "corp_nets": [], "corp_domains": []}
+    assert service.Core._howto(True) == {"endpoints": []}
 
 
 def test_после_включения_снимок_уже_с_туннелем(monkeypatch):

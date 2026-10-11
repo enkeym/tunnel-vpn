@@ -18,7 +18,7 @@ import tempfile
 import threading
 import time
 
-from . import instance, ipc, paths, portable, routelist, tunnels
+from . import instance, ipc, paths, portable, routelist, settings, tunnels
 
 POLL_EVERY = 2.0
 # Сколько ждём отчёта страницы о готовности. Не дождались — WebView2 не
@@ -253,6 +253,22 @@ class Api:
                 self.js("logLevelDone")
         elif name == "logs":
             self._push_logs()
+        # Вкладка «Настройки»: ответы — возвратом send (request).
+        elif name == "settings_info":
+            return self._settings_info()
+        elif name == "set_tray_autostart":
+            return self._set_tray_autostart(bool(arg))
+        elif name == "diagnostics":
+            return self._diagnostics()
+        elif name == "open_logs":
+            return self._open_logs()
+        elif name == "check_update":
+            return {"ok": True, **settings.check_update(paths.version())}
+        elif name == "open_url":
+            # Адрес приходит со страницы: наружу — только свой репозиторий.
+            if not settings.repo_url(arg):
+                return {"ok": False, "error": "чужая ссылка → окно открывает только страницу TunnelVPN на GitHub"}
+            return self._shell_open(arg)
         elif name == "install_daemon":
             self._install_hint()
         elif name in ("rendered", "jserror"):
@@ -390,7 +406,7 @@ class Api:
         if full:
             self.js("renderVersion", {"app": st.get("version", paths.version()),
                                       "singbox": st.get("singbox", "")})
-            self.js("renderHowto", self._howto(st))
+            self.js("renderHowto", self._howto())
             self._push_logs()
 
     def _check(self):
@@ -423,19 +439,82 @@ class Api:
             self.js("testDone", arg)
 
     @staticmethod
-    def _howto(st):
-        """«Как подключиться» для renderHowto. Собранные конфиги в state\\run\\
-        закрыты — читает служба; окну без прав она не отдаёт подсети и домены."""
+    def _howto():
+        """Сводка «Сейчас подключено» для renderHowto. Собранные конфиги в
+        state\\run\\ закрыты — читает служба; окну без прав она не отдаёт подсети и
+        домены туннелей."""
         try:
             reply = ipc.call("howto")
         except ipc.NotRunning:
             reply = {}
-        howto = reply.get("howto") or {"endpoints": [], "corp_nets": [],
-                                        "corp_domains": []}
-        return {**howto, "corp_dns": st.get("corp_dns", "")}
+        return reply.get("howto") or {"endpoints": []}
 
     def _push_logs(self):
         self.js("renderLogs", ipc.call("log", lines=400).get("lines", []))
+
+    # ---------------------------------------------------------- настройки
+
+    @staticmethod
+    def _settings_info():
+        """Что вкладке «Настройки» не узнать из статуса. У портативной нет ни
+        службы, ни задачи трея — None, группа «Запуск» их не показывает.
+        Задачи у установленной нет (галочку сняли при установке) — трей при
+        входе выключен: включение поставит задачу."""
+        port = portable.is_portable()
+        return {"ok": True, "portable": port, "admin": _is_admin(),
+                "service": None if port else settings.service_state(),
+                "tray_autostart": None if port else bool(settings.tray_task()),
+                "data_dir": paths.DATA, "logs_dir": paths.LOGS,
+                "repo": settings.REPO_URL}
+
+    @staticmethod
+    def _set_tray_autostart(on):
+        """Трей при входе — задача планировщика с наивысшими правами: менять
+        её может только администратор, UAC — на одно это действие. Итог судим
+        по задаче после команды: отказ в UAC снаружи не виден иначе."""
+        exists = settings.tray_task() is not None
+        if not exists and not on:
+            return {"ok": True, "tray_autostart": False}
+        exe = os.path.join(os.path.dirname(sys.executable), settings.TRAY_EXE)
+        if not exists and not getattr(sys, "frozen", False):
+            return {"ok": False, "error": "задачи трея нет → в версии из исходников её ставит установщик"}
+        ps = settings.system32("WindowsPowerShell", "v1.0", "powershell.exe")
+        args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                "-EncodedCommand", settings.tray_task_command(on, exists, exe)]
+        if _is_admin():
+            subprocess.run([ps] + args, capture_output=True, timeout=60,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        else:
+            _run_elevated(ps, args)
+        now = bool(settings.tray_task())
+        if now != on:
+            return {"ok": False, "tray_autostart": now,
+                    "error": "запрос прав отменён или не выполнился"}
+        return {"ok": True, "tray_autostart": now}
+
+    def _diagnostics(self):
+        try:
+            st = ipc.call("status").get("status") or {}
+        except ipc.NotRunning:
+            st = {}
+        return {"ok": True, "text": settings.diagnostics(st, self._settings_info())}
+
+    def _open_logs(self):
+        if not os.path.isdir(paths.LOGS):
+            return {"ok": False, "error": "папки журналов ещё нет → она появится после первого включения VPN"}
+        return self._shell_open(paths.LOGS)
+
+    @staticmethod
+    def _shell_open(target):
+        """Папка или ссылка — через explorer.exe: он передаёт её уже
+        работающей оболочке пользователя. os.startfile из окна с правами
+        администратора поднял бы браузер тоже с правами."""
+        try:
+            subprocess.Popen([os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                                           "explorer.exe"), target])
+        except OSError as exc:
+            return {"ok": False, "error": f"не открылось: {exc}"}
+        return {"ok": True}
 
     # ------------------------------------------------------------ конфиги
 

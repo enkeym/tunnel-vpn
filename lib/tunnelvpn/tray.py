@@ -25,6 +25,7 @@ import time
 from . import instance, ipc, paths, portable, tunnels, window
 from .icon import TRAY, rgba
 from .icon import tray as tray_image
+from .settings import TRAY_TASK
 
 # Включение у службы идёт ~1,2 с: при опросе раз в три секунды жёлтый
 # «включаю» почти не попадал в опрос, если включали из окна.
@@ -39,9 +40,8 @@ WINDOW_SHOW_WAIT = 5.0
 WARM_AFTER = 10.0
 # Сколько второй запуск ждёт, пока первый трей начнёт слушать «покажи окно».
 OPEN_SIGNAL_WAIT = 2.0
-# Задача автозапуска трея (tunnelvpn.iss: RegisterTrayTask) и сколько ярлык
-# ждёт трей, запущенный ею: планировщик и импорт pystray — несколько секунд.
-TRAY_TASK = "TunnelVPN Tray"
+# Сколько ярлык ждёт трей, запущенный задачей автозапуска (settings.TRAY_TASK):
+# планировщик и импорт pystray — несколько секунд.
 TASK_OPEN_WAIT = 15.0
 
 # Пределы полей NOTIFYICONDATA с завершающим нулём. pystray их не обрезает:

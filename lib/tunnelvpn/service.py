@@ -500,6 +500,7 @@ class Core:
         except ValueError:
             off = set()
         ids = [tid for tid in buildconfig.side_ids(main_cfg) if tid not in off]
+        dns = buildconfig.tunnel_dns(main_cfg)
         endpoints = []
         for tid in ids:
             for ep in buildconfig.read_json(buildconfig.side_json(tid)).get("endpoints", []):
@@ -510,16 +511,11 @@ class Core:
                     "mtu": ep.get("mtu"),
                     "awg": any(k in ep for k in ("jc", "s1", "h1")),
                     "peer": peers[0].get("address", ""),
+                    "dns": dns.get(tid, ""),
+                    "nets": buildconfig.tunnel_nets(main_cfg, tid) if is_admin else [],
+                    "domains": buildconfig.tunnel_domains(main_cfg, tid) if is_admin else [],
                 })
-        nets, domains = [], []
-        if is_admin:
-            # Рабочий — первый не основной: пока окно знает один туннель
-            # «по списку».
-            main_id = buildconfig.main_id(main_cfg)
-            work = next((tid for tid in ids if tid != main_id), None)
-            nets = buildconfig.tunnel_nets(main_cfg, work) if work else []
-            domains = buildconfig.tunnel_domains(main_cfg)
-        return {"endpoints": endpoints, "corp_nets": nets, "corp_domains": domains}
+        return {"endpoints": endpoints}
 
     @staticmethod
     def _conf_stamp(tid, name):

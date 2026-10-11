@@ -326,13 +326,14 @@ body.kbd :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
 .ibtn.split:is(.st-ok, .st-err, .st-off, .st-unset) { color: var(--st); }
 .ibtn.split.st-unset .ic { stroke-dasharray: 2.2 1.8; }
 
-/* Запасные: раскрытие через grid-template-rows 0fr → 1fr, без замеров. */
-.spares-tgl { display: inline-flex; align-items: center; gap: var(--sp-1); height: var(--hit-s);
+/* Свёрнутое (запасные, сводка туннеля, справка): раскрытие через
+   grid-template-rows 0fr → 1fr, без замеров. */
+:is(.spares-tgl, .fold-tgl) { display: inline-flex; align-items: center; gap: var(--sp-1); height: var(--hit-s);
               padding: 0 var(--sp-2) 0 var(--sp-1); margin-left: calc(-1 * var(--sp-1));
               border-radius: var(--r-s); color: var(--dim); font-size: var(--fs-m); }
-.spares-tgl:hover { background: var(--hover); color: var(--text); }
-.spares-tgl .chev { transition: transform var(--t-mid) var(--ease); }
-.spares-tgl[aria-expanded="true"] .chev { transform: rotate(90deg); }
+:is(.spares-tgl, .fold-tgl):hover { background: var(--hover); color: var(--text); }
+:is(.spares-tgl, .fold-tgl) .chev { transition: transform var(--t-mid) var(--ease); }
+:is(.spares-tgl, .fold-tgl)[aria-expanded="true"] .chev { transform: rotate(90deg); }
 .drawer { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--t-mid) var(--ease); }
 .drawer.open { grid-template-rows: 1fr; }
 .drawer-in { min-height: 0; overflow: hidden; }
@@ -557,6 +558,42 @@ body.kbd :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
 }
 .log-fresh:hover { background: var(--hover); }
 .log-fresh .ic { width: var(--ic-s); height: var(--ic-s); }
+
+/* --------------------------------------------------------------- настройки */
+/* Группы-карточки одной колонкой; подпись и пояснение слева, переключатель
+   справа. Сводка выключенного VPN — приглушена: это прошлое включение. */
+#pane-settings { padding: var(--sp-3) var(--sp-4) var(--sp-4); }
+.set { max-width: 760px; margin: 0 auto; display: grid; gap: var(--sp-3); }
+.set-group { display: grid; gap: var(--sp-3); padding: var(--sp-4);
+             background: var(--card); border: 1px solid var(--line); border-radius: var(--r-l); }
+.set-group > h2 { margin: 0; font-size: var(--fs-b); font-weight: 600; }
+.set-row { display: flex; align-items: flex-start; gap: var(--sp-4); }
+.set-row .switch { margin-top: 2px; }
+.set-text { flex: 1; min-width: 0; }
+.set-label { font-weight: 500; }
+.set-hint, .set-state { margin: 0; color: var(--dim); font-size: var(--fs-s); }
+.set-row .set-hint { margin-top: 2px; }
+.set-state { font-size: var(--fs-m); }
+.set-dim { color: var(--dim); }
+.set-line { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; font-size: var(--fs-m); }
+.set-acts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.set .kv { gap: var(--sp-1) var(--sp-4); font-size: var(--fs-m); }
+.set .kv dt { font-size: var(--fs-m); }
+.set .kv dd { white-space: pre-line; word-break: normal; overflow-wrap: anywhere; }
+.set .kv dd:is(.st-ok, .st-err, .st-warn) { color: var(--st); }
+.set-eps { display: grid; gap: var(--sp-2); }
+.set-eps:empty { display: none; }
+.set-ep { display: grid; gap: var(--sp-2); padding: var(--sp-3); border-radius: var(--r-m);
+          background: var(--raised); }
+.set-ep-head { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+.set-ep-head .grow { flex: 1; }
+.set-ep-name { font-weight: 600; flex: 0 1 auto; }
+.set-ep .fold .kv { padding: var(--sp-2) 0 0 calc(var(--ic) + var(--sp-1)); }
+.set-group.past .set-eps { opacity: .6; }
+.set-help { padding: var(--sp-1) 0 0 calc(var(--ic) + var(--sp-1)); font-size: var(--fs-m); }
+.set-help p { margin: 0 0 var(--sp-2); }
+.set-help :is(ul, ol) { margin: 0 0 var(--sp-2); padding-left: var(--sp-5); display: grid; gap: var(--sp-1); }
+.set-help > :last-child { margin-bottom: 0; }
 
 /* Перетаскивание .conf: поверх всего, кроме подсказки и уведомлений. */
 .drop {
