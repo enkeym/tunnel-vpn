@@ -50,6 +50,10 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ArchitecturesAllowed=x64compatible
 ; Windows 10 1809 — минимум, где WebView2 и wintun ведут себя предсказуемо.
 MinVersion=10.0.17763
+; Журнал установки и удаления в %TEMP% («Setup Log …», «Uninstall Log …»):
+; без него сбой на чужой машине не разобрать. Путь — в сообщении об ошибке.
+SetupLogging=yes
+UninstallLogging=yes
 
 [Languages]
 Name: "ru"; MessagesFile: "compiler:Languages\Russian.isl"
@@ -114,24 +118,9 @@ Filename: "{sys}\icacls.exe"; \
     /grant:r ""*S-1-5-18"":(OI)(CI)F /grant:r ""*S-1-5-32-544"":(OI)(CI)F"; \
   Flags: runhidden waituntilterminated
 
-; --- Служба. Прошлую не снимаем: «service install» у существующей службы сам
-; переходит в update (ChangeServiceConfig) и переписывает путь к exe. Снятие
-; перед установкой только помечало службу на удаление, если кто-то держал её
-; дескриптор, и install падал с 1072 — служба пропадала до перезагрузки.
-Filename: "{app}\{#MyCli}"; Parameters: "service stop"; \
-  Flags: runhidden waituntilterminated skipifdoesntexist; StatusMsg: "Обновляю службу..."
-Filename: "{app}\{#MyCli}"; Parameters: "service install"; \
-  Flags: runhidden waituntilterminated; StatusMsg: "Устанавливаю службу..."
-; Автозапуск службы: значок в трее без неё бесполезен, а ждать ручного
-; запуска после каждой перезагрузки — не то, чего ждут от VPN-клиента.
-Filename: "{sys}\sc.exe"; Parameters: "config {#MyName} start= auto"; \
-  Flags: runhidden waituntilterminated
-; Служба переживает падение: маршруты без неё убрать некому.
-Filename: "{sys}\sc.exe"; \
-  Parameters: "failure {#MyName} reset= 86400 actions= restart/5000/restart/10000/restart/30000"; \
-  Flags: runhidden waituntilterminated
-Filename: "{app}\{#MyCli}"; Parameters: "service start"; \
-  Flags: runhidden waituntilterminated; AfterInstall: RestoreAfterUpdate
+; --- Служба ставится в [Code] (InstallService, из CurStepChanged): здесь коды
+; выхода не проверяются, и упавший «service install» давал «успешную»
+; установку без службы.
 
 ; runascurrentuser: трей работает от администратора, а установщик уже с правами.
 ; По умолчанию postinstall запускает от исходного пользователя без прав, и
@@ -184,6 +173,8 @@ var
   Leaving: Boolean;
   // Что было до обновления: RestoreAfterUpdate возвращает так же.
   TunnelWasUp, TrayWasRunning: Boolean;
+  // Что не вышло со службой; '' — работает. Не пусто — код выхода 10.
+  ServiceError: String;
 
 // Убивает процессы Image вместе с дочерними. True — было что убить.
 function KillImage(const Image: String): Boolean;
@@ -240,23 +231,98 @@ begin
   KillImage('{#LegacyCli}');
 end;
 
+// Запускает шаг установки и пишет в журнал, чем он кончился. True — код 0.
+function RunStep(const Exe, Params: String): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec(Exe, Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+  Log(ExtractFileName(Exe) + ' ' + Params + ': код ' + IntToStr(ResultCode));
+end;
+
+// Через PowerShell, а не разбором вывода sc query: Get-Service отдаёт
+// состояние одинаково на любом языке Windows.
+function ServiceRunning: Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -NonInteractive -Command "if ((Get-Service {#MyName} -ErrorAction SilentlyContinue).Status ' +
+    '-eq ''Running'') { exit 0 } else { exit 1 }"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+// Ставит и запускает службу, проверяя каждый шаг. '' — служба работает,
+// иначе — что именно не вышло.
+// Прошлую не снимаем: «service install» у существующей службы сам переходит
+// в update (ChangeServiceConfig) и переписывает путь к exe. Снятие перед
+// установкой только помечало службу на удаление, если кто-то держал её
+// дескриптор, и install падал с 1072 — служба пропадала до перезагрузки.
+// Остановил её ещё StopEverything.
+function InstallService: String;
+var
+  Cli, Sc: String;
+  I: Integer;
+begin
+  Cli := ExpandConstant('{app}\{#MyCli}');
+  Sc := ExpandConstant('{sys}\sc.exe');
+  WizardForm.StatusLabel.Caption := 'Устанавливаю службу...';
+  if not RunStep(Cli, 'service install') then
+    Result := 'служба не установилась'
+  // Автозапуск службы: значок в трее без неё бесполезен, а ждать ручного
+  // запуска после каждой перезагрузки — не то, чего ждут от VPN-клиента.
+  else if not RunStep(Sc, 'config {#MyName} start= auto') then
+    Result := 'не удалось включить автозапуск службы'
+  // Служба переживает падение: маршруты без неё убрать некому.
+  else if not RunStep(Sc, 'failure {#MyName} reset= 86400 actions= restart/5000/restart/10000/restart/30000') then
+    Result := 'не удалось настроить перезапуск службы при сбое'
+  // Уже работающая служба отвечает на start ошибкой 1056 — это не сбой.
+  else if not RunStep(Cli, 'service start') and not ServiceRunning then
+    Result := 'служба не запустилась'
+  else
+    Result := '';
+  if Result <> '' then
+    Exit;
+  // service start только посылает команду — ждём, пока служба поднимется.
+  for I := 1 to 20 do
+  begin
+    if ServiceRunning then
+      Exit;
+    Sleep(1000);
+  end;
+  Result := 'служба запущена, но за 20 секунд так и не заработала';
+end;
+
 // После запуска новой службы — как было до обновления. Туннель при
 // включённом автоподключении служба поднимет сама. Трей в обычном режиме
 // запускает галочка на последней странице, а тихий её не показывает:
-// возвращаем его так же, как при входе, — только значок.
+// возвращаем его так же, как при входе, — только значок. Трей — и без
+// службы: в нём видно, что она не работает.
 procedure RestoreAfterUpdate;
 var
   I, ResultCode: Integer;
+  Started: Boolean;
 begin
-  if TunnelWasUp and not FileExists(ExpandConstant('{commonappdata}\{#MyName}\state\autostart')) then
+  if (ServiceError = '') and TunnelWasUp and
+     not FileExists(ExpandConstant('{commonappdata}\{#MyName}\state\autostart')) then
+  begin
+    Started := False;
     // Канал службы поднимается не сразу после service start.
     for I := 1 to 5 do
     begin
-      if Exec(ExpandConstant('{app}\{#MyCli}'), 'start', '', SW_HIDE,
-              ewWaitUntilTerminated, ResultCode) and (ResultCode = 0) then
+      Started := Exec(ExpandConstant('{app}\{#MyCli}'), 'start', '', SW_HIDE,
+                      ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+      if Started then
         Break;
       Sleep(3000);
     end;
+    if not Started then
+    begin
+      Log('Туннель до обновления был включён, а после сам не поднялся: код ' + IntToStr(ResultCode));
+      SuppressibleMsgBox('Туннель был включён до обновления, но сам не поднялся. ' +
+                         'Включи его в трее.', mbInformation, MB_OK, IDOK);
+    end;
+  end;
   if TrayWasRunning and WizardSilent then
     Exec(ExpandConstant('{app}\{#MyExe}'), '--background', '', SW_SHOWNORMAL,
          ewNoWait, ResultCode);
@@ -496,6 +562,15 @@ var
 begin
   if CurStep = ssPostInstall then
   begin
+    ServiceError := InstallService;
+    if ServiceError <> '' then
+    begin
+      Log('Служба: ' + ServiceError);
+      SuppressibleMsgBox('{#MyName} установлен, но ' + ServiceError + '.' + #13#10 + #13#10 +
+                         'Перезагрузи компьютер и запусти установку снова. Подробности — в журнале:' + #13#10 +
+                         ExpandConstant('{log}'), mbError, MB_OK, IDOK);
+    end;
+    RestoreAfterUpdate;
     if WizardIsTaskSelected('autorun') then
       RegisterTrayTask
     else
@@ -503,4 +578,14 @@ begin
       Exec(ExpandConstant('{sys}\schtasks.exe'), '/Delete /TN "{#MyName} Tray" /F',
            '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
+end;
+
+// Файлы на месте, а службы нет — тихая установка (процедура в CLAUDE.md)
+// узнаёт об этом по коду 10, а не по «Готово». Коды 1–8 заняты самим Inno.
+function GetCustomSetupExitCode: Integer;
+begin
+  if ServiceError <> '' then
+    Result := 10
+  else
+    Result := 0;
 end;

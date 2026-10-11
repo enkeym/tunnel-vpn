@@ -2057,6 +2057,7 @@ def run_dispatcher():
 
 
 def handle_command_line():
-    """install / remove / start / stop / restart через win32serviceutil."""
+    """install / remove / start / stop / restart через win32serviceutil.
+    Код ошибки Windows, 0 — вышло: по нему установщик видит, что службы нет."""
     import win32serviceutil
-    win32serviceutil.HandleCommandLine(_service_class())
+    return win32serviceutil.HandleCommandLine(_service_class())

@@ -161,8 +161,8 @@ def main(argv=None):
             service.run_dispatcher()
             return 0
         sys.argv = [sys.argv[0]] + argv[1:]
-        service.handle_command_line()
-        return 0
+        # Код ошибки — наружу: установщик проверяет install и start по нему.
+        return 1 if service.handle_command_line() else 0
 
     if cmd == "tray":
         from . import tray

@@ -146,3 +146,13 @@ def test_list_по_туннелям_с_активным(sent, capsys):
 def test_статус_показывает_туннели(sent, capsys):
     assert cli.main(["status"]) == 0
     assert "Работа [work], по списку — corp" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("err, code", [(0, 0), (1072, 1), (-1, 1)])
+def test_service_отдаёт_ошибку_наружу(monkeypatch, err, code):
+    """По коду выхода установщик видит, что служба не встала (InstallService)."""
+    from tunnelvpn import service
+    monkeypatch.setattr(service, "handle_command_line", lambda: err)
+    monkeypatch.setattr(cli.sys, "argv", ["tunnelvpn.exe"])
+
+    assert cli.main(["service", "install"]) == code

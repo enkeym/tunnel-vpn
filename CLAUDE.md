@@ -30,7 +30,8 @@ goes down. Update only silently, then put everything back in the same command:
    via Bash `run_in_background` with output to `/tmp/`. Not `-Wait`: it waits for the whole process tree, and the
    setup ends by starting the tray, so the command never returns. Never bare `/SILENT` — that run once ended with
    the service removed and not reinstalled.
-3. `sc.exe query TunnelVPN` must be `RUNNING`. Service missing → rerun the setup's own steps elevated:
+3. `sc.exe query TunnelVPN` must be `RUNNING`; `$p.ExitCode` 10 means the setup saw the service fail
+   (details in `%TEMP%\Setup Log *.txt`). Service missing → rerun the setup's own steps elevated:
    `tunnelvpn.exe service install`, `sc.exe config TunnelVPN start= auto`,
    `sc.exe failure TunnelVPN reset= 86400 actions= restart/5000/restart/10000/restart/30000`, `tunnelvpn.exe service start`.
 4. Tunnel was up → `tunnelvpn.exe start` elevated; restart the tray (`TunnelVPN-Tray.exe`, RunAs) if it is gone.
