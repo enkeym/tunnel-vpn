@@ -198,7 +198,7 @@ class Api:
             self._guard(ipc.call("set-active", tunnel=arg["tunnel"], name=arg["name"]))
             self._apply()
         elif name == "set_enabled":
-            # Вкл/выкл туннеля «по списку» — без прав, как выбор конфига; на
+            # Вкл/выкл туннеля, основного тоже, — без прав, как выбор конфига; на
             # живой VPN переносит тот же _apply, что и сохранение правил. Те же
             # адреса у включённого — служба ничего не записала, замену решает человек.
             reply = ipc.call("set-enabled", tunnel=arg["tunnel"], on=bool(arg["on"]),
