@@ -280,6 +280,64 @@ def test_при_чужом_vpn_реальный_адрес_не_записыва
     assert any("поднят другой VPN (интерфейс 31)" in line for line in seen["log"])
 
 
+def test_адрес_даёт_первый_годный_сервис(env, monkeypatch):
+    """ifconfig.me молчит, ещё один отвечает v6 — адрес берётся у остальных."""
+    tun, _build, seen = env
+    answer = FakeIfconfig("198.51.100.8")
+    answer.release.set()
+    v6 = FakeIfconfig("2001:db8::1")
+    v6.release.set()
+    asked = []
+
+    def urlopen(url, timeout=None):
+        asked.append(url)
+        if "ifconfig.me" in url:
+            time.sleep(1)
+            raise OSError("timed out")
+        return v6(url) if "ipify" in url else answer(url)
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+    began = time.time()
+    assert tun.start() == ""
+
+    assert time.time() - began < 0.9
+    assert seen["real_ip"] == "198.51.100.8"
+    assert sorted(asked) == sorted(tunnel.REAL_IP_URLS)
+
+
+def test_конфиги_проверяются_разом(env, monkeypatch):
+    """По очереди каждый sing-box check прибавлялся ко включению."""
+    tun, _build, _seen = env
+    monkeypatch.setattr(urllib.request, "urlopen", _no_net)
+    together = threading.Barrier(3, timeout=1)
+
+    def run(_cmd, **_k):
+        together.wait()     # по очереди — BrokenBarrierError через секунду
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(tunnel.subprocess, "run", run)
+
+    assert tun.start() == ""
+
+
+def test_ошибка_проверки_первая_по_порядку(env, monkeypatch):
+    """Не прошли основной и туннель — в ответе основной, как при проверке по очереди."""
+    tun, _build, seen = env
+    monkeypatch.setattr(urllib.request, "urlopen", _no_net)
+
+    def run(cmd, **_k):
+        bad = cmd[-1] in (paths.CONFIG_JSON, buildconfig.side_json("home"))
+        return type("R", (), {"returncode": int(bad), "stderr": f"плохо {cmd[-1]}"})()
+
+    monkeypatch.setattr(tunnel.subprocess, "run", run)
+
+    err = tun.start()
+
+    assert err.startswith("конфиг config.json не прошёл проверку")
+    assert seen["started"] == []
+
+
 # ---------------------------------------------------------- три процесса
 
 

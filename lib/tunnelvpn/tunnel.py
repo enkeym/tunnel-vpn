@@ -18,6 +18,7 @@ import ctypes
 import datetime
 import json
 import os
+import queue
 import socket
 import subprocess
 import threading
@@ -56,8 +57,19 @@ DELAY_URL = "http://cp.cloudflare.com/generate_204"
 CANCELLED = "отменено: выключаю"
 
 # Сколько ждём реальный адрес от запуска запроса. Обычно он приходит за
-# секунду, но на плохой сети запрос висел до 15 с и держал всё включение.
-REAL_IP_WAIT = 6
+# доли секунды; на плохой сети один сервис висел до 15 с и держал всё
+# включение, поэтому спрашиваем все разом и ждём недолго.
+REAL_IP_WAIT = 1.5
+
+# Кто называет реальный адрес голым текстом. Все разом, берём первый годный
+# ответ: один сервис бывает недоступен или отвечает 429.
+REAL_IP_URLS = ("https://ifconfig.me/ip", "https://api.ipify.org",
+                "https://icanhazip.com", "https://checkip.amazonaws.com")
+
+# Сколько ждём sing-box check одного конфига. Без предела зависший sing-box
+# повесил бы весь start навсегда, а клиент ждёт ответ по каналу без таймаута —
+# снаружи это ровно ««Включить» зависло».
+CHECK_WAIT = 20
 
 # Пока туннель поднят, не даём системе засыпать по простою: во сне keepalive
 # не уходит, WG-сессия протухает, а TCP-соединения, открытые до сна, после
@@ -376,24 +388,16 @@ class Tunnel:
         # нельзя было сказать, кто из них ест до 11 с включения.
         self.log("→ проверяю конфиг (sing-box check)…")
 
-        # timeout обязателен: без него зависший sing-box повесил бы
-        # весь start навсегда, а клиент ждёт ответ по каналу без таймаута —
-        # снаружи это ровно ««Включить» зависло».
-        for cfg_path in (paths.CONFIG_JSON,
-                         *(buildconfig.side_json(s.tid) for s in self.sides)):
-            try:
-                check = subprocess.run(
-                    [paths.SINGBOX, "check", "-c", cfg_path],
-                    capture_output=True, text=True,
-                    encoding="utf-8", errors="replace",
-                    timeout=20, creationflags=_NO_WINDOW)
-            except subprocess.TimeoutExpired:
-                return "sing-box check не ответил за 20с"
-            if check.returncode != 0:
-                return (f"конфиг {os.path.basename(cfg_path)} не прошёл "
-                        f"проверку: {(check.stderr or '').strip()}")
-            if self.cancel.is_set():
-                return CANCELLED
+        # Все конфиги разом: по очереди каждый check (~0,4 с) прибавлялся к
+        # включению. Ошибку отдаём первую по порядку — основной раньше туннелей.
+        cfgs = (paths.CONFIG_JSON,
+                *(buildconfig.side_json(s.tid) for s in self.sides))
+        with ThreadPoolExecutor(len(cfgs)) as pool:
+            err = next((e for e in pool.map(_check_config, cfgs) if e), "")
+        if err:
+            return err
+        if self.cancel.is_set():
+            return CANCELLED
 
         # Шлюз по умолчанию определяем ДО старта, пока туннель не перебил
         # маршруты. Ничего не захардкожено: работает и на Wi-Fi, и на раздаче.
@@ -530,16 +534,28 @@ class Tunnel:
         Утечкой считается совпадение с ним. Сравнивать с адресом сервера
         ненадёжно: он может выходить не тем адресом, на котором принимает
         соединения, и тогда рабочий туннель показывался бы как утечка.
+
+        Сервисы REAL_IP_URLS спрашиваем разом, отдаём первый годный ответ.
+        Ждём, пока ответят все: сколько ждать нас, решает start.
         """
-        try:
-            import urllib.request
-            with urllib.request.urlopen("https://ifconfig.me/ip", timeout=4) as r:
-                ip = r.read().decode("ascii", "replace").strip()
-        except Exception:
-            return ""
-        if not all(c in "0123456789." for c in ip) or not ip:
-            return ""            # не ответили — не гадаем
-        return ip
+        got = queue.Queue()
+
+        def ask(url):
+            try:
+                with urllib.request.urlopen(url, timeout=REAL_IP_WAIT) as r:
+                    ip = r.read().decode("ascii", "replace").strip()
+            except Exception:
+                ip = ""
+            # Не адрес v4 — не гадаем: v6 и страница ошибки сюда не годятся.
+            got.put(ip if ip and all(c in "0123456789." for c in ip) else "")
+
+        for url in REAL_IP_URLS:
+            threading.Thread(target=ask, args=(url,), daemon=True).start()
+        for _ in REAL_IP_URLS:
+            ip = got.get()
+            if ip:
+                return ip
+        return ""
 
     def _save_real_ip(self, ip):
         try:
@@ -1271,6 +1287,22 @@ def _end(proc):
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             pass
+
+
+def _check_config(cfg_path):
+    """sing-box check одного конфига: '' или текст ошибки для окна и трея."""
+    try:
+        check = subprocess.run(
+            [paths.SINGBOX, "check", "-c", cfg_path],
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+            timeout=CHECK_WAIT, creationflags=_NO_WINDOW)
+    except subprocess.TimeoutExpired:
+        return f"sing-box check не ответил за {CHECK_WAIT}с"
+    if check.returncode != 0:
+        return (f"конфиг {os.path.basename(cfg_path)} не прошёл "
+                f"проверку: {(check.stderr or '').strip()}")
+    return ""
 
 
 def _fatal_line(log_path):
