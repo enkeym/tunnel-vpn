@@ -114,12 +114,17 @@ def test_ссылки_только_на_свой_репозиторий():
 def test_диагностика_без_адресов():
     st = {"up": True, "version": "0.3.7-beta", "singbox": "1.14.0", "exit_ip": "185.12.4.9",
           "v6_leak": "2a00::71", "exit_state": "tunnel", "log_level": "info",
-          "tunnels": [{"id": "home", "name": "Личный", "mode": "all", "active": "nl-1"}]}
+          # Ответ проверки основного — тот же адрес выхода (probe._check_result).
+          "tunnels": [{"id": "home", "name": "Личный", "mode": "all", "active": "nl-1",
+                       "check": "up", "answer": "185.12.4.9"},
+                      {"id": "work", "name": "Работа", "mode": "list", "active": "corp",
+                       "check": "up", "answer": "10.1.1.5"}]}
     text = settings.diagnostics(st, {"portable": False, "tray_autostart": True,
                                      "service": {"installed": True, "running": True, "start": "auto"}})
 
     assert "185.12.4.9" not in text and "2a00::71" not in text
-    assert "Личный [home]" in text and "sing-box : 1.14.0" in text
+    assert "Личный [home]" in text and "отвечает (адрес скрыт)" in text
+    assert "отвечает 10.1.1.5" in text and "sing-box : 1.14.0" in text
     assert "работает, запуск auto" in text and "трей при входе: да" in text
 
 

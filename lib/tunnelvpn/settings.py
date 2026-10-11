@@ -195,8 +195,11 @@ def diagnostics(st, info):
     from . import cli
 
     if st:
+        # Ответ проверки основного — тот же адрес выхода (probe._check_result).
+        tunnels = [{**t, "answer": "(адрес скрыт)"} if t.get("mode") == "all" and t.get("answer")
+                   else t for t in st.get("tunnels") or []]
         st = {**st, "exit_ip": "скрыт" if st.get("exit_ip") else "",
-              "v6_leak": "адрес скрыт" if st.get("v6_leak") else ""}
+              "v6_leak": "адрес скрыт" if st.get("v6_leak") else "", "tunnels": tunnels}
         lines = cli.status_lines(st)
     else:
         lines = ["TunnelVPN: служба не отвечает"]
