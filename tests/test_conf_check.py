@@ -185,6 +185,16 @@ def test_тот_же_ключ_в_живом_процессе_проверяет_
     assert core.tunnel.trials == []
 
 
+def test_запасной_с_ключом_не_везущего_основного_идёт_временным(core, monkeypatch):
+    """Пробер мерил бы тот самый процесс, от которого уходим."""
+    t = _tunnel(monkeypatch, mode="all")
+    core.tunnel = _Tunnel(twin="t1")
+    monkeypatch.setattr(probe, "trial_check", lambda link, full, host, dns: ("up", "HTTP 204"))
+
+    assert core._finish_test(t, "w1", alone=True)["result"] == "up"
+    assert core.tunnel.trials == ["t1"]
+
+
 def test_нечем_проверить_без_запуска(core, monkeypatch):
     _tunnel(monkeypatch, text=CONF.replace("DNS = 10.8.0.1\n", ""))
     assert core._test_conf("t1", "w1")["test"]["result"] == "none"

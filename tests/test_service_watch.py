@@ -10,7 +10,7 @@ import types
 
 import pytest
 
-from tunnelvpn import buildconfig, probe, service, tunnel
+from tunnelvpn import buildconfig, probe, service, tunnel, tunnels
 
 OFFICE = (12, "192.168.19.1")
 HOME = (7, "192.168.0.1")
@@ -119,10 +119,13 @@ def _core(monkeypatch):
     core._paths, core._ip_names = {}, {}
     core._log_at, core._side_after, core._side_noted = {}, {}, {}
     core._side_said = set()
+    core._tests_lock, core._trial_locks = threading.Lock(), {}
     core.prober = probe.Prober()
     core.tunnel = _Tunnel(core.prober)
     core.logged = []
     monkeypatch.setattr(core, "log", core.logged.append)
+    # Запасных конфигов нет: иначе сторож читал бы tunnels.json других тестов.
+    monkeypatch.setattr(core, "_spares", lambda tid: (None, []))
     monkeypatch.setattr(core.prober, "probe_fast", lambda: None)
     monkeypatch.setattr(probe.Prober, "current_profile", staticmethod(lambda: "p"))
     monkeypatch.setattr(service, "RECONNECT_GAP", 0.0)
@@ -760,6 +763,123 @@ def test_правка_конфигов_ставит_круг_сторожа_на
     _rounds(core, 1)
 
     assert core.tunnel.restarts == [] and core.tunnel.mends == 0
+
+
+# ---------------------------------------------- запасные конфиги основного
+
+
+HOME_T = {"id": "home", "name": "Личный", "active": "nl-1"}
+
+
+def _spare_confs(monkeypatch, core, answers, during=None):
+    """Запасные конфиги основного в порядке answers {имя: итог проверки}.
+    (проверенные (имя, alone), сделанные активными (туннель, имя)); during — что
+    случается, пока идёт проверка."""
+    tried, made = [], []
+
+    def run_test(t, name, alone=False):
+        tried.append((name, alone))
+        if during:
+            during()
+        return answers[name], ""
+
+    monkeypatch.setattr(core, "_spares", lambda tid: (HOME_T, list(answers)))
+    monkeypatch.setattr(core, "_run_test", run_test)
+    monkeypatch.setattr(core, "_conf_stamp", lambda tid, name: None)
+    monkeypatch.setattr(core, "_set_active",
+                        lambda name, tunnel="": made.append((tunnel, name)) or {"ok": True})
+    return tried, made
+
+
+def test_основной_не_ожил_после_перезапуска_берётся_ответивший_запасной(monkeypatch):
+    core = _core(monkeypatch)
+    core.tunnel.out = buildconfig.DIRECT_TAG
+    tried, made = _spare_confs(monkeypatch, core, {"nl-2": "error", "nl-3": "up"})
+    home = core.tunnel.home
+
+    def carried():
+        # Процесс на запасном конфиге везёт.
+        core.tunnel.delay_ms = 90
+        return [(home, "")]
+
+    seen = _reload(monkeypatch, core, carried)
+
+    state = _rounds(core, 1)
+    # До перезапуска сторожем запасные не трогаем: мог лежать процесс.
+    assert core.tunnel.restarts == ["home"] and tried == []
+
+    core._back_at = 0.0
+    _rounds(core, 1, state)
+
+    assert tried == [("nl-2", True), ("nl-3", True)]
+    assert made == [("home", "nl-3")]
+    assert len(seen) == 1 and seen[0]["locked"]
+    assert core.tunnel.outs == [HOME_VIA]
+    assert core.prober.snapshot()["out"] == HOME_VIA
+    assert core.tunnel.restarts == ["home"]
+    assert _said(core, "запасной nl-3.conf отвечает")
+    assert core._main_kicked is False
+
+
+def test_запасные_не_отвечают_выход_остаётся_в_block(monkeypatch):
+    core = _core(monkeypatch)
+    core.tunnel.kill_switch = True
+    core.tunnel.out = buildconfig.BLOCK_TAG
+    tried, made = _spare_confs(monkeypatch, core, {"nl-2": "error", "nl-3": "error"})
+    state = _rounds(core, 1)
+
+    core._back_at = 0.0
+    state = _rounds(core, 1, state)
+    assert len(tried) == 2 and made == []
+    assert core.tunnel.outs == []
+    assert _said(core, "не отвечают — выход остаётся block")
+
+    core._back_at = 0.0                          # круг запасных — не чаще DEAD_GAP
+    _rounds(core, 1, state)
+    assert len(tried) == 2
+
+
+def test_не_поднявшийся_основной_тоже_уходит_на_запасной(monkeypatch):
+    """Процесс на этом конфиге не стартует — проверять задержку не через что."""
+    core = _core(monkeypatch)
+    core.tunnel.side_fail = "процесс «Личный» упал на старте: bad config"
+    core.tunnel.home.proc = _Proc()
+    tried, made = _spare_confs(monkeypatch, core, {"nl-2": "up"})
+    _reload(monkeypatch, core, [(core.tunnel.home, "")])
+
+    _rounds(core, 2)
+
+    assert tried == [("nl-2", True)] and made == [("home", "nl-2")]
+
+
+def test_команда_человека_посреди_проверки_запасной_не_берёт(monkeypatch):
+    core = _core(monkeypatch)
+    core.tunnel.out = buildconfig.DIRECT_TAG
+
+    def human():
+        core._human += 1
+
+    tried, made = _spare_confs(monkeypatch, core, {"nl-2": "up", "nl-3": "up"}, during=human)
+    state = _rounds(core, 1)
+
+    core._back_at = 0.0
+    _rounds(core, 1, state)
+
+    assert tried == [("nl-2", True)] and made == []
+
+
+def test_запасные_по_кругу_после_активного(monkeypatch):
+    data = tunnels.validate({"tunnels": [{"id": "home", "name": "Личный", "mode": "all",
+                                          "active": "b"}]})
+    monkeypatch.setattr(service.tunnels, "load", lambda: data)
+    monkeypatch.setattr(service.tunnels, "list_confs", lambda tid: ["a", "b", "c"])
+
+    t, names = service.Core._spares("home")
+    assert t["id"] == "home" and names == ["c", "a"]
+
+    data["tunnels"][0]["active"] = ""
+    assert service.Core._spares("home")[1] == ["a", "b", "c"]
+    assert service.Core._spares("нет")[1] == []
 
 
 # ------------------------------------------------------- правка конфигов
