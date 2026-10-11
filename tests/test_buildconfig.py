@@ -573,9 +573,12 @@ def test_порядок_правил_списки_локальная_сеть_м
     main, _ = build(THREE)
 
     assert main["route"]["rules"] == [
+        # До sniff — pre-match: RST до соединения; DNS на v6 — мимо отказа.
+        {"type": "logical", "mode": "and",
+         "rules": [{"rule_set": ["no-v6"]}, {"port": [53], "invert": True}],
+         "action": "reject", "no_drop": True},
         {"action": "sniff"},
         {"protocol": "dns", "action": "hijack-dns"},
-        {"rule_set": ["no-v6"], "action": "reject"},
         {"rule_set": ["rules-work"], "outbound": "via-work"},
         {"rule_set": ["rules-lab"], "outbound": "via-lab"},
         # У основного — с пустым rule-set: его смена меняет файл, а не конфиг.
@@ -670,17 +673,29 @@ def test_уровень_журнала_во_всех_конфигах(build):
     assert {main["log"]["level"]} | {s["log"]["level"] for s in sides.values()} == {"debug"}
 
 
-def test_v6_только_когда_он_есть_у_основного(build):
+def test_v6_только_когда_он_есть_у_основного(build, tmp_path):
+    """Адрес v6 у tun — всегда; выход по v6 — только с v6 у основного,
+    без него IPv6 отвергает rule-set no-v6."""
     texts = dict(CONFS, home=PERSONAL_AWG.replace(
         "Address = 10.9.0.2/32", "Address = 10.9.0.2/32, fd00::2/128"))
 
     main, sides = build(THREE, texts=texts)
-    assert "fdfe:dcba:9876::1/126" in main["inbounds"][0]["address"]
+    assert main["inbounds"][0]["address"] == ["172.19.0.1/30", "fdfe:dcba:9876::1/126"]
     assert sides["work"]["endpoints"][0]["peers"][0]["allowed_ips"] == [
         "0.0.0.0/0", "::/0"]
+    assert _load(tmp_path / "no-v6.json") == {"version": 3, "rules": []}
 
-    main, _ = build(THREE)
-    assert main["inbounds"][0]["address"] == ["172.19.0.1/30"]
+    main, sides = build(THREE)
+    assert main["inbounds"][0]["address"] == ["172.19.0.1/30", "fdfe:dcba:9876::1/126"]
+    assert sides["work"]["endpoints"][0]["peers"][0]["allowed_ips"] == ["0.0.0.0/0"]
+    assert _load(tmp_path / "no-v6.json") == {"version": 3, "rules": [{"ip_cidr": ["::/0"]}]}
+
+
+def test_без_основного_ipv6_отвергается(build, tmp_path):
+    main, _ = build(THREE[:2])
+
+    assert "fdfe:dcba:9876::1/126" in main["inbounds"][0]["address"]
+    assert _load(tmp_path / "no-v6.json") == {"version": 3, "rules": [{"ip_cidr": ["::/0"]}]}
 
 
 def test_туннель_без_конфига_пропускается(build, tmp_path):
@@ -861,6 +876,21 @@ def test_смена_основного_меняет_только_rule_set_и_в�
     assert again["inbounds"][0]["mtu"] == 1280
     assert buildconfig.tunnel_dns(main) == {"work": "10.0.0.53", "home": "1.1.1.1"}
     assert sets["bypass"] != _load(tmp_path / "bypass.json")
+
+
+def test_конфиг_основного_без_v6_вместо_v6_на_лету(build, tmp_path):
+    """Смена конфига основного на конфиг без v6 (запасной, выбор в окне)
+    основной конфиг не меняет — tun не падает. Выход без v6 — IPv6 отвергает
+    rule-set no-v6."""
+    texts = dict(CONFS, home=PERSONAL_AWG.replace(
+        "Address = 10.9.0.2/32", "Address = 10.9.0.2/32, fd00::2/128"))
+    main, _ = build(THREE, texts=texts)
+
+    again, _, sets = _again(main, tmp_path, CONFS, THREE)
+
+    assert tunnel._fixed(again) == tunnel._fixed(main)
+    assert _load(tmp_path / "no-v6.json") == {"version": 3, "rules": []}
+    assert sets["no-v6"] == {"version": 3, "rules": [{"ip_cidr": ["::/0"]}]}
 
 
 def test_выключение_основного_с_v6_на_лету(build, tmp_path):

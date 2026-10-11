@@ -1007,21 +1007,17 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True):
 
     # IPv6 выхода — ТОЛЬКО если сервер включённого основного выдал v6-адрес.
     #
-    # Почему это важно. Если дать tun v6-адрес, не имея v6 на самом туннеле,
-    # приложения видят «IPv6 есть» и по Happy Eyeballs идут сначала по нему.
-    # Трафик заходит в туннель и умирает там с
+    # Почему это важно. IPv6 без v6 на самом туннеле заходит в туннель и
+    # умирает там с
     #     "missing IPv6 local address",
-    # причём не молча — соединение получает отказ, и браузер рвёт страницу
+    # причём не молча — соединение уже открыто, и браузер рвёт страницу
     # (это и был ERR_CONNECTION_CLOSED).
     v6 = main is not None and _has_v6(main[1])
-    # Адрес v6 у tun — по основному, выключенному тоже: иначе его вкл/выкл
-    # меняли бы основной конфиг и роняли tun (Tunnel.live_plan). Основной
-    # выключен — IPv6 отвергается rule-set NO_V6_TAG до соединения, и
-    # приложение сразу уходит на IPv4.
-    tun_v6 = any(t["mode"] == "all" and _has_v6(conf) for t, conf, _ in built)
-    tun_address = ["172.19.0.1/30"]
-    if tun_v6:
-        tun_address.append("fdfe:dcba:9876::1/126")
+    # Адрес v6 у tun — всегда: от v6 основного он не зависит, и смена
+    # конфига, вкл/выкл и смена основного не меняют основной конфиг и не
+    # роняют tun (Tunnel.live_plan). Выход без v6 — IPv6 отвергает rule-set
+    # NO_V6_TAG до соединения (pre-match), и приложение сразу уходит на IPv4.
+    tun_address = ["172.19.0.1/30", "fdfe:dcba:9876::1/126"]
 
     # Переключатели для диагностики, без правки файлов:
     #   SB_STACK=system|gvisor|mixed   сетевой стек tun
@@ -1075,7 +1071,7 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True):
     bypass = _match(*split_entries(main[0]["exclude"], v6)) if main else None
     sets[BYPASS_TAG] = rule_set(bypass)
     rules.append({"rule_set": [BYPASS_TAG], "outbound": DIRECT_TAG})
-    sets[NO_V6_TAG] = rule_set({"ip_cidr": ["::/0"]} if tun_v6 and not v6 else None)
+    sets[NO_V6_TAG] = rule_set(None if v6 else {"ip_cidr": ["::/0"]})
 
     # Связи всех слотов: прежние — если у работающего запуска они все есть.
     links = {t["id"]: _slot_links(links.get(t["id"])) for t, _, _ in built}
@@ -1130,9 +1126,17 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True):
         }},
         "route": {
             "rules": [
+                # До sniff: на нём pre-match TCP останавливается, и отказ
+                # пришёл бы закрытием уже открытого соединения, а не RST.
+                # DNS на v6-адрес tun — мимо отказа, его перехватывает
+                # hijack-dns. no_drop: без него после 50 отказов за 30 с
+                # sing-box молча роняет пакеты, и приложение ждёт таймаута.
+                {"type": "logical", "mode": "and",
+                 "rules": [{"rule_set": [NO_V6_TAG]},
+                           {"port": [53], "invert": True}],
+                 "action": "reject", "no_drop": True},
                 {"action": "sniff"},
                 {"protocol": "dns", "action": "hijack-dns"},
-                {"rule_set": [NO_V6_TAG], "action": "reject"},
                 *rules,
             ],
             # Нет туннеля на «весь остальной трафик» — out смотрит в direct.
