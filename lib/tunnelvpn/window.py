@@ -32,6 +32,9 @@ READY_LOST = 3
 # Сколько холодное окно ждёт готовую страницу, прежде чем показаться как
 # есть: дольше без окна кажется, что ярлык не сработал.
 COLD_SHOW_WAIT = 4.0
+# В paths.FOCUS_FILE вместо id туннеля: пункт трея «Доступно обновление» —
+# открыть «Настройки → О программе». Двоеточия в id не бывает (tunnels.check_id).
+FOCUS_ABOUT = ":about"
 
 # Фильтр для create_file_dialog. pywebview проверяет каждую строку регуляркой
 # вида ^([\w ]+)\(\*\.\w+...\)$ : в описании допустимы только буквы и пробелы,
@@ -317,14 +320,17 @@ class Api:
     def _focus(self):
         """Карточка туннеля, по которому щёлкнули в меню трея: id из
         paths.FOCUS_FILE, файл забираем — следующий показ без клика по
-        туннелю прокручивать не должен. Зовётся, когда карточки уже нарисованы."""
+        туннелю прокручивать не должен. Зовётся, когда карточки уже нарисованы.
+        FOCUS_ABOUT — не карточка, а «О программе» (settings.js:showAbout)."""
         try:
             with open(paths.FOCUS_FILE, encoding="utf-8") as fh:
                 tid = fh.read().strip()
             os.remove(paths.FOCUS_FILE)
         except OSError:
             return
-        if tid:
+        if tid == FOCUS_ABOUT:
+            self.js("showAbout")
+        elif tid:
             self.js("focusCard", tid)
 
     @staticmethod

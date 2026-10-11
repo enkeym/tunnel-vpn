@@ -163,6 +163,16 @@ def test_карточку_клика_забирает_показанное_ок�
     assert shown.index("render") < shown.index("focusCard")
 
 
+def test_пункт_обновления_в_трее_открывает_о_программе_а_не_карточку(monkeypatch):
+    api, _, shown = _api(monkeypatch)
+    _focus_on(window.FOCUS_ABOUT)
+
+    api.send("ready")
+
+    assert "showAbout" in shown and "focusCard" not in shown
+    assert not os.path.exists(paths.FOCUS_FILE)
+
+
 def test_прогретое_окно_на_ready_карточку_не_забирает(monkeypatch):
     api, _, shown = _api(monkeypatch)
     api.hidden = True

@@ -77,6 +77,7 @@ def test_молчит_красный_а_без_домена_проверки_с�
 
 def test_запасной_выход_в_подсказке_значка():
     app = tray.Tray.__new__(tray.Tray)
+    app.installing = False
     app.status = _up(_work(), _home(name="Дом"), out="direct", exit_state="direct")
 
     assert "запасной выход" in app._title()
@@ -86,6 +87,7 @@ def test_запасной_выход_в_подсказке_значка():
 
 def test_без_основного_подсказка_всё_остальное_напрямую():
     app = tray.Tray.__new__(tray.Tray)
+    app.installing = False
     app.status = _up(_work(), exit_ip="5.6.7.8", exit_state="direct")
 
     assert app._title() == "TunnelVPN — работает · всё остальное напрямую"

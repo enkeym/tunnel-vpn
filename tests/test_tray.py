@@ -5,6 +5,7 @@ pystray и окно здесь не поднять — подменяем зна
 """
 
 import ctypes
+import json
 import os
 import subprocess
 import sys
@@ -14,7 +15,7 @@ import types
 
 import pytest
 
-from tunnelvpn import ipc, tray
+from tunnelvpn import ipc, tray, update
 
 
 class _Icon:
@@ -370,6 +371,7 @@ def test_опрос_начинается_только_после_показа_з
     icon.visible = False
     t.icon = icon
     monkeypatch.setattr(t, "poll", lambda: seen.append(icon.visible))
+    monkeypatch.setattr(t, "_watch_updates", lambda: None)
 
     t._setup(icon)
 
@@ -501,3 +503,125 @@ def test_значок_трея_грузится_в_своём_размере(siz
         win32gui.DeleteObject(color)
     finally:
         win32gui.DestroyIcon(hicon)
+
+
+# ------------------------------------------------------ обновление из окна
+
+@pytest.fixture
+def mark():
+    """Метка обновления из окна без кода: setup ещё работает."""
+    update._write(update.MARK_FILE, json.dumps(
+        {"version": "0.3.8", "from": "0.3.7", "at": time.time()}))
+    yield
+    update.clear()
+
+
+def _no_service(_op, **_kw):
+    raise ipc.NotRunning("служба не отвечает")
+
+
+def test_пока_ставится_обновление_значок_занят_а_не_красный(monkeypatch, mark):
+    """Службу остановил установщик: это ход обновления, а не «не отвечает»."""
+    monkeypatch.setattr(ipc, "call", _no_service)
+    t = tray.Tray()
+
+    t._poll_once()
+    assert (t.state, t._title()) == ("busy", "Обновляю TunnelVPN…")
+
+    update._write(update.CODE_FILE, "0")
+    t._poll_once()
+    assert (t.state, t._title()) == ("error", "TunnelVPN — служба не отвечает")
+
+
+def test_пока_ставится_обновление_включить_и_перезапустить_недоступны(monkeypatch, mark):
+    pytest.importorskip("pystray")
+    monkeypatch.setattr(ipc, "call", lambda _op, **_kw: {"ok": True, "status": {"up": True}})
+    t = tray.Tray()
+    menu = t._menu()
+
+    t._poll_once()
+
+    assert [item.text for item in menu if not item.enabled] == ["Выключить", "Перезапустить"]
+
+
+def _offered(monkeypatch):
+    """Трей с найденной 0.3.8 и его меню после опроса и перестройки."""
+    pytest.importorskip("pystray")
+    monkeypatch.setattr(ipc, "call", lambda _op, **_kw: {"ok": True, "status": {}})
+    t = tray.Tray()
+    menu = t._menu()
+    t.offer = "0.3.8"
+    t._poll_once()
+    t.icon = types.SimpleNamespace(update_menu=lambda: None)
+    t._sync_menu()
+    return t, [item.text for item in menu]
+
+
+def test_найденное_обновление_первый_пункт_меню(monkeypatch):
+    _t, texts = _offered(monkeypatch)
+
+    assert texts[0] == "Доступно обновление 0.3.8"
+
+
+def test_пока_обновление_ставится_пункта_о_нём_нет(monkeypatch, mark):
+    _t, texts = _offered(monkeypatch)
+
+    assert not any(text.startswith("Доступно обновление") for text in texts)
+
+
+def test_пункт_обновления_открывает_окно_на_о_программе(monkeypatch):
+    t = tray.Tray()
+    opened = []
+    monkeypatch.setattr(t, "on_window", lambda focus=None: opened.append(focus))
+
+    t.on_about()
+
+    assert opened == [tray.window.FOCUS_ABOUT]
+
+
+def test_проверка_ставит_и_снимает_пункт_а_сбой_его_не_трогает(monkeypatch):
+    answers = [{"state": "update", "latest": "0.3.8"}, {"state": "error"}, OSError("сеть"),
+               {"state": "latest", "latest": "0.3.8"}, {"state": "error"}]
+    t = tray.Tray()
+    seen = []
+
+    def check(_current):
+        seen.append(t.offer)
+        if len(seen) == len(answers):
+            t.stop_event.set()
+        answer = answers[len(seen) - 1]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    monkeypatch.setattr(tray.settings, "check_update", check)
+    monkeypatch.setattr(tray, "UPDATE_FIRST", 0)
+    monkeypatch.setattr(tray, "UPDATE_EVERY", 0)
+
+    t._watch_updates()
+
+    assert seen == [None, "0.3.8", "0.3.8", "0.3.8", None]
+
+
+def _start(monkeypatch, background):
+    """_start_window: что открылось сразу и что отложено таймером."""
+    opened, timers = [], []
+    monkeypatch.setattr(tray.instance, "listen", lambda *_a, **_kw: None)
+    monkeypatch.setattr(threading, "Timer", lambda _delay, fn: types.SimpleNamespace(
+        start=lambda: timers.append(fn)))
+    t = tray.Tray()
+    monkeypatch.setattr(t, "on_window", lambda focus=None: opened.append(focus))
+
+    t._start_window(background)
+    return t, opened, timers
+
+
+def test_при_входе_окно_только_прогревается(monkeypatch):
+    t, opened, timers = _start(monkeypatch, background=True)
+
+    assert opened == [] and timers == [t._warm]
+
+
+def test_после_обновления_трей_сразу_открывает_окно_с_итогом(monkeypatch, mark):
+    _t, opened, timers = _start(monkeypatch, background=True)
+
+    assert opened == [None] and timers == []

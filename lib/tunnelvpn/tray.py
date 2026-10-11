@@ -22,7 +22,7 @@ import tempfile
 import threading
 import time
 
-from . import instance, ipc, paths, portable, tunnels, window
+from . import instance, ipc, paths, portable, settings, tunnels, update, window
 from .icon import TRAY, rgba
 from .icon import tray as tray_image
 from .settings import TRAY_TASK
@@ -43,6 +43,10 @@ OPEN_SIGNAL_WAIT = 2.0
 # Сколько ярлык ждёт трей, запущенный задачей автозапуска (settings.TRAY_TASK):
 # планировщик и импорт pystray — несколько секунд.
 TASK_OPEN_WAIT = 15.0
+# Проверка новой версии: первая — не сразу после входа, дальше раз в 12 часов.
+# Найденная — пункт меню, без уведомлений Windows по таймеру.
+UPDATE_FIRST = 60.0
+UPDATE_EVERY = 12 * 3600.0
 
 # Пределы полей NOTIFYICONDATA с завершающим нулём. pystray их не обрезает:
 # строка длиннее — ValueError, и падает тот поток, который менял подпись.
@@ -127,6 +131,14 @@ class Tray:
         # совпадать с показанным HMENU.
         self._tunnel_items = {}
         self._menu_ids = ()
+        # Обновление из окна идёт (update.pending): значок жёлтый до самого
+        # закрытия трея установщиком.
+        self.installing = False
+        # Версия новее нынешней по последней проверке; пункт меню и версия в
+        # показанном HMENU — как _menu_ids, меняет только _sync_menu.
+        self.offer = None
+        self._offer_item = None
+        self._menu_offer = None
         self.stop_event = threading.Event()
 
     # ------------------------------------------------------------- статус
@@ -147,12 +159,15 @@ class Tray:
             self._poll_locked()
 
     def _poll_locked(self):
+        self.installing = _installing()
         try:
             self.status = ipc.call("status").get("status", {})
-            new = "busy" if self._pending else _tray_state(self.status)
+            new = ("busy" if self._pending or self.installing
+                   else _tray_state(self.status))
         except ipc.NotRunning:
             self.status = {}
-            new = "error"
+            # Установщик остановил службу — это ход обновления, не сбой.
+            new = "busy" if self.installing else "error"
         if new != self.state:
             self.state = new
             self._refresh_icon()
@@ -171,7 +186,13 @@ class Tray:
         st = self.status
         labels = _labels(st, self._checking)
         return (bool(st), bool(st.get("up")), bool(st.get("busy")),
+                self.installing, self._shown_offer(),
                 tuple((t["id"], labels[t["id"]]) for t in st.get("tunnels") or []))
+
+    def _shown_offer(self):
+        """Версия для пункта «Доступно обновление»; пока она же ставится —
+        пункта нет."""
+        return None if self.installing else self.offer
 
     def _post(self, msg, wparam=0, lparam=0):
         """Сообщение окну значка. Окна ещё нет — опрос повторит."""
@@ -198,12 +219,14 @@ class Tray:
             return
         # Порядок tunnels.json, как в окне: на маршрут он не влияет (решение #16).
         ids = tuple(t["id"] for t in self.status.get("tunnels") or [])
+        offer = self._shown_offer()
         if self._menu_open:
-            if ids == self._menu_ids and self._patch_menu():
+            if (ids, offer) == (self._menu_ids, self._menu_offer) and self._patch_menu():
                 self._last_menu_sig = sig
             return
         self._last_menu_sig = sig
         self._menu_ids = ids
+        self._menu_offer = offer
         self.icon.update_menu()
 
     def _patch_menu(self):
@@ -235,6 +258,8 @@ class Tray:
 
     def _title(self):
         st = self.status
+        if self.installing:
+            return "Обновляю TunnelVPN…"
         if not st:
             return "TunnelVPN — служба не отвечает"
         if st.get("busy"):
@@ -270,26 +295,39 @@ class Tray:
         """
         import pystray
 
+        # Установщик вот-вот остановит службу: команды ей ни к чему.
         head = (
             pystray.MenuItem(
                 lambda _i: "Выключить" if self.status.get("up") else "Включить",
                 self.on_toggle,
                 # Без default=True: левый клик по значку не должен включать и
                 # выключать VPN — промахнуться слишком легко. Только из меню.
-                enabled=lambda _i: bool(self.status) and not self.status.get("busy")),
+                enabled=lambda _i: bool(self.status) and not self.status.get("busy")
+                and not self.installing),
             pystray.MenuItem(
                 "Перезапустить", self.on_restart,
                 enabled=lambda _i: bool(self.status.get("up"))
-                and not self.status.get("busy")),
+                and not self.status.get("busy") and not self.installing),
             pystray.Menu.SEPARATOR,
         )
+        # Подпись — из _menu_offer, а не offer: пункт есть в HMENU, только
+        # пока _sync_menu его туда поставил.
+        self._offer_item = pystray.MenuItem(
+            lambda _i: f"Доступно обновление {self._menu_offer}", self.on_about)
         # «Открыть панель управления…» нет: окно открывает левый клик по значку.
         tail = (
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Закрыть", self.on_quit),
         )
         return pystray.Menu(
-            lambda: (*head, *self._tunnel_entries(pystray), *tail))
+            lambda: (*self._offer_entries(pystray), *head,
+                     *self._tunnel_entries(pystray), *tail))
+
+    def _offer_entries(self, pystray):
+        """«Доступно обновление X» первым пунктом — когда проверка его нашла."""
+        if not self._menu_offer:
+            return ()
+        return (self._offer_item, pystray.Menu.SEPARATOR)
 
     def _tunnel_entries(self, pystray):
         """Пункты туннелей в порядке _menu_ids: кружок статуса, имя и
@@ -312,6 +350,28 @@ class Tray:
         """Действие пункта без аргументов: pystray считает co_argcount, и
         lambda tid=tid он вызвал бы с значком вместо id."""
         return lambda: self.on_window(tid)
+
+    def on_about(self):
+        """Окно на «Настройки → О программе»: там скачать и поставить."""
+        self.on_window(window.FOCUS_ABOUT)
+
+    # ------------------------------------------------------- обновления
+
+    def _watch_updates(self):
+        """Новая версия на GitHub — пункт меню. Ответ сети без релизов
+        (state error) пункт не трогает: прошлый ответ ещё верен. Меню
+        перестроит опрос: offer входит в _menu_sig."""
+        wait = UPDATE_FIRST
+        while not self.stop_event.wait(wait):
+            wait = UPDATE_EVERY
+            try:
+                r = settings.check_update(paths.version())
+            except Exception:                              # noqa: BLE001
+                continue               # поток один: без него пункт не появится
+            if r.get("state") == "update":
+                self.offer = r["latest"]
+            elif r.get("state") == "latest":
+                self.offer = None
 
     # ------------------------------------------------------ кружки в меню
 
@@ -647,14 +707,18 @@ class Tray:
     def _start_window(self, background):
         """Ярлык — окно сразу; вход в систему (--background) — только значок,
         а окно прогревается спрятанным. Повторный запуск ярлыка приходит
-        сигналом TRAY_OPEN (см. already_running)."""
+        сигналом TRAY_OPEN (см. already_running).
+
+        После обновления из окна трей запускают с --background (setup или
+        ждущий PowerShell), а метка update.MARK_FILE ещё лежит: окно сразу —
+        итог обновления показывает оно."""
         try:
             # Сигналит ярлык, запущенный без прав, — событие открыто и ему.
             instance.listen(instance.TRAY_OPEN, self.on_window,
                             sddl=instance.USER_SIGNAL_SDDL)
         except OSError:
             pass                   # окно откроется из меню, не с ярлыка
-        if background:
+        if background and update.pending() is None:
             timer = threading.Timer(WARM_AFTER, self._warm)
             timer.daemon = True
             timer.start()
@@ -668,6 +732,14 @@ class Tray:
         серым при работающем VPN, а следующие опросы цвет уже не меняли."""
         icon.visible = True
         threading.Thread(target=self.poll, daemon=True).start()
+        threading.Thread(target=self._watch_updates, daemon=True).start()
+
+
+def _installing():
+    """Setup обновления из окна ещё работает: он остановит службу и закроет
+    трей, до того — «Обновляю TunnelVPN…» (update.pending)."""
+    p = update.pending()
+    return bool(p) and p["state"] == "installing"
 
 
 def _clip(text, limit):
