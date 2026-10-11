@@ -115,7 +115,7 @@ jobs:
         run: powershell -ExecutionPolicy Bypass -File installer\build.ps1
 
       # Хуки сбоев (build.ps1 -TestHooks, ISCC /DTESTHOOKS) — только для
-      # проверки в Sandbox. build.ps1 сверяет то же у своего setup.exe; здесь —
+      # проверки сбоев. build.ps1 сверяет то же у своего setup.exe; здесь —
       # у всего, что уйдёт в артефакты и релиз.
       - name: Без тестовых хуков
         shell: pwsh

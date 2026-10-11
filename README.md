@@ -622,7 +622,7 @@ powershell -ExecutionPolicy Bypass -File installer\build.ps1
 Windows SDK. Подписываются оба exe, портативная версия, установщик и
 деинсталлятор. Без переменной сборка идёт без подписи.
 
-**Тестовая сборка** для проверки сбоев в Windows Sandbox — `build.ps1 -TestHooks`:
+**Тестовая сборка** для проверки сбоев — `build.ps1 -TestHooks`:
 `installer\Output\TunnelVPN-<версия>-testhooks-setup.exe`, с пометкой «тестовая
 сборка» в заголовке окна. Ключ `/testhook=` (через запятую) ломает в ней
 первую попытку шага, повтор идёт по-настоящему:
