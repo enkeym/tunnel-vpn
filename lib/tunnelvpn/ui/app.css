@@ -225,29 +225,36 @@ body.kbd :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
 .top-actions { display: flex; align-items: center; gap: var(--sp-2); }
 
 /* Кнопка VPN и кнопка питания туннеля (.power, cards.js): ореол — готовая
-   тень на ::after, меняется только opacity. Кнопка VPN — серая, как
-   соседние: включён — ровный ореол --ok (предупреждения — у заголовка и
-   пилюли). У туннеля ровный ореол — статуса плитки. Включается или
-   выключается — у обеих ореол дышит светлым, синхронно. */
+   тень, меняется только прозрачность. Ровный — на ::after: у кнопки VPN
+   цвета заголовка (--st #top), у туннеля — статуса плитки. Включается или
+   выключается — у обеих синхронно дышит светлый ореол на ::before. Дыхание
+   и ровный ореол наложены и сменяются плавно: снятая анимация вернула бы
+   прозрачность скачком, поэтому дыхание гаснет через filter, а display
+   (allow-discrete) снимает его только после затухания. Новое дыхание
+   начинается с начала — у кнопок, включившихся вместе, в одной фазе. */
 #btn-toggle { position: relative; }
+#btn-toggle::after, .power::after, #btn-toggle::before, .power::before {
+  content: ""; position: absolute; inset: -1px; border-radius: inherit; pointer-events: none;
+}
 #btn-toggle::after, .power::after {
-  content: ""; position: absolute; inset: -1px; border-radius: inherit;
-  pointer-events: none; opacity: 0;
-}
-#btn-toggle::after {
   box-shadow: var(--glow) var(--st, transparent);
-  transition: opacity var(--t-mid) var(--ease);
+  opacity: 0; transition: opacity var(--t-mid) var(--ease);
 }
-#btn-toggle.lit::after { --st: var(--ok); opacity: .9; }
-#btn-toggle.working::after, .power.working::after {
-  --st: var(--text); opacity: .9; animation: pulse 1s var(--ease) infinite alternate;
+#btn-toggle.lit::after, .power.lit:not(.working)::after { opacity: .9; }
+#btn-toggle::before, .power::before {
+  box-shadow: var(--glow) var(--text); opacity: .9;
+  display: none; filter: opacity(0);
+  animation: pulse 1s var(--ease) infinite alternate;
+  transition: filter var(--t-mid) var(--ease), display var(--t-mid) allow-discrete;
 }
+#btn-toggle.working::before, .power.working::before { display: block; filter: opacity(1); }
+@starting-style { #btn-toggle.working::before, .power.working::before { filter: opacity(0); } }
 /* Прогресс показывает ореол: кнопка не тускнеет, значок питания на месте. */
 #btn-toggle.working { opacity: 1; }
 #btn-toggle.working .spin { display: none; }
 #btn-toggle.working .ic:not(.spin) { display: block; }
 @media (prefers-reduced-motion: reduce) {
-  #btn-toggle.working::after, .power.working::after { animation: none; }
+  #btn-toggle::before, .power::before { animation: none; }
 }
 .top-install code { font-size: var(--fs-m); padding: var(--sp-1) var(--sp-2); }
 /* «Проверить все» — значок без подложки, крупнее соседних; идёт проверка —
@@ -358,10 +365,8 @@ body.kbd :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
   background: var(--raised); border: 1px solid var(--line-strong);
 }
 .power .ic { width: 20px; height: 20px; }
-.power::after { box-shadow: var(--glow) var(--st, transparent); transition: opacity var(--t-mid) var(--ease); }
 .power[aria-pressed="true"] { color: var(--text); }
 .power.lit, .power.lit:hover:not(:disabled) { color: var(--st); }
-.power.lit:not(.working)::after { opacity: .9; }
 /* Прогресс показывает ореол: значок питания не крутится. */
 .power.working .ic { animation: none; }
 
