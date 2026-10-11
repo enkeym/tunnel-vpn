@@ -37,6 +37,10 @@ COLD_SHOW_WAIT = 4.0
 # В paths.FOCUS_FILE вместо id туннеля: пункт трея «Доступно обновление» —
 # открыть «Настройки → О программе». Двоеточия в id не бывает (tunnels.check_id).
 FOCUS_ABOUT = ":about"
+# Порт DevTools окна из исходников — к нему цепляется MCP-сервер playwright-cdp
+# (installer/dev/cdp-window.ps1). WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS порт не
+# открывает: pywebview задаёт свои AdditionalBrowserArguments.
+DEVTOOLS_PORT_ENV = "TUNNELVPN_DEVTOOLS_PORT"
 
 # Фильтр для create_file_dialog. pywebview проверяет каждую строку регуляркой
 # вида ^([\w ]+)\(\*\.\w+...\)$ : в описании допустимы только буквы и пробелы,
@@ -995,6 +999,20 @@ def _unpark(window, api):
         pass
 
 
+def _devtools_port():
+    """Порт DevTools из DEVTOOLS_PORT_ENV; None — порт не открываем.
+
+    Только из исходников: в сборке переменную не читаем — через открытый порт
+    любой локальный процесс управлял бы окном.
+    """
+    if getattr(sys, "frozen", False):
+        return None
+    try:
+        return int(os.environ.get(DEVTOOLS_PORT_ENV, ""))
+    except ValueError:
+        return None
+
+
 def _source_icon():
     """Значок окна, запущенного из исходников. None — остаётся значок exe.
 
@@ -1218,6 +1236,9 @@ def open_window(resident=False, hidden=False):
             # Окно всё равно нужно; не показавшееся по сигналу трей заменит.
             api._log(f"сигнал показа недоступен: {exc}")
     icon = None if getattr(sys, "frozen", False) else _source_icon()
+    port = _devtools_port()
+    if port:
+        webview.settings["REMOTE_DEBUGGING_PORT"] = port
 
     def poll():
         # Ждём, пока страница отчитается о готовности: до этого window[fn]
