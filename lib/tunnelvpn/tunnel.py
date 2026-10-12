@@ -31,6 +31,12 @@ from . import buildconfig, paths, tunnels, winnet
 
 KEEP_LOGS = 10
 
+# Потолок файла журнала: сверх него следующий запуск процесса пишет в новый.
+# Под трафиком sing-box пишет постоянно, свежий файл open_log продолжает — и
+# без потолка все перезапуски сессии шли в один файл: 12 октября
+# vpn-…_065058.log вырос до 10 МБ за 15 ч, а ротация по KEEP_LOGS не наступала.
+LOG_ROLL_BYTES = 4 * 1024 * 1024
+
 # Обе половины адресного пространства. Пишем именно так, а не 0.0.0.0/0:
 # более специфичный префикс выигрывает у маршрута по умолчанию, не удаляя его,
 # и исходная картина сети возвращается сама, как только мы уберём свои строки.
@@ -289,11 +295,12 @@ class Tunnel:
         При битом конфиге sing-box падает, служба поднимает его снова, и каждый
         заход создавал бы новый файл: за две минуты история из десяти запусков
         вытеснялась бы циклом перезапуска. Свежий лог в такой ситуации
-        продолжаем, а не заводим ещё один.
+        продолжаем, а не заводим ещё один, — пока он не дорос до LOG_ROLL_BYTES.
         """
         paths.ensure_dirs()
         existing = paths.log_files(prefix)
-        if existing and time.time() - os.path.getmtime(existing[-1]) < 60:
+        st = os.stat(existing[-1]) if existing else None
+        if st and time.time() - st.st_mtime < 60 and st.st_size < LOG_ROLL_BYTES:
             path = existing[-1]
         else:
             stamp = datetime.datetime.now().strftime(paths.LOG_STAMP)
