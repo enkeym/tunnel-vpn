@@ -26,6 +26,10 @@ from . import buildconfig, ipc, paths, probe, routelist, tunnel, tunnels, winnet
 
 AUTOSTART_FILE = os.path.join(paths.STATE, "autostart")
 SERVICE_LOG = os.path.join(paths.LOGS, "service.log")
+# Строки пишут несколько потоков разом (процессы туннелей запускаются
+# параллельно). Дозапись «a» на Windows — переход в конец и запись, не одна
+# операция: без замка две строки в одну миллисекунду затирали друг друга.
+_LOG_LOCK = threading.Lock()
 # Сколько читать с конца журнала sing-box: окно просит 400 строк, это
 # десятки КБ. Запас — на длинные строки с адресами и ошибками TLS.
 LOG_TAIL_BYTES = 256 * 1024
@@ -307,7 +311,7 @@ class Core:
         # шаг включения ест время, — секунд для этого мало.
         stamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
         try:
-            with open(SERVICE_LOG, "a", encoding="utf-8") as fh:
+            with _LOG_LOCK, open(SERVICE_LOG, "a", encoding="utf-8") as fh:
                 fh.write(f"{stamp} {line}\n")
         except OSError:
             pass
