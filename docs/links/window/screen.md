@@ -48,13 +48,13 @@ paths:
   и шлёт `WINDOW_SHOW` / запускает окно → `lib/tunnelvpn/window.py:Api._focus` (из `_show` и из `ready` у
   не спрятанного, после `refresh`) читает и удаляет файл → `js('focusCard', id)` (`FOCUS_ABOUT` → `showAbout`). Переименовал `focusCard` или
   `data-key` карточки — клик в трее молча открывает окно без прокрутки.
-- Адрес выхода: `exit_ip` из `lib/tunnelvpn/probe.py:_slow_exit` (через `service.py:_status`) → `#exit-ip`
-  в `render` (только при `up`, текст меняется лишь со сменой адреса — иначе опрос снимает выделение),
-  `#btn-copy-ip` копирует его же. Заголовок утечки (`exit_state === 'leak'`) адрес сам не пишет.
-- Нехватка конфигов: `missing` в `render` — ни у одного туннеля нет конфига, как у сборки
+- Адрес выхода: `exit_ip` из `lib/tunnelvpn/probe.py:_slow_exit` (через `service.py:_status`) → `TOP.ip`
+  в `lib/tunnelvpn/ui/js/topbar.js:paintTop` (только при `up`, `setText` меняет текст лишь со сменой адреса — иначе
+  опрос снимает выделение), `copyIp` копирует его же. Заголовок утечки (`exit_state === 'leak'`) адрес сам не пишет.
+- Нехватка конфигов: `missing` в `lib/tunnelvpn/ui/js/model.js:model` — ни у одного туннеля нет конфига, как у сборки
   (`lib/tunnelvpn/buildconfig.py:build` пропускает туннель без конфига и падает только без всех).
 - Правка конфига: `lib/tunnelvpn/window.py:_edit_conf` ищет туннель по id в `st["tunnels"]` из
   `lib/tunnelvpn/service.py:_status` и имя в его `confs` (`conf\` окну не прочесть — ACL) →
   `tunnels.conf_path(id, имя)`. Убрал поле из статуса — правка молча `failed`.
-- Галочка «подробный журнал»: `st["log_level"]` из `lib/tunnelvpn/service.py:_status` → `render`; изменение —
+- Галочка «подробный журнал»: `st["log_level"]` из `lib/tunnelvpn/service.py:_status` → `settings.js`; изменение —
   `log_level` → `set-log-level` → `logLevelDone`.

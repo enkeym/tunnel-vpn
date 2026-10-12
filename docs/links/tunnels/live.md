@@ -17,7 +17,7 @@ paths:
   (`sing-box check`), `_start_side`, `_peer_ips` (по `side_ids` из `config.json`, не по `Tunnel.sides`:
   после перезапуска службы список пуст), `lib/tunnelvpn/probe.py:peer_addrs` (по `side_ids`; тег основного —
   `Prober.main_tag` → `_slow_exit`) и `lib/tunnelvpn/service.py:_howto` (op `howto` → `lib/tunnelvpn/window.py:_howto`
-  → `renderHowto` в `lib/tunnelvpn/ui/index.html`; ключи и пароли не отдаёт, подсети и домены — только администратору).
+  → `lib/tunnelvpn/ui/js/settings.js:renderHowto`; ключи и пароли не отдаёт, подсети и домены — только администратору).
   `side_ids` даёт и выключенных (собраны без процесса): `_peer_ips` ставит host-маршрут и их пирам (включение
   находит его в `owned`), `peer_addrs` сверяет только тег основного, `service.py:_howto` отбрасывает их по
   `tunnels.json`, `probe.py:check_plan` — по `enabled`.

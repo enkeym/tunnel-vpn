@@ -41,8 +41,8 @@ paths:
   (нужен выбранный конфиг, живой VPN — отказ), не поднялся — `_restore_flags`; отправитель — `start_only` в
   `window.py:_dispatch` (⏻ плитки, `startOnly` в `cards.js`). Отправители `start` (`window.py:_dispatch`,
   `tray.py:on_toggle`, `cli.py:main`) флаги после
-  него видят только через статус; `render` в `index.html` при всех выключенных кнопку не гасит (`missing` —
-  только «конфигов нет»).
+  него видят только через статус; `lib/tunnelvpn/ui/js/topbar.js:paintButtons` при всех выключенных кнопку не гасит (`missing` из
+  `model.js:model` — только «конфигов нет»).
 - `start`, `start-only`, `stop` и автозапуск → `lib/tunnelvpn/service.py:_command`: ждёт `lock` до `APPLY_WAIT`
   (не «уже идёт»); та же команда, что идёт (`_running.key`), — её ответ; выполняется последняя пришедшая
   (`_cmd`), опоздавшая — `{ok: True, cancelled: True}`. `stop` ставит `lib/tunnelvpn/tunnel.py:Tunnel.cancel` →

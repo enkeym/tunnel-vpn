@@ -27,7 +27,7 @@ paths:
   Слот основного (любой `all`) — `cardMenu` «Запасным к» и `fateOf` в `rules.js`, как `tunnels.main_tunnel` в службе.
 - Вызовы Python → JS: `lib/tunnelvpn/window.py:js` / `lib/tunnelvpn/window.py:jsn` с именем функции
   (`render`, `renderHowto`, `renderVersion`, `renderLogs`, `failed`, `closeSheet`,
-  `showConf(tid, name, text)`, `showInfo`, `askPlace`, `showRules`, `rulesSaved`, `rulesMoved`, `rulesFailed`, `fillRules`, `checkStart`,
+  `showConf(tid, name, text)`, `askPlace`, `showRules`, `rulesSaved`, `rulesMoved`, `rulesFailed`, `fillRules`, `checkStart`,
   `checkSides(st, ids)`, `checkDone`, `testDone({tunnel, name})`, `askSwap({tunnel, clash})`, `autostartDone`,
   `logLevelDone`, `showAbout`) ↔ одноимённые функции верхнего уровня в `lib/tunnelvpn/ui/js/*.js` (`testDone`, `askSwap` —
   `cards.js`). Переименовал функцию — ошибка уходит в `jserror`, на экране ничего.

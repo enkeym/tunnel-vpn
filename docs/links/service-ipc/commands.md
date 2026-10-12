@@ -58,7 +58,7 @@ paths:
   (`APPLY_WAIT`) и перезапускает, пока работает тот же процесс основного (`Tunnel.proc`), что при правке. CLI `use`/
   `profile` шлёт `apply` после удачного `set-active`/`set-profile` и печатает по `applied`; отказ `apply` — код 1.
   `{ask: true}` шлёт только окно (`lib/tunnelvpn/window.py:_apply`): `lib/tunnelvpn/tunnel.py:live_plan` `None` →
-  ответ `applied: "ask"` без перезапуска → `js('askFull')` в `lib/tunnelvpn/ui/index.html` → «Переподключить» шлёт
+  ответ `applied: "ask"` без перезапуска → `js('askFull')` в `lib/tunnelvpn/ui/js/sheets.js` → «Переподключить» шлёт
   `send('apply_full')` → `apply` без `ask`. План из `live_plan` уходит в `reload_sides(plan)` — сборка одна.
   CLI шлёт без `ask`: полный перезапуск у него без вопроса; трей `apply` не шлёт. Новый `applied` — CLI `_apply` его не печатает.
 - `add-config` без `tunnel`/`kind` — авто: `lib/tunnelvpn/service.py:_place` по `buildconfig.is_full`/`allowed_nets`

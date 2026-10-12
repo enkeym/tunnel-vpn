@@ -20,7 +20,7 @@ paths:
   или порт — playwright-cdp не цепляется. Проверку `sys.frozen` убрали — сборка открывает порт любому.
 - Код выхода `READY_LOST` в `lib/tunnelvpn/window.py` ↔ `lib/tunnelvpn/tray.py:_watch_window`: по нему трей
   один раз перезапускает окно, у которого не поднялся WebView2.
-- Холодное окно создаётся спрятанным и показывается на `send('ready')` из `lib/tunnelvpn/ui/index.html` →
+- Холодное окно создаётся спрятанным и показывается на `send('ready')` из `lib/tunnelvpn/ui/js/main.js` →
   `lib/tunnelvpn/window.py:_dispatch` → `Api.reveal`, запасной таймер `COLD_SHOW_WAIT` в `open_window`;
   `_show` (сигнал `WINDOW_SHOW` от `lib/tunnelvpn/tray.py:_open_window`) показывает сразу. `ready` шлётся в конце
   скрипта страницы. Убрали `ready` или таймер — окно появляется пустым, с опозданием или не появляется.

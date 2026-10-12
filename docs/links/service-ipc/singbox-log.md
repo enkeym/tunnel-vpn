@@ -14,8 +14,7 @@ paths:
 - Круг сторожа и действия человека: `_round_human` (снят в начале `_watch_once`) ≠ `_human` (`_command` — по
   приходу start/stop, ещё до замка; `_apply`) — `_mind_sides` выходит до разбора таймаутов и перед каждым туннелем,
   `_restart_side` и `_do_start(reconnect)` отказывают. Иначе таймауты прежних процессов перезапускали свежий.
-- Мёртвый основной — три таймаута за `DEAD_WINDOW` к любым адресам (`DEAD_ADDRS` убран 6 октября:
-  таймауты шли к одному адресу, туннель молчал три минуты); перед переводом выхода на `direct`
+- Мёртвый основной — три таймаута за `DEAD_WINDOW` к любым адресам; перед переводом выхода на `direct`
   `lib/tunnelvpn/service.py:_mind_sides` спрашивает `tunnel.delay(via-<id основного>)`: ответил — таймауты
   чужого адреса, выход и процесс не трогаем. Нет основного (`Tunnel.main` — `None`) — выход не трогают.
 - Живая проверка перед перезапуском — `lib/tunnelvpn/service.py:_side_down` для любого туннеля, кроме
@@ -37,7 +36,8 @@ paths:
   (штамп строки sing-box и заголовка `open_log`), строки туннелей с меткой `[имя туннеля] `. Туннели — из
   `Tunnel.sides`, до первого включения — из `tunnels.json`. Файлы — `lib/tunnelvpn/paths.py:log_files`
   (шаблон даты `LOG_STAMP`: иначе `work` подхватил бы `work-2`); тот же шаблон у `tunnel.open_log`.
-  `renderLogs` в `lib/tunnelvpn/ui/index.html` ищет ` ERROR `/` WARN ` внутри строки — метка в начале не мешает.
+  `lib/tunnelvpn/ui/js/log.js:logItem` снимает метку `LOG_MARK`, уровень — из `LOG_LINE` (без штампа — `ERROR`/`WARN`
+  словом в строке).
 - Куда что ходит — `lib/tunnelvpn/service.py:CONN_RE`, `PREMATCH_RE`, `DNS_RE` разбирают info-строки
   `endpoint/wireguard[<тег>]: outbound connection to <IP:порт>`, `pre-match: … to <IP> via outbound/…[<тег>]`
   и `dns: exchanged A <имя>. … IN A <IP>` (имя — первое по номеру запроса) → `_count_paths` → `state\paths.json`.
