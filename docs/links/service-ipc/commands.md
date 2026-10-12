@@ -14,6 +14,10 @@ paths:
   `lib/tunnelvpn/ipc.py:requires_admin`. Новая ветка в `lib/tunnelvpn/service.py:handle` без записи
   туда закрыта для обычного пользователя: окно зовёт её через `lib/tunnelvpn/window.py:_admin_call` (UAC),
   трей и CLI — получат отказ.
+- Ветка, что правит `conf\` (load → изменить → `tunnels.save`), — в `lib/tunnelvpn/service.py:CONF_OPS`:
+  `handle` держит её под `tunnels.LOCK` целиком. Без записи туда параллельная команда затрёт правку, а
+  `os.replace` откажет с WinError 5/32. `apply`/`start`/`stop` туда не входят (свой `self.lock`, порядок —
+  `self.lock` → `tunnels.LOCK`, обратный даст взаимную блокировку).
 - Туннель в payload — ключ `tunnel` (id или имя), запасной — `kind` (`corp`/`personal`) у `add-config`,
   `remove-config`, `read-config`; `set-active` (USER_OPS) ↔ `lib/tunnelvpn/cli.py:main` (`use`).
 - `howto` (READ_OPS) ↔ `lib/tunnelvpn/window.py:_howto`: единственная команда, где ответ зависит от `is_admin`

@@ -660,6 +660,25 @@ def test_без_профиля_берётся_выбранный_в_tunnels_json
     assert [s.tid for s in tun.sides] == ["work", "home"]
 
 
+def test_профиль_не_затирает_правку_сделанную_за_уборку(env, monkeypatch):
+    """Уборка за прошлым запуском идёт секундами, окно тем временем правит
+    tunnels.json: запись профиля поверх прочитанного до неё её затёрла бы."""
+    tun, _build, _seen = env
+
+    def stop():
+        data = tunnels.load()
+        tunnels.find(data, "work")["enabled"] = False
+        tunnels.save(data)
+
+    monkeypatch.setattr(tun, "leftovers", lambda: True)
+    monkeypatch.setattr(tun, "stop", stop)
+
+    assert tun.start("nl-2") == ""
+
+    assert _active("home") == "nl-2"
+    assert tunnels.find(tunnels.load(), "work")["enabled"] is False
+
+
 def test_чужой_профиль_отказ_до_остановки(env):
     tun, _build, seen = env
     assert tun.start() == ""

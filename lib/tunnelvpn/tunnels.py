@@ -32,10 +32,17 @@ id и имя конфига приходят через канал службы,
 import json
 import os
 import re
+import threading
 
 from . import paths, routelist
 
 VERSION = 1
+# Один замок на tunnels.json и папки конфигов. Канал службы обслуживает
+# клиентов параллельно, а правка — load → изменить → save: без замка из шести
+# разом ⏻ одна затирала другую, а os.replace на Windows отказывал (WinError 5, 32),
+# пока tunnels.json открыт чтением в соседнем потоке. RLock: правку целиком
+# держат под ним, а внутри она снова зовёт load и save.
+LOCK = threading.RLock()
 # Каждый туннель — это свой процесс sing-box, порт на loopback и UDP-сессия
 # с сервером. Восьми хватает с запасом; больше — скорее ошибка, чем замысел.
 MAX_TUNNELS = 8
@@ -191,7 +198,7 @@ def load():
     поднять VPN без правил, которые человек ждёт.
     """
     try:
-        with open(paths.TUNNELS_JSON, encoding="utf-8") as fh:
+        with LOCK, open(paths.TUNNELS_JSON, encoding="utf-8") as fh:
             data = json.load(fh)
     except FileNotFoundError:
         return empty()
@@ -205,10 +212,11 @@ def save(data):
     data = validate(data)
     os.makedirs(paths.CONF, exist_ok=True)
     tmp = paths.TUNNELS_JSON + ".tmp"
-    with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
-        json.dump(data, fh, indent=2, ensure_ascii=False)
-        fh.write("\n")
-    os.replace(tmp, paths.TUNNELS_JSON)
+    with LOCK:
+        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump(data, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+        os.replace(tmp, paths.TUNNELS_JSON)
     return data
 
 

@@ -374,9 +374,16 @@ class Tunnel:
 
         if profile:
             if main["active"] != profile:
-                main["active"] = profile
+                # Свежий файл под замком: пока шла уборка, окно могло его
+                # править, и запись data из начала старта затёрла бы правку.
                 try:
-                    tunnels.save(data)
+                    with tunnels.LOCK:
+                        data = tunnels.load()
+                        main = tunnels.main_tunnel(data)
+                        if main is None:
+                            raise ValueError("основной туннель убран")
+                        main["active"] = profile
+                        tunnels.save(data)
                 except (OSError, ValueError) as exc:
                     return f"профиль не записать: {exc}"
             self.log(f"→ профиль «{main['name']}»: {profile}")

@@ -11,6 +11,7 @@
 import os
 import shutil
 import threading
+import time
 import types
 
 import pytest
@@ -489,6 +490,59 @@ def test_вкл_выкл_через_handle(core):
     r = core.handle("set-enabled", {"tunnel": "work", "on": False}, is_admin=False)
 
     assert r["ok"] and _tunnel("work")["enabled"] is False
+
+
+def test_параллельные_правки_не_затирают_друг_друга(core, monkeypatch):
+    """Шесть ⏻ разом (живая проверка 12 октября): правка — load → save, и без
+    замка поздняя запись затирала раннюю («включён», а в файле выключен), а
+    os.replace падал с WinError 5, пока соседний поток читал tunnels.json."""
+    ids = [f"t{i}" for i in range(1, 7)]
+    tunnels.save({"tunnels": [HOME, *({"id": tid, "name": tid, "mode": "list", "active": "a"}
+                                       for tid in ids)]})
+    for tid in ids:
+        _put(tid, "a.conf")
+        _put(tid, "b.conf")
+    save = tunnels.save
+
+    def slow_save(data):
+        # Окно между load и save, как у службы под нагрузкой: без замка в него
+        # успевает прочитать файл каждый соседний поток.
+        time.sleep(0.05)
+        return save(data)
+
+    monkeypatch.setattr(tunnels, "save", slow_save)
+    errors, replies, done = [], {}, threading.Event()
+    gate = threading.Barrier(len(ids))
+
+    def read():
+        while not done.is_set():
+            try:
+                tunnels.load()
+            except OSError as exc:
+                errors.append(exc)
+
+    def edit(i, tid):
+        gate.wait()
+        if i % 2:
+            replies[tid] = core.handle("set-active", {"tunnel": tid, "name": "b"}, True)
+        else:
+            replies[tid] = core.handle("set-enabled", {"tunnel": tid, "on": False}, True)
+
+    readers = [threading.Thread(target=read) for _ in range(2)]
+    editors = [threading.Thread(target=edit, args=(i, tid)) for i, tid in enumerate(ids)]
+    for th in readers + editors:
+        th.start()
+    for th in editors:
+        th.join(10)
+    done.set()
+    for th in readers:
+        th.join(10)
+
+    assert errors == []
+    assert all(r["ok"] for r in replies.values()) and len(replies) == len(ids), replies
+    for i, tid in enumerate(ids):
+        t = _tunnel(tid)
+        assert (t["active"], t["enabled"]) == (("b", True) if i % 2 else ("a", False)), tid
 
 
 def test_выключенный_не_становится_основным(core):

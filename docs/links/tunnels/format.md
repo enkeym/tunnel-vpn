@@ -9,6 +9,9 @@ paths:
 - Формат пишет и проверяет только `lib/tunnelvpn/tunnels.py:validate` (`load`, `save`); записи списков
   `include`/`exclude` нормализует `lib/tunnelvpn/routelist.py:parse` (`1.2.3.4` → `1.2.3.4/32`, `*.x.su`
   оставляет звёздочку). Сборка, которая будет читать записи, обязана понимать ровно эти формы.
+- Файловый ввод-вывод `load`/`save` — под `lib/tunnelvpn/tunnels.py:LOCK` (RLock). Правка вне канала
+  (`lib/tunnelvpn/tunnel.py:start` пишет профиль) берёт его сама вокруг свежего `load` → `save`, а не
+  пишет `data`, прочитанный до долгого шага: иначе затрёт правку из окна.
 - `lib/tunnelvpn/tunnels.py:migrate` читает ключи `site.env` (`CORP_DOMAINS` → `include` туннеля `work`,
   `SB_CORP_EXCLUDE` → `exclude`, `SB_LOG_LEVEL` → `log_level`) и `PROFILE_FILE` (→ `active` у `home`),
   переносит `conf\corp|personal` в `conf\tunnels\work|home`. Новый ключ `site.env`, который должен

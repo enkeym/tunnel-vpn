@@ -42,6 +42,14 @@ LOG_TAIL_BYTES = 256 * 1024
 LAST_CHECK_FILE = os.path.join(paths.STATE, "last-check.json")
 # Записей в одном списке правил через канал — тот же предел, что видит лист окна.
 MAX_RULES = routelist.MAX_RULES
+# Команды, что правят conf\ (load → изменить → save): идут целиком под tunnels.LOCK,
+# иначе параллельная правка из окна, трея или CLI затирала бы эту. apply, start и
+# stop сюда не входят: у них свой self.lock, а apply долгий — под замком файла ждали
+# бы и статус, и пробер.
+CONF_OPS = frozenset({
+    "set-profile", "set-active", "set-enabled", "add-config", "remove-config",
+    "move-config", "add-tunnel", "set-tunnel", "remove-tunnel", "set-log-level",
+    "set-kill-switch", "set-site"})
 # Сколько кругов пробера (по FAST_EVERY) новая сеть должна продержаться,
 # прежде чем переподключаться: Wi-Fi при смене точки и пробуждении моргает,
 # и на каждый пропавший на секунду маршрут перезапуск только мешал бы.
@@ -383,9 +391,15 @@ class Core:
     # -------------------------------------------------------------- команды
 
     def handle(self, op, payload, is_admin):
-        """Обработчик команд из канала. Права уже проверены в ipc.Server.
+        """Обработчик команд из канала. Права уже проверены в ipc.Server;
+        правки conf\\ (CONF_OPS) идут по одной."""
+        if op not in CONF_OPS:
+            return self._handle(op, payload, is_admin)
+        with tunnels.LOCK:
+            return self._handle(op, payload, is_admin)
 
-        Туннель команды — по id или имени (tunnel), а без него — по старому
+    def _handle(self, op, payload, is_admin):
+        """Туннель команды — по id или имени (tunnel), а без него — по старому
         типу (kind: corp|personal): так зовут окно и трей до шага окна.
         """
         tid = payload.get("tunnel", "")
