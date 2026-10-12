@@ -30,6 +30,10 @@ SERVICE_LOG = os.path.join(paths.LOGS, "service.log")
 # параллельно). Дозапись «a» на Windows — переход в конец и запись, не одна
 # операция: без замка две строки в одну миллисекунду затирали друг друга.
 _LOG_LOCK = threading.Lock()
+# Потолок журнала службы: перерос — уходит в service.log.1 (прежний .1
+# затирается), новые строки идут в пустой. Без него файл копился с установки:
+# служба живёт неделями и не перезапускается, а журнал ничем не чистился.
+SERVICE_LOG_BYTES = 4 * 1024 * 1024
 # Сколько читать с конца журнала sing-box: окно просит 400 строк, это
 # десятки КБ. Запас — на длинные строки с адресами и ошибками TLS.
 LOG_TAIL_BYTES = 256 * 1024
@@ -311,8 +315,14 @@ class Core:
         # шаг включения ест время, — секунд для этого мало.
         stamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
         try:
-            with _LOG_LOCK, open(SERVICE_LOG, "a", encoding="utf-8") as fh:
-                fh.write(f"{stamp} {line}\n")
+            with _LOG_LOCK:
+                with open(SERVICE_LOG, "a", encoding="utf-8") as fh:
+                    fh.write(f"{stamp} {line}\n")
+                    full = fh.tell() >= SERVICE_LOG_BYTES
+                # Переименовать открытый файл Windows не даст — только после
+                # закрытия, и под тем же замком, чтобы чужая строка не ушла в .1.
+                if full:
+                    os.replace(SERVICE_LOG, SERVICE_LOG + ".1")
         except OSError:
             pass
 

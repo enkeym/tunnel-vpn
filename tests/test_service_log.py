@@ -38,3 +38,43 @@ def test_строки_из_разных_потоков_не_затирают_д�
     lines = log.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 8 * 200
     assert all(re.fullmatch(r"\S+ → поток \d строка \d+ x{80}", s) for s in lines)
+
+
+def test_переросший_журнал_уходит_в_точку_один(monkeypatch, tmp_path):
+    """Служба живёт неделями: без потолка service.log копился с установки."""
+    log = tmp_path / "service.log"
+    monkeypatch.setattr(service, "SERVICE_LOG", str(log))
+    monkeypatch.setattr(service, "SERVICE_LOG_BYTES", 100)
+
+    Core.log(None, "первая " + "x" * 40)
+    Core.log(None, "вторая " + "x" * 40)
+    Core.log(None, "третья")
+
+    assert "первая" in (tmp_path / "service.log.1").read_text(encoding="utf-8")
+    assert "вторая" in (tmp_path / "service.log.1").read_text(encoding="utf-8")
+    assert re.fullmatch(r"\S+ третья\n", log.read_text(encoding="utf-8"))
+
+
+def test_старый_точка_один_затирается_а_не_копится(monkeypatch, tmp_path):
+    log = tmp_path / "service.log"
+    monkeypatch.setattr(service, "SERVICE_LOG", str(log))
+    monkeypatch.setattr(service, "SERVICE_LOG_BYTES", 50)
+
+    Core.log(None, "старая " + "x" * 50)
+    Core.log(None, "новая " + "x" * 50)
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["service.log.1"]
+    old = (tmp_path / "service.log.1").read_text(encoding="utf-8")
+    assert "новая" in old and "старая" not in old
+
+
+def test_под_потолком_журнал_не_трогается(monkeypatch, tmp_path):
+    log = tmp_path / "service.log"
+    monkeypatch.setattr(service, "SERVICE_LOG", str(log))
+    monkeypatch.setattr(service, "SERVICE_LOG_BYTES", 10_000)
+
+    for i in range(20):
+        Core.log(None, f"строка {i}")
+
+    assert not (tmp_path / "service.log.1").exists()
+    assert len(log.read_text(encoding="utf-8").splitlines()) == 20
