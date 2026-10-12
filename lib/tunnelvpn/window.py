@@ -333,8 +333,6 @@ class Api:
             if not settings.repo_url(arg):
                 return {"ok": False, "error": "чужая ссылка → окно открывает только страницу TunnelVPN на GitHub"}
             return self._shell_open(arg)
-        elif name == "install_daemon":
-            self._install_hint()
         elif name in ("rendered", "jserror"):
             # Диагностика страницы. jserror приходит, когда упала отрисовка, —
             # без него исключение внутри WebView2 не видно вообще нигде.
@@ -870,18 +868,6 @@ class Api:
         with open(picked[0], "w", encoding="utf-8") as fh:
             json.dump(out, fh, ensure_ascii=False, indent=2)
             fh.write("\n")
-
-    def _install_hint(self):
-        self.jsn("showInfo", [
-            "Служба не установлена",
-            ["Туннель держит служба Windows — без неё кнопки в окне ничего не "
-             "включат: править таблицу маршрутов от обычного пользователя "
-             "нельзя.",
-             "Откройте командную строку от имени администратора и выполните: "
-             "tunnelvpn service install",
-             "Установщик делает это сам; вручную нужно только при запуске из "
-             "исходников."],
-        ])
 
     def _log(self, line):
         try:
