@@ -608,8 +608,8 @@ conf/               tunnels.json и .conf-файлы туннелей, вне г
   официальный клиент WireGuard.
 
 ```powershell
-git clone https://github.com/sotakeiteasy/dual-vpn.git
-cd dual-vpn
+git clone https://github.com/enkeym/tunnel-vpn.git
+cd tunnel-vpn
 
 py -3.14 -m venv lib\venv
 lib\venv\Scripts\pip install -r requirements.txt

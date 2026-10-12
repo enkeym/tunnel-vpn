@@ -21,11 +21,11 @@ from . import paths
 TRAY_TASK = "TunnelVPN Tray"
 TRAY_EXE = "TunnelVPN-Tray.exe"
 
-REPO_URL = "https://github.com/sotakeiteasy/dual-vpn"
-# Не /releases/latest: в том же репозитории релизы macOS (mac-v0.1.x), и
-# «последним» мог оказаться он. Версии Windows — теги v<цифра>…, бета
+REPO_URL = "https://github.com/enkeym/tunnel-vpn"
+# Не /releases/latest: «последним» мог оказаться релиз с чужим тегом (в прежнем
+# репозитории — macOS, mac-v0.1.x). Версии Windows — теги v<цифра>…, бета
 # публикуется обычным релизом (prerelease: false), но черновики пропускаем.
-RELEASES_API = "https://api.github.com/repos/sotakeiteasy/dual-vpn/releases?per_page=30"
+RELEASES_API = "https://api.github.com/repos/enkeym/tunnel-vpn/releases?per_page=30"
 RELEASE_TAG = re.compile(r"^v(\d+(?:\.\d+)*)(?:-[0-9A-Za-z.]+)?$")
 # Ссылка уходит аргументом explorer.exe: кавычки, пробелы и запятые он
 # разбирает по-своему (/select,…), поэтому после адреса репозитория — только путь.

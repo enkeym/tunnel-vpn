@@ -112,7 +112,7 @@ def test_нет_связи():
 def test_ссылки_только_на_свой_репозиторий():
     assert settings.repo_url(settings.REPO_URL)
     assert settings.repo_url(f"{settings.REPO_URL}/releases/tag/v0.3.7-beta")
-    assert not settings.repo_url("https://github.com/sotakeiteasy/dual-vpn.evil.com")
+    assert not settings.repo_url("https://github.com/enkeym/tunnel-vpn.evil.com")
     assert not settings.repo_url("file:///C:/Windows/System32/cmd.exe")
     # Кавычка и запятая разобрались бы explorer.exe как его ключи.
     assert not settings.repo_url(f'{settings.REPO_URL}/" /select,C:\\Windows\\System32\\cmd.exe')

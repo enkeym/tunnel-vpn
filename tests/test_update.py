@@ -68,7 +68,7 @@ def test_проверенный_установщик_остаётся():
 
 def test_адреса_из_тега():
     assert update.asset_url("0.3.8", SETUP) == \
-        f"https://github.com/sotakeiteasy/dual-vpn/releases/download/v0.3.8/{SETUP}"
+        f"https://github.com/enkeym/tunnel-vpn/releases/download/v0.3.8/{SETUP}"
     assert not update.valid_version("0.3.8/../../evil")
     with pytest.raises(update.UpdateError):
         update.prepare("../x", lambda *a: None, threading.Event())

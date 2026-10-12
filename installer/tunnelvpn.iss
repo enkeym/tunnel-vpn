@@ -45,7 +45,7 @@
 #define MyCli "tunnelvpn.exe"
 ; Издатель — тот же, что CompanyName в ресурсе версии exe (tunnelvpn.spec).
 #define MyPublisher "Enkeym"
-#define MyRepo "https://github.com/sotakeiteasy/dual-vpn"
+#define MyRepo "https://github.com/enkeym/tunnel-vpn"
 ; Палитра окна приложения (lib/tunnelvpn/ui/app.css). --card там — 5 % белого
 ; поверх --bg, здесь посчитан.
 #define ColorBg "#101012"
