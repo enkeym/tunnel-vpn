@@ -1573,5 +1573,19 @@ def test_бейдж_awg_по_полям_маскировки(core, monkeypatch, 
     monkeypatch.setattr(service, "_conf_cache", {})
     _put("home", "nl-1.conf", FULL.replace("[Interface]\n", f"[Interface]\n{extra}"))
 
-    assert service._conf_facts("home", "nl-1") == {"full": True, "awg": awg}
-    assert service._conf_facts("home", "nope") == {"full": False, "awg": False}
+    assert service._conf_facts("home", "nl-1") == {"full": True, "awg": awg, "v6": False}
+    assert service._conf_facts("home", "nope") == {"full": False, "awg": False, "v6": False}
+
+
+@pytest.mark.parametrize("address, v6", [
+    ("10.9.0.28/32", False),
+    ("10.9.0.28/32, fd42:9::1c/128", True),
+    ("10.9.0.28/32, 2a01:4f8::5/128", True),
+])
+def test_v6_конфига_по_адресу_в_interface(core, monkeypatch, address, v6):
+    """IPv6 в окне — по v6-адресу в [Interface] Address (и ULA fd00::/8 тоже:
+    сервер с NAT66 выпускает его в интернет), как v6 в buildconfig.assemble."""
+    monkeypatch.setattr(service, "_conf_cache", {})
+    _put("home", "nl-1.conf", FULL.replace("Address = 10.0.0.2/32", f"Address = {address}"))
+
+    assert service._conf_facts("home", "nl-1")["v6"] is v6

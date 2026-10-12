@@ -105,6 +105,33 @@ def test_раздельное_туннелирование_включено_ко
     assert core._status()["split"] is False
 
 
+def test_ipv6_через_туннель_по_конфигу_работающего_основного(monkeypatch):
+    """main_v6 — v6-адрес в активном конфиге включённого основного, а не
+    правило брандмауэра: оно на физическом адаптере стоит всегда."""
+    core = _core(monkeypatch, up=True)
+    _quiet(monkeypatch, core)
+    asked = []
+
+    def facts(tid, name):
+        asked.append((tid, name))
+        return {"full": True, "awg": False, "v6": name == "v6"}
+    monkeypatch.setattr(service, "_conf_facts", facts)
+    home = {"id": "home", "name": "Личный", "mode": "all", "active": "v6"}
+
+    _with_tunnels(monkeypatch, home)
+    assert core._status()["main_v6"] is True
+    assert ("home", "v6") in asked
+
+    _with_tunnels(monkeypatch, {**home, "active": "plain"})
+    assert core._status()["main_v6"] is False
+
+    # Выключенный основной и его отсутствие — IPv6 через туннель не идёт.
+    _with_tunnels(monkeypatch, {**home, "enabled": False})
+    assert core._status()["main_v6"] is False
+    _with_tunnels(monkeypatch, {"id": "work", "name": "Работа", "mode": "list"})
+    assert core._status()["main_v6"] is False
+
+
 def test_статус_отдаёт_туннели_без_их_правил(monkeypatch):
     core = _core(monkeypatch, up=False)
     _quiet(monkeypatch, core)

@@ -210,7 +210,7 @@ def split_list(value):
     return [x.strip() for x in value.split(",") if x.strip()]
 
 
-def _has_v6(conf):
+def has_v6(conf):
     """Сервер выдал v6-адрес в [Interface] Address. ::/0 в AllowedIPs не
     в счёт: конфиги пишут его по привычке."""
     return any(ipaddress.ip_network(a, strict=False).version == 6
@@ -1012,7 +1012,7 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True):
     #     "missing IPv6 local address",
     # причём не молча — соединение уже открыто, и браузер рвёт страницу
     # (это и был ERR_CONNECTION_CLOSED).
-    v6 = main is not None and _has_v6(main[1])
+    v6 = main is not None and has_v6(main[1])
     # Адрес v6 у tun — всегда: от v6 основного он не зависит, и смена
     # конфига, вкл/выкл и смена основного не меняют основной конфиг и не
     # роняют tun (Tunnel.live_plan). Выход без v6 — IPv6 отвергает rule-set

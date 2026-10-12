@@ -102,15 +102,16 @@ def _read_conf(tid, name):
         return None
 
 
-# Что статус знает о конфиге, {путь: (mtime, {full, awg})}: статус окно
+# Что статус знает о конфиге, {путь: (mtime, {full, awg, v6})}: статус окно
 # спрашивает каждые пару секунд, а файл меняется редко.
 _conf_cache = {}
-_NO_FACTS = {"full": False, "awg": False}
+_NO_FACTS = {"full": False, "awg": False, "v6": False}
 
 
 def _conf_facts(tid, name):
-    """{full, awg} конфига туннеля: 0.0.0.0/0 в AllowedIPs и поля маскировки
-    AmneziaWG; нет файла или не читается — оба False."""
+    """{full, awg, v6} конфига туннеля: 0.0.0.0/0 в AllowedIPs, поля маскировки
+    AmneziaWG и v6-адрес в [Interface] Address; нет файла или не читается —
+    все False."""
     if not name:
         return _NO_FACTS
     try:
@@ -123,7 +124,8 @@ def _conf_facts(tid, name):
         return hit[1]
     conf = _read_conf(tid, name)
     facts = {"full": bool(conf) and buildconfig.is_full(conf),
-             "awg": bool(conf) and buildconfig.is_awg(conf)}
+             "awg": bool(conf) and buildconfig.is_awg(conf),
+             "v6": bool(conf) and buildconfig.has_v6(conf)}
     _conf_cache[path] = (stamp, facts)
     return facts
 
@@ -495,6 +497,11 @@ class Core:
         # есть правила; иначе кнопка в окне говорит «выключено».
         work = self._kind_tunnel("corp", data)
         st["split"] = bool(work and (work["include"] or work["exclude"]))
+        # IPv6 через туннель — по v6-адресу в конфиге работающего основного
+        # (как v6 в buildconfig.assemble). Правило брандмауэра (v6_off) этого
+        # не скажет: оно закрывает физический адаптер всегда, пока VPN включён.
+        main = tunnels.main_on(data)
+        st["main_v6"] = bool(main) and _conf_facts(main["id"], main["active"])["v6"]
         st["version"] = paths.version()
         st["singbox"] = self._singbox_version()
         # Галочка «подробный журнал» в окне: set-log-level пишет, читать — любому.

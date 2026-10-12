@@ -91,7 +91,11 @@ def status_lines(st):
     out.append(f"  аплинк   : интерфейс {st.get('iface')} / шлюз {st.get('gw') or '—'}")
     out.append(f"  маршруты : 0.0.0.0/1 {'есть' if st.get('r_low') else 'нет'}, "
                f"128.0.0.0/1 {'есть' if st.get('r_high') else 'нет'}")
-    out.append(f"  IPv6     : {'заблокирован' if st.get('v6_off') else 'как есть'}"
+    # v6_off — правило брандмауэра на физическом адаптере: при включённом VPN
+    # стоит всегда, через туннель IPv6 идёт по v6 основного (main_v6).
+    v6 = ("как есть" if not up else "через туннель" if st.get("main_v6") else "отключён")
+    out.append(f"  IPv6     : {v6}"
+               + (", мимо туннеля не закрыт" if up and not st.get("v6_off") else "")
                + (f"  !! утечка {st['v6_leak']}" if st.get("v6_leak") else ""))
     if up:
         state = {"tunnel": "через туннель", "leak": "!! УТЕЧКА, адрес провайдера",
