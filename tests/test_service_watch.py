@@ -1408,6 +1408,38 @@ def test_обычный_круг_сном_не_считается(monkeypatch):
     assert not _said(core, "спал")
 
 
+class _Ticks(threading.Event):
+    """stop_event сторожа: каждое ожидание сдвигает часы на очередную паузу,
+    паузы кончились — стоп."""
+
+    def __init__(self, monkeypatch, gaps):
+        super().__init__()
+        self.gaps, self.now = list(gaps), 1000.0
+        monkeypatch.setattr(service.time, "time", lambda: self.now)
+
+    def wait(self, _timeout):
+        if not self.gaps:
+            return True
+        self.now += self.gaps.pop(0)
+        return False
+
+
+@pytest.mark.parametrize("after, starts", [(1, 0), (service.UPLINK_SETTLE, 1)])
+def test_круги_до_сна_новую_сеть_не_подтверждают(monkeypatch, after, starts):
+    """12 октября в 21:08: два круга до сна и один после переподключили
+    в ещё не поднятую сеть. После сна новая сеть держится все круги заново."""
+    core = _core(monkeypatch)
+    _net(core, HOME)
+    step = probe.FAST_EVERY
+    core.prober.stop_event = _Ticks(
+        monkeypatch, [step] * (service.UPLINK_SETTLE - 1) + [25 * 60] + [step] * (after - 1))
+
+    core._watch()
+
+    assert _said(core, "компьютер спал")
+    assert core.tunnel.starts == starts, core.logged
+
+
 # ------------------------------------------------------- куда что ходит
 
 _PFX = "+0300 2026-10-05 22:45:33 INFO "

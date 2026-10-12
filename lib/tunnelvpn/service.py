@@ -1033,7 +1033,10 @@ class Core:
         # Отсчёт — от конца круга: долгое переподключение сном не считаем.
         last = time.time()
         while not self.prober.stop_event.wait(probe.FAST_EVERY):
-            self._note_sleep(last, time.time())
+            if self._note_sleep(last, time.time()):
+                # Круги до сна к сети после него не относятся: 12 октября в 21:08
+                # два круга до сна и один после переподключили в ещё не поднятую сеть.
+                seen, streak = None, 0
             try:
                 seen, streak, retry_at = self._watch_once(seen, streak, retry_at)
             except Exception as exc:                       # noqa: BLE001
@@ -1042,10 +1045,12 @@ class Core:
             last = time.time()
 
     def _note_sleep(self, last, now):
-        """Отметка в журнале, если между кругами сторожа компьютер спал."""
-        if now - last > SLEEP_GAP:
-            since = datetime.datetime.fromtimestamp(last).strftime("%H:%M:%S")
-            self.log(f"→ компьютер спал {(now - last) / 60:.1f} мин (с {since})")
+        """Отметка в журнале, если между кругами сторожа компьютер спал. True — спал."""
+        if now - last <= SLEEP_GAP:
+            return False
+        since = datetime.datetime.fromtimestamp(last).strftime("%H:%M:%S")
+        self.log(f"→ компьютер спал {(now - last) / 60:.1f} мин (с {since})")
+        return True
 
     def _watch_once(self, seen, streak, retry_at):
         """Один круг сторожа. Принимает и возвращает его состояние:
