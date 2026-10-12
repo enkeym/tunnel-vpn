@@ -39,7 +39,11 @@ paths:
   напрямую» меняли бы основной конфиг (`tunnel._fixed`) и шли в полный перезапуск. `names-*` — только `domain_suffix`: rule-set с `ip_cidr` в правиле DNS sing-box 1.14 при
   перечитывании отвергает и молча держит старый. Читают через `buildconfig.rule_set_rules`: `tunnel_domains`
   (NRPT), `tunnel_nets` (окно). Домен его же endpoint выкидывает `buildconfig.off_endpoint`. «Не пускать»
-  основного — rule-set `bypass` (`BYPASS_TAG`, пустой без основного). Selector `out` есть всегда: в нём `via-<id>`
+  основного — rule-set `bypass` (`BYPASS_TAG`, пустой без основного); его `exclude_apps` — там же отдельным
+  правилом (`app_rule`, `process_path_regex` с экранированием `_RE2_SPECIAL`): внутри одного правила адрес и
+  процесс sing-box складывает через «и». `route.find_process` — только пока у основного есть программы:
+  первая программа и снятие последней меняют основной конфиг (`tunnel._fixed` → полный перезапуск),
+  остальные правки списка — rule-set на лету. Selector `out` есть всегда: в нём `via-<id>`
   всех туннелей, `direct` и `block` (kill-switch; outbound `block` в конфиге всегда, `kill_switch` из
   `tunnels.json` в сборку не входит — его вкл/выкл не меняет `_fixed` и не роняет tun), `default` —
   `via-<id основного>` или `direct`; `route.final` и detour публичного DNS —

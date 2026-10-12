@@ -531,10 +531,29 @@ def tunnel_rule(nets, domains, ex_nets, ex_domains):
             "rules": [match, {**exclude, "invert": True}]}
 
 
-def rule_set(rule):
-    """Содержимое локального rule-set: одно правило или пусто. Пустой не
-    совпадает ни с чем — правило со ссылкой на него ничего не забирает."""
-    return {"version": RULE_SET_VERSION, "rules": [rule] if rule else []}
+def rule_set(*rules):
+    """Содержимое локального rule-set: правила без пустых (None, {}). Правила
+    rule-set sing-box объединяет через «или». Пустой не совпадает ни с чем —
+    правило со ссылкой на него ничего не забирает."""
+    return {"version": RULE_SET_VERSION, "rules": [r for r in rules if r]}
+
+
+# Спецсимволы регулярок Go (RE2). Экранируем сами, а не re.escape: тот
+# следует правилам Python, и совместимость с RE2 там не обещана.
+_RE2_SPECIAL = re.compile(r"([\\.+*?()|\[\]{}^$])")
+
+
+def app_rule(apps):
+    """Программы «мимо основного» — правило rule-set, иначе None.
+
+    Отдельным правилом, а не полем рядом с ip_cidr: внутри одного правила
+    sing-box складывает адрес и процесс через «и». Регулярка без регистра, а не
+    process_path: пути Windows регистр не различают, а путь запущенного
+    процесса не обязан совпасть с введённым буква в букву.
+    """
+    if not apps:
+        return None
+    return {"process_path_regex": ["(?i)^" + _RE2_SPECIAL.sub(r"\\\1", p) + "$" for p in apps]}
 
 
 def off_endpoint(domains, host):
@@ -922,6 +941,8 @@ def _summary(t, ep, nets, domains, dns):
         lines.append(f"      пускаю: {', '.join(nets + domains)}")
     if t["exclude"]:
         lines.append(f"      мимо  : {', '.join(t['exclude'])}")
+    if t["mode"] == "all" and t["exclude_apps"]:
+        lines.append(f"      программы мимо: {', '.join(t['exclude_apps'])}")
     if dns:
         lines.append(f"      DNS   : {dns[1]} для {', '.join(dns[2]) or '(доменов нет)'}")
     return lines
@@ -1068,8 +1089,11 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True):
     rules.append({"ip_cidr": LOCAL_NETS, "outbound": DIRECT_TAG})
     # «Не пускать» основного — тоже rule-set: смена основного и правка списка
     # не трогают основной конфиг.
-    bypass = _match(*split_entries(main[0]["exclude"], v6)) if main else None
-    sets[BYPASS_TAG] = rule_set(bypass)
+    # Программы «мимо» — там же, вторым правилом: их трафик к туннелям
+    # «по списку» и локальной сети забирают правила выше, как у сайтов.
+    bypass = (_match(*split_entries(main[0]["exclude"], v6)),
+              app_rule(main[0]["exclude_apps"])) if main else ()
+    sets[BYPASS_TAG] = rule_set(*bypass)
     rules.append({"rule_set": [BYPASS_TAG], "outbound": DIRECT_TAG})
     sets[NO_V6_TAG] = rule_set(None if v6 else {"ip_cidr": ["::/0"]})
 
@@ -1148,6 +1172,11 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True):
             # не доходят.
             "auto_detect_interface":
                 os.environ.get("SB_NO_AUTODETECT") != "1",
+            # Процесс соединения — для программ «мимо основного», только пока
+            # они есть: поиск стоит каждому новому соединению. Флаг в основном
+            # конфиге, поэтому первая программа и снятие последней — полный
+            # перезапуск (live_plan), остальные правки списка — rule-set на лету.
+            "find_process": bool(main and main[0]["exclude_apps"]),
             "default_domain_resolver": PUBLIC_DNS_TAG,
         },
     }

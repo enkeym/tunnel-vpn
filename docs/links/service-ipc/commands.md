@@ -34,7 +34,8 @@ paths:
   отправитель — `lib/tunnelvpn/window.py:_validate_rules`, только при `_is_admin()`. Правка расчёта
   `set-tunnel` — в `_plan_tunnel`, иначе проверка на лету и сохранение разойдутся; окно показывает `rulesFailed({error, problems})` красным у
   поля `field`, без `problems` — `error` под первым полем. Ответ `set-tunnel` — `rejected`
-  `{include|exclude: [...]}`, сохранённые `include`/`exclude` и `mode` (полный конфиг без «пускать» без основного
+  `{include|exclude|exclude_apps: [...]}` (`exclude_apps` — `_apps` → `routelist.parse_apps`), сохранённые
+  `include`/`exclude`/`exclude_apps` и `mode` (полный конфиг без «пускать» без основного
   стал `all`; `rulesSaved` тогда перерисовывает лист с одним полем). При живом основном такой конфиг уходит к
   нему запасным (`_spare_blocks`, `_to_spare` → `_move_config(…, "all", drop_tunnel=True)`), туннель удалён,
   ответ `{ok, moved: {tunnel, name, main}}` без списков → окно `rulesMoved(moved)` и `apply`; `handle` проверяет

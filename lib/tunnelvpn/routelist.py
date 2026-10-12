@@ -17,6 +17,7 @@
 """
 
 import ipaddress
+import ntpath
 import re
 import urllib.parse
 
@@ -206,3 +207,83 @@ def _explain_ip(host):
         if any(int(p) > 255 for p in parts):
             return "число в адресе больше 255 → каждое от 0 до 255"
     return "адрес не разобрать → пример: 10.0.0.5, 10.0.0.0/8, 2001:db8::/32"
+
+
+# «Программы мимо VPN» основного: полный путь к .exe, по одному на строку —
+# в пути бывают пробелы, поэтому разделитель только перевод строки. Повторы
+# — без регистра, как пути Windows. Потолок — как у MAX_RULES: каждая запись
+# — регулярка, которую sing-box сверяет на каждом новом соединении.
+MAX_APPS = 100
+# Чего не бывает в пути Windows. «:» — только после буквы диска.
+_BAD_PATH = re.compile(r'[<>"|?*\x00-\x1f]')
+
+
+def app(line):
+    """Путь к программе в нормальном виде, иначе None.
+
+    Кавычки по краям снимаем: их ставит «Копировать как путь» проводника.
+    Путь нужен полный — с диском или \\\\сервер\\папка: процесс sing-box
+    узнаёт по полному пути, относительный ни с чем не совпадёт.
+    """
+    path = line.strip().strip('"').strip()
+    if not path or _BAD_PATH.search(path):
+        return None
+    path = ntpath.normpath(path)
+    drive, rest = ntpath.splitdrive(path)
+    if (not drive or not ntpath.isabs(path) or ":" in rest
+            or not path.lower().endswith(".exe") or ntpath.basename(path).lower() == ".exe"):
+        return None
+    return path
+
+
+def app_lines(text):
+    """Поле программ: [(номер строки с 1, строка как есть, путь или None)],
+    пустые строки пропущены."""
+    return [(n, line.strip(), app(line))
+            for n, line in enumerate((text or "").split("\n"), 1) if line.strip()]
+
+
+def parse_apps(text):
+    """Поле программ: (пути, непонятые строки), без повторов, порядок — как ввёл
+    человек."""
+    entries, seen, rejected = [], set(), []
+    for _line, raw, found in app_lines(text):
+        if found is None:
+            if raw not in rejected:
+                rejected.append(raw)
+        elif found.lower() not in seen:
+            seen.add(found.lower())
+            entries.append(found)
+    return entries, rejected
+
+
+def parse_app_list(items):
+    """То же для готового списка строк — например, из tunnels.json."""
+    return parse_apps("\n".join(str(x) for x in items or ()))
+
+
+def check_apps(text):
+    """Сводка поля программ для листа окна: {count, problems} — как у check."""
+    entries, problems = parse_apps(text)[0], []
+    seen = set()
+    for line, raw, found in app_lines(text):
+        if found is None and raw not in seen:
+            seen.add(raw)
+            problems.append({"line": line, "token": raw, "text": explain_app(raw)})
+    if len(entries) > MAX_APPS:
+        problems.append({"line": None, "token": "",
+                         "text": f"Больше {MAX_APPS} программ → оставьте нужные"})
+    return {"count": len(entries), "problems": problems}
+
+
+def explain_app(raw):
+    """Почему строка не стала путём к программе: «что не так → как исправить»."""
+    shown = f"«{raw}»"
+    path = raw.strip().strip('"').strip()
+    bad = "".join(sorted(set(_BAD_PATH.findall(path))))
+    if bad.strip():
+        return f"{shown} — в пути не бывает «{bad}» → выберите файл кнопкой «Добавить программу…»"
+    if not path.lower().endswith(".exe"):
+        return f"{shown} — это не программа → нужен путь к файлу .exe"
+    return (f"{shown} — нужен полный путь → например C:\\Program Files\\App\\app.exe "
+            f"или кнопка «Добавить программу…»")

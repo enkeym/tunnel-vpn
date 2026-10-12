@@ -756,6 +756,56 @@ def test_вкл_выкл_основного_меняет_только_rule_set_�
     assert sets["bypass"] == {"version": 3, "rules": []}
 
 
+APP = "C:\\Program Files\\App (x86)\\a.exe"
+
+
+def _with_apps(items, tid, apps):
+    return [dict(t, exclude_apps=apps) if t["id"] == tid else t for t in items]
+
+
+def test_программы_основного_отдельным_правилом_в_bypass(build, tmp_path):
+    """Отдельным: внутри одного правила sing-box сложил бы адрес и процесс
+    через «и». Путь — регулярка без регистра, спецсимволы экранированы."""
+    main, _ = build(_with_apps(THREE, "home", [APP]))
+
+    rules = _load(tmp_path / "bypass.json")["rules"]
+    assert rules[-1] == {"process_path_regex":
+                         ["(?i)^C:\\\\Program Files\\\\App \\(x86\\)\\\\a\\.exe$"]}
+    assert all("process_path_regex" not in r for r in rules[:-1])
+    assert main["route"]["find_process"] is True
+
+
+def test_без_программ_процесс_не_ищется(build, tmp_path):
+    """Поиск процесса стоит каждому новому соединению."""
+    main, _ = build(THREE)
+
+    assert main["route"]["find_process"] is False
+    assert all("process_path_regex" not in r
+               for r in _load(tmp_path / "bypass.json")["rules"])
+
+
+def test_программы_туннеля_по_списку_не_действуют(build, tmp_path):
+    main, _ = build(_with_apps(THREE, "lab", [APP]))
+
+    assert main["route"]["find_process"] is False
+    assert all("process_path_regex" not in r
+               for r in _load(tmp_path / "bypass.json")["rules"])
+
+
+def test_первая_программа_полный_перезапуск_следующая_на_лету(build, tmp_path):
+    """find_process — в основном конфиге: его смена уводит live_plan в полный
+    перезапуск; дальше список меняется только в rule-set."""
+    main, _ = build(THREE)
+
+    first, _, _ = _again(main, tmp_path, CONFS, _with_apps(THREE, "home", [APP]))
+    second, _, sets = _again(first, tmp_path, CONFS,
+                             _with_apps(THREE, "home", [APP, "D:\\b.exe"]))
+
+    assert tunnel._fixed(first) != tunnel._fixed(main)
+    assert tunnel._fixed(second) == tunnel._fixed(first)
+    assert sets["bypass"]["rules"][-1]["process_path_regex"][1] == "(?i)^D:\\\\b\\.exe$"
+
+
 def test_испорченный_конфиг_выключенного_сборку_не_держит(build):
     items = [dict(THREE[0], enabled=False), *THREE[1:]]
 

@@ -165,3 +165,54 @@ def test_у_каждого_непонятого_есть_причина():
     for token in ["::::", "a:b:c:z", "x.y:abc", "ý.ru-"]:
         assert routelist.parse(token)[1] == [token]
         assert "→" in routelist.explain(token)
+
+
+# ------------------------------------------------ программы мимо основного
+
+@pytest.mark.parametrize("line, path", [
+    ("C:\\Program Files\\App\\app.exe", "C:\\Program Files\\App\\app.exe"),
+    ('  "C:\\Games\\steam.EXE"  ', "C:\\Games\\steam.EXE"),
+    ("C:/Tools/a.exe", "C:\\Tools\\a.exe"),
+    ("D:\\x\\..\\y\\b.exe", "D:\\y\\b.exe"),
+    ("\\\\server\\share\\c.exe", "\\\\server\\share\\c.exe"),
+])
+def test_полный_путь_к_программе_принимается(line, path):
+    """Кавычки ставит «Копировать как путь» проводника."""
+    assert routelist.app(line) == path
+
+
+@pytest.mark.parametrize("line", [
+    "", "steam.exe", "Games\\steam.exe", "C:steam.exe", "C:\\Games\\notes.txt",
+    "C:\\.exe", "C:\\a?.exe", "C:\\a\\b:c.exe", 'C:\\a"b.exe',
+])
+def test_не_полный_путь_к_exe_отвергается(line):
+    assert routelist.app(line) is None
+
+
+def test_программы_по_строкам_пробел_не_делит_повтор_без_регистра():
+    entries, rejected = routelist.parse_apps(
+        "C:\\Program Files\\A\\a.exe\n\nc:\\program files\\a\\A.EXE\r\nsteam.exe\nsteam.exe")
+
+    assert entries == ["C:\\Program Files\\A\\a.exe"]
+    assert rejected == ["steam.exe"]
+
+
+def test_сводка_программ_со_строкой_и_причиной(monkeypatch):
+    monkeypatch.setattr(routelist, "MAX_APPS", 1)
+
+    r = routelist.check_apps("C:\\a.exe\nnotes.txt\nC:\\b.exe")
+
+    assert r["count"] == 2
+    assert [(p["line"], p["token"]) for p in r["problems"]] == [(2, "notes.txt"), (None, "")]
+    assert "не программа" in r["problems"][0]["text"] and "Больше 1" in r["problems"][1]["text"]
+
+
+@pytest.mark.parametrize("raw, part", [
+    ("C:\\a?.exe", "не бывает «?»"),
+    ("C:\\notes.txt", "нужен путь к файлу .exe"),
+    ("steam.exe", "нужен полный путь"),
+])
+def test_причина_для_программы_говорит_как_исправить(raw, part):
+    text = routelist.explain_app(raw)
+
+    assert text.startswith(f"«{raw}» — ") and part in text and "→" in text

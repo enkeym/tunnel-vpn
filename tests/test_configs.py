@@ -739,10 +739,42 @@ def test_списки_разбираются_а_непонятое_возвра�
     # Сохранённые списки — в ответе: окно показывает «сохранено N» рядом с непонятым.
     assert r == {"ok": True, "rejected": {"include": ["foo_bar"]},
                  "include": ["a.ru", "1.2.3.4/32", "*.b.ru"], "exclude": [],
-                 "mode": "list"}
+                 "exclude_apps": [], "mode": "list"}
     t = tunnels.find(tunnels.load(), "work")
     assert t["include"] == ["a.ru", "1.2.3.4/32", "*.b.ru"]
     assert t["name"] == "Офис" and t["exclude"] == []
+
+
+def test_программы_по_строкам_а_непонятое_возвращается(core):
+    # Пробел в пути — не разделитель: одна строка — одна программа.
+    r = core._set_tunnel("home", {"exclude_apps": "C:\\Program Files\\App\\app.exe\n"
+                                                "\n  steam.exe\n"})
+
+    assert r["ok"] and r["exclude_apps"] == ["C:\\Program Files\\App\\app.exe"]
+    assert r["rejected"] == {"exclude_apps": ["steam.exe"]}
+    assert _tunnel("home")["exclude_apps"] == ["C:\\Program Files\\App\\app.exe"]
+
+
+def test_программы_не_пришли_список_не_трогается(core):
+    core._set_tunnel("home", {"exclude_apps": "C:\\a.exe"})
+
+    assert core._set_tunnel("home", {"exclude": "b.ru"})["ok"]
+    assert _tunnel("home")["exclude_apps"] == ["C:\\a.exe"]
+
+
+def test_длинный_список_программ_отклоняется_целиком(core, monkeypatch):
+    monkeypatch.setattr("tunnelvpn.routelist.MAX_APPS", 1)
+
+    r = core._set_tunnel("home", {"exclude_apps": "C:\\a.exe\nC:\\b.exe"})
+
+    assert not r["ok"] and "больше 1" in r["error"]
+    assert _tunnel("home")["exclude_apps"] == []
+
+
+def test_программы_не_текстом_отказ(core):
+    r = core._set_tunnel("home", {"exclude_apps": ["C:\\a.exe"]})
+
+    assert not r["ok"] and "текстом" in r["error"]
 
 
 def test_длинный_список_отклоняется_целиком(core, monkeypatch):
@@ -1006,6 +1038,21 @@ def test_полный_без_пускать_с_не_пускать_остаёт�
     assert "запасным к «Личный»" in r["error"] and "«не пускать»" in r["error"]
     assert _tunnel("work")["include"] == ["a.ru"]
     assert tunnels.list_confs("work") == ["nl"]
+
+
+def test_полный_без_пускать_с_программами_остаётся_туннелем(core):
+    """Программы остались с тех пор, как туннель был основным: на листе «по
+    списку» их поля нет, и отказ говорит, где их очистить."""
+    tunnels.save({"tunnels": [{**WORK, "include": ["a.ru"], "exclude_apps": ["C:\\a.exe"]},
+                              HOME]})
+    _put("work", "nl.conf", FULL)
+    _put("home", "de.conf", FULL)
+
+    r = core._set_tunnel("work", {"include": ""})
+
+    assert not r["ok"] and [p["field"] for p in r["problems"]] == ["include"]
+    assert "список программ" in r["error"] and "«не пускать»" not in r["error"]
+    assert _ids() == ["work", "home"] and _tunnel("work")["exclude_apps"] == ["C:\\a.exe"]
 
 
 def test_полный_с_непонятым_в_пускать_не_уходит_запасным(core):

@@ -8,7 +8,8 @@ paths:
 ## Формат и переезд (`conf\tunnels.json`)
 - Формат пишет и проверяет только `lib/tunnelvpn/tunnels.py:validate` (`load`, `save`); записи списков
   `include`/`exclude` нормализует `lib/tunnelvpn/routelist.py:parse` (`1.2.3.4` → `1.2.3.4/32`, `*.x.su`
-  оставляет звёздочку). Сборка, которая будет читать записи, обязана понимать ровно эти формы.
+  оставляет звёздочку), `exclude_apps` — `lib/tunnelvpn/routelist.py:parse_apps` (полный путь к `.exe`,
+  повторы без регистра). Сборка, которая будет читать записи, обязана понимать ровно эти формы.
 - Файловый ввод-вывод `load`/`save` — под `lib/tunnelvpn/tunnels.py:LOCK` (RLock). Правка вне канала
   (`lib/tunnelvpn/tunnel.py:start` пишет профиль) берёт его сама вокруг свежего `load` → `save`, а не
   пишет `data`, прочитанный до долгого шага: иначе затрёт правку из окна.

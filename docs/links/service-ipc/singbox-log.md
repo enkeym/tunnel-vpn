@@ -42,6 +42,8 @@ paths:
   `endpoint/wireguard[<тег>]: outbound connection to <IP:порт>`, `pre-match: … to <IP> via outbound/…[<тег>]`
   и `dns: exchanged A <имя>. … IN A <IP>` (имя — первое по номеру запроса) → `_count_paths` → `state\paths.json`.
   Другой текст строк в новой sing-box или `SB_LOG_LEVEL` выше `info` — файл молча перестаёт пополняться.
+  `route.find_process` (программы мимо основного) добавляет debug-строки `found process path` — эти
+  выражения их не задевают; новое выражение под соединения сверяй и с ними.
   Трафик туннелей в журнале основного — `outbound/socks[socks-<id>]` или `[socks2-<id>]` (слот), `via-<id>` в pre-match;
   `lib/tunnelvpn/buildconfig.py:ep_of_socks` пишет его в `paths.json` под тегами туннелей (`wg-<id>`).
   Старые ключи `wg-corp`/`awg-personal` в уже накопленном `paths.json` остаются как есть.

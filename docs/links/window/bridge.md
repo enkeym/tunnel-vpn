@@ -14,8 +14,8 @@ paths:
   основной выключают кнопка ⏻ карточки (`.power`) и его ⋯ через `set_enabled`; карточки «Мой интернет» нет — прямой выход не конфиг), карточки одним списком в порядке
   `st["tunnels"]` (`.cards` в `#pane-tunnels`),
   id строкой у `del_tunnel`/`tunnel_rules`, `{}`|`{tunnel}`|`{tunnel, place: "replace"}` у `add_config`,
-  `{place, tunnel}` у `place_config`, `{tunnel, include?, exclude?}` (текст полей) у `save_rules`,
-  `{name, include, exclude}` у `export_rules`, булево у `log_level`/`set_autostart`, `{tunnel, on, replace, seq}` у
+  `{place, tunnel}` у `place_config`, `{tunnel, include?, exclude?, exclude_apps?}` (текст полей) у `save_rules`,
+  `{name, <поля листа>}` у `export_rules`, без аргумента у `pick_app`, булево у `log_level`/`set_autostart`, `{tunnel, on, replace, seq}` у
   `set_enabled` (любой туннель, основной тоже, на лету и при v6 основного; кнопка ⏻ карточки (`locked`) не видит
   живую правку — второй щелчок шлёт `set_enabled` посреди неё, `apply` службы ждёт замок `APPLY_WAIT`).
   `seq` — `FLIP_SEQ` в `lib/tunnelvpn/ui/js/cards.js:sendEnabled` (все отправители `set_enabled`) ↔
@@ -38,15 +38,20 @@ paths:
   `self._asked = (имя, текст)` и зовёт `askPlace({id, name, conf, file})` → кнопка шлёт `place_config` →
   `lib/tunnelvpn/window.py:_place_config` повторяет `add-config` с `place` без второго диалога.
 - Лист «Туннелирование»: `lib/tunnelvpn/window.py:_tunnel_rules` (`get-tunnels`) → `showRules({id, name, mode,
-  active, include, exclude})`; `_save_rules` (`set-tunnel`) → `rulesSaved({include, exclude, rejected, mode})`,
+  active, include, exclude, exclude_apps})` (`_RULE_KEYS`); `_save_rules` (`set-tunnel`) →
+  `rulesSaved({include, exclude, exclude_apps, rejected, mode})`,
   `rulesMoved({tunnel, name, main})` (ушёл запасным: лист закрыт, затем `_apply`)
   или `rulesFailed({error, problems})` (`problems[] {field, text, line, token}` — `_locate` по `entry` службы;
   `field` — ключ поля `rules-<field>` в `lib/tunnelvpn/ui/js/rules.js`); `validate_rules` — возвратом `send` (`request`):
-  `{fields: {include|exclude: routelist.check}, max, fate}`; форма `check` ↔ `paintField`/`paintProblems`,
-  `line` — номер строки по `\n` (`routelist.tokens`) ↔ `pickToken`. Мок — `mockCheck` в `lib/tunnelvpn/ui/dev/mock-api.js`;
-  `_load_rules` → `fillRules` (`_rules_from_file`: `{include, exclude}` из JSON экспорта или `{text}` в
-  первое поле); `_export_rules` пишет `{include, exclude}` в JSON — тот же формат, что читает `_rules_from_file`.
-  У туннеля `all` поле одно — `exclude` (`ruleKeys` в странице).
+  `{fields: {include|exclude: routelist.check, exclude_apps: routelist.check_apps}, max, max_apps, fate}`
+  (программы в `check-rules` не уходят); форма `check` ↔ `paintField`/`paintProblems`,
+  `line` — номер строки по `\n` (`routelist.tokens`) ↔ `pickToken`. Мок — `mockCheck`/`mockCheckApps` в
+  `lib/tunnelvpn/ui/dev/mock-api.js`;
+  `_load_rules` → `fillRules` (`_rules_from_file`: `{include, exclude}`, `exclude_apps` — только если есть в файле,
+  из JSON экспорта или `{text}` в первое поле); `_export_rules` пишет поля листа в JSON — тот же формат, что
+  читает `_rules_from_file`. У туннеля `all` поля `exclude` и `exclude_apps` (`ruleKeys` в странице).
+  «Добавить программу…» (`.rules-pick`) → `pick_app` → `lib/tunnelvpn/window.py:_pick_app` (проводник,
+  `routelist.app`) → `appPicked(path)` дописывает строку в поле; записывает только «Сохранить».
 - Правки туннелей → `lib/tunnelvpn/window.py:_apply`: op `apply` (`lib/tunnelvpn/service.py:_apply`) — служба
   сама решает, перезапускать процесс туннеля или всё, выключенный не включает; затем
   `refresh(full=True)`. Окно само `stop`/`start` не шлёт — иначе интернет падал бы на каждую правку.

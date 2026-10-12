@@ -506,7 +506,8 @@ class Core:
         st["tunnels"] = [{"id": t["id"], "name": t["name"], "mode": t["mode"],
                           "active": t["active"], "enabled": t["enabled"],
                           "confs": confs,
-                          "rules": len(t["include"]) + len(t["exclude"]),
+                          "rules": (len(t["include"]) + len(t["exclude"])
+                                    + len(t["exclude_apps"])),
                           "full": _conf_full(t["id"], in_use[t["id"]]),
                           "awg": {c: _conf_facts(t["id"], c)["awg"] for c in confs}}
                          for t in data["tunnels"]
@@ -1914,6 +1915,18 @@ class Core:
                              f"больше {MAX_RULES} нельзя")
         return entries, rejected
 
+    @staticmethod
+    def _apps(text):
+        """Поле программ — пути по одному на строку → (пути, непонятые) или
+        ValueError."""
+        if not isinstance(text, str):
+            raise ValueError("список программ должен быть текстом")
+        entries, rejected = routelist.parse_apps(text)
+        if len(entries) > routelist.MAX_APPS:
+            raise ValueError(f"в списке {len(entries)} программ, "
+                             f"больше {routelist.MAX_APPS} нельзя")
+        return entries, rejected
+
     def _save_tunnels(self, data, done):
         """Пишет tunnels.json; done — строка в журнал службы."""
         try:
@@ -1952,9 +1965,10 @@ class Core:
         return {**r, "id": tid} if r["ok"] else r
 
     def _set_tunnel(self, tunnel, payload):
-        """Меняет у туннеля то, что пришло: name, mode, include, exclude.
+        """Меняет у туннеля то, что пришло: name, mode, include, exclude, exclude_apps.
 
-        Списки — текстом поля, как его ввёл человек (routelist.parse).
+        Списки — текстом поля, как его ввёл человек (routelist.parse,
+        программы — routelist.parse_apps).
         Понятое сохраняется, непонятое возвращается в rejected: окно его
         покажет, молча ничего не пропадает.
 
@@ -1987,7 +2001,8 @@ class Core:
         # Сохранённые списки — окну: поля показывают записи в том виде, как
         # их понял routelist, рядом с непонятыми; mode — туннель мог стать основным.
         return ({**r, "rejected": p["rejected"], "include": t["include"],
-                 "exclude": t["exclude"], "mode": t["mode"]} if r["ok"] else r)
+                 "exclude": t["exclude"], "exclude_apps": t["exclude_apps"],
+                 "mode": t["mode"]} if r["ok"] else r)
 
     def _plan_tunnel(self, tunnel, payload):
         """Правка set-tunnel без записи: свежий tunnels.json с ней и что из неё
@@ -1999,6 +2014,8 @@ class Core:
         for key in ("include", "exclude"):
             if key in payload:
                 t[key], rejected[key] = self._rules(payload[key])
+        if "exclude_apps" in payload:
+            t["exclude_apps"], rejected["exclude_apps"] = self._apps(payload["exclude_apps"])
         changed = [t]
         if payload.get("mode") == "all" and t["mode"] != "all":
             changed += self._make_main(data, t)
@@ -2045,6 +2062,11 @@ class Core:
             texts.append(f"без «пускать» конфиг станет запасным к «{main['name']}», а у "
                        f"запасного своих списков нет — очистите и «не пускать» или "
                        f"впишите, что пускать через него")
+        # Поля программ у туннеля «по списку» на листе нет — указываем, где его очистить.
+        if t["exclude_apps"]:
+            texts.append(f"у «{t['name']}» остался список программ мимо VPN с тех пор, как он "
+                         f"был основным, а у запасного своих списков нет — сделайте его "
+                         f"основным и очистите программы или впишите, что пускать через него")
         if len(tunnels.list_confs(t["id"])) > 1:
             texts.append(f"у «{t['name']}» несколько конфигов — запасным к "
                        f"«{main['name']}» уходит только единственный: уберите лишние "

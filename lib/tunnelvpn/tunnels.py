@@ -10,10 +10,15 @@
         "enabled": true,
         "include": ["corp.example"], "exclude": ["198.51.100.7/32"]},
        {"id": "home", "name": "Личный", "mode": "all", "active": "nl-1",
-        "enabled": true, "include": [], "exclude": []}]}
+        "enabled": true, "include": [], "exclude": [],
+        "exclude_apps": ["C:\\\\Games\\\\Steam\\\\steam.exe"]}]}
 
 Режим list — через туннель идёт только то, что в его списках и AllowedIPs;
 all — весь остальной трафик. all может быть не больше чем у одного.
+
+exclude_apps — программы (полный путь к .exe), чей трафик идёт мимо основного,
+как «не пускать». Действует только у основного; у туннеля «по списку» лежит
+до того, как он снова станет основным.
 
 enabled — выключить туннель, не теряя его конфигов и правил: сборка
 собирает его без процесса. Выключенный основной остаётся основным (метка,
@@ -133,6 +138,18 @@ def _check_list(tunnel, key):
     return entries
 
 
+def _check_apps(tunnel):
+    """Пути программ «мимо основного» — как их разбирает routelist.parse_apps."""
+    items = tunnel.get("exclude_apps", [])
+    if not isinstance(items, list):
+        raise ValueError(f"туннель {tunnel['id']}: exclude_apps должен быть списком")
+    entries, rejected = routelist.parse_app_list(items)
+    if rejected:
+        raise ValueError(f"туннель {tunnel['id']}: в exclude_apps не путь к .exe: "
+                         f"{', '.join(rejected)}")
+    return entries
+
+
 def _check_tunnel(raw):
     if not isinstance(raw, dict):
         raise ValueError("туннель должен быть объектом")
@@ -156,6 +173,7 @@ def _check_tunnel(raw):
               "enabled": enabled}
     tunnel["include"] = _check_list(raw, "include")
     tunnel["exclude"] = _check_list(raw, "exclude")
+    tunnel["exclude_apps"] = _check_apps(raw)
     return tunnel
 
 

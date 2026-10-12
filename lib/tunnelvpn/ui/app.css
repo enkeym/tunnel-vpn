@@ -538,6 +538,7 @@ body.kbd :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px;
 .rules-area:focus { border-color: color-mix(in srgb, var(--white) 32%, transparent); }
 .rules-area.bad { border-color: var(--err); box-shadow: var(--glow) color-mix(in srgb, var(--err) 30%, transparent); }
 .rules-hint { color: var(--dim); font-size: var(--fs-s); }
+.rules-pick { justify-self: start; }
 .rules-sum { color: var(--dim); font-size: var(--fs-s); }
 .rules-sum.over { color: var(--err); }
 .rules-fate { margin: var(--sp-1) 0 0; font-size: var(--fs-m); }

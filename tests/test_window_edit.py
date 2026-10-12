@@ -128,7 +128,7 @@ def test_правила_уходят_текстом_поля_а_ответ_со_
 
     # Только присланные поля: exclude не пришёл — служба его не трогает.
     assert admin == [("set-tunnel", {"tunnel": "work", "include": "a.ru foo_bar"})]
-    assert ("rulesSaved", {"include": ["a.ru"], "exclude": [],
+    assert ("rulesSaved", {"include": ["a.ru"], "exclude": [], "exclude_apps": [],
                            "rejected": {"include": ["foo_bar"]}, "mode": ""}) in shown
 
 
@@ -222,6 +222,18 @@ def test_дубли_с_правами_через_check_rules_со_строкой
     assert r["fields"]["include"]["problems"] == [
         {"text": "«a.ru» уже в «Лаб»", "line": 2, "token": "A.RU"}]
     assert r["fate"] == {"to": "main"}
+
+
+def test_программы_разбираются_без_службы_со_строкой_непонятого(monkeypatch):
+    r, calls = _validate(monkeypatch, {"tunnel": "home",
+                                       "exclude_apps": "C:\\a.exe\n\nsteam.exe"})
+
+    # С другими туннелями программы не сверяются: check-rules не зовётся.
+    assert calls == []
+    apps = r["fields"]["exclude_apps"]
+    assert apps["count"] == 1
+    assert [(p["line"], p["token"]) for p in apps["problems"]] == [(3, "steam.exe")]
+    assert r["max_apps"] == 100
 
 
 def test_без_прав_дубли_не_спрашиваются(monkeypatch):

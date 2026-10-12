@@ -328,7 +328,8 @@ def test_галочка_журнала_отпускается_и_при_отка
 
 def test_лист_правил_получает_только_поля_туннеля(monkeypatch):
     work = {"id": "work", "name": "Работа", "mode": "list", "active": "corp",
-            "include": ["corp.example"], "exclude": ["198.51.100.7/32"], "lab": 1}
+            "include": ["corp.example"], "exclude": ["198.51.100.7/32"],
+            "exclude_apps": [], "lab": 1}
     api, admin, shown = _api(monkeypatch, [{"ok": True, "tunnels": [work]},
                                            {"ok": True, "tunnels": [work]}])
 
@@ -361,6 +362,31 @@ def test_экспорт_правил_читается_обратно_загру�
     assert "failed" not in [fn for fn, _ in shown]
     assert window._rules_from_file(out.read_text(encoding="utf-8")) == {
         "include": "corp.example", "exclude": "198.51.100.7/32"}
+
+
+def test_файл_экспорта_основного_несёт_программы_строками():
+    text = '{"include": [], "exclude": ["a.ru"], "exclude_apps": ["C:\\\\A b\\\\a.exe", "D:\\\\b.exe"]}'
+
+    assert window._rules_from_file(text) == {"include": "", "exclude": "a.ru",
+                                             "exclude_apps": "C:\\A b\\a.exe\nD:\\b.exe"}
+
+
+def test_файл_без_программ_не_трогает_их_поле():
+    """Экспорт туннеля «по списку» программ не пишет: поле основного не очищается."""
+    assert "exclude_apps" not in window._rules_from_file('{"exclude": ["a.ru"]}')
+
+
+def test_выбранная_программа_уходит_в_лист_путём(monkeypatch):
+    api, admin, shown = _api(monkeypatch, [])
+    picked = iter(["C:\\Games\\..\\Steam\\steam.exe", None])
+    monkeypatch.setattr(api, "_pick", lambda _types: next(picked))
+
+    api.send("pick_app")
+    api.send("pick_app")
+
+    # Выбор — правка поля, не запись: служба не зовётся; передумали — тишина.
+    assert shown == [("appPicked", "C:\\Steam\\steam.exe")]
+    assert admin == []
 
 
 def test_файл_экспорта_раскладывается_по_полям():
