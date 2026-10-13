@@ -615,18 +615,37 @@ class Prober:
         """(итог, ответ) одного живого туннеля — проверка конфига, с которым
         он работает. Основной — delay(tag) через его socks (мс или None): выход
         проверяет общая проверка, а здесь важен сервер; «по списку» —
-        тем же, чем probe_slow. Нет в собранном конфиге — ('', '')."""
+        тем же, чем probe_slow, и итог — в checks, как у неё. Нет в собранном
+        конфиге — ('', '')."""
         p = next((p for p in self.check_plan() if p["id"] == tid), None)
         if not p or not p["running"]:
             return "", ""
         if p["mode"] == "all":
             ms = delay(buildconfig.via_tag(tid))
             return ("up", f"{ms} мс") if ms else ("error", "сервер не отвечает")
+        before = (self.snapshot().get("checks") or {}).get(tid)
         got = {}
         if p["dns"] or p["host"]:
             how = _list_part(p)
             got[how] = (self._slow_dns if how == "dns" else self._slow_http)(p)
+        self._note_check(p, got, before)
         return _test_result(p, got)
+
+    def _note_check(self, p, got, before):
+        """Итог check_one туннеля «по списку» — в checks. Без этого ↻ на карточке
+        говорил «работает», а пилюля держала «не отвечает» прошлой сетевой
+        проверки: 13 октября её сделали через секунду после замены конфига, пока
+        новый процесс не установил соединение с сервером, и до следующей итог
+        не менялся. seq прежний: проверкой сети ↻ не считается, а окно по seq
+        сверяет свежесть ↻. Итог сменился за время замера (сетевая проверка
+        закончила туннель, VPN опустили) — он свежее, не трогаем."""
+        with self.lock:
+            checks = self.st.get("checks") or {}
+            if checks.get(p["id"]) is not before:
+                return
+            result, answer = _check_result(p, {p["id"]: got}, self.st)
+            self.st["checks"] = {**checks, p["id"]: {
+                "result": result, "answer": answer, "seq": (before or {}).get("seq", 0)}}
 
     def tunnel_answer(self, tid):
         """Ответ DNS туннеля tid через туннель (_slow_dns): адрес или DNS_NO_ADDR —

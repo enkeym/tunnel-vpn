@@ -35,7 +35,8 @@ paths:
 - `checking` — `lib/tunnelvpn/service.py:_status` (из `lib/tunnelvpn/probe.py:Prober.slow_busy`) → `checking` в
   `lib/tunnelvpn/ui/js/model.js:model` и `cards.js:cardState`: «проверяю…», пока идёт сетевая проверка.
 - Проверка по туннелям: `check_seq` и `checks {id: {result, answer, seq}}` — `lib/tunnelvpn/probe.py:_take_slow`
-  и `probe_slow` (итог `_check_result`: `up`/`rules`/`error`/`none`/''; `rules` — DNS туннеля ответил
+  и `probe_slow`, итог туннеля «по списку» без смены `seq` — ещё `check_one` (↻ живого, `_note_check`)
+  (итог `_check_result`: `up`/`rules`/`error`/`none`/''; `rules` — DNS туннеля ответил
   `probe.DNS_NO_ADDR` на домен из «пускать», `answer` — этот домен) → `lib/tunnelvpn/service.py:_status` кладёт в
   `st["tunnels"][i]` поля `check`, `answer`, `seq`, `checking` и убирает `checks` →
   `lib/tunnelvpn/ipc.py:check_by_side` (ждёт id из `st["tunnels"]` по `seq`), `lib/tunnelvpn/tray.py:_conf_colors`

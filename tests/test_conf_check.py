@@ -115,6 +115,42 @@ def test_живой_по_списку_dns_ответил(monkeypatch):
     assert probe.Prober().check_one("t1", None) == ("up", probe.BY_DNS)
 
 
+def test_живой_по_списку_снимает_прошлый_error_сетевой_проверки(monkeypatch):
+    # 13 октября: сетевая проверка попала на процесс сразу после замены конфига,
+    # ↻ говорил «работает», а пилюля до следующей проверки — «не отвечает».
+    _plan(monkeypatch, dns="10.8.0.1")
+    monkeypatch.setattr(probe.Prober, "_dns_ask", staticmethod(lambda server, name: "10.1.2.3"))
+    p = probe.Prober()
+    p.set(check_seq=3, checks={"t1": {"result": "error", "answer": "", "seq": 3},
+                               "t2": {"result": "up", "answer": "1.2.3.4", "seq": 3}})
+    p.check_one("t1", None)
+    assert p.snapshot()["checks"] == {"t1": {"result": "up", "answer": "по DNS", "seq": 3},
+                                      "t2": {"result": "up", "answer": "1.2.3.4", "seq": 3}}
+
+
+def test_итог_сменился_за_время_замера_не_затирается(monkeypatch):
+    _plan(monkeypatch, dns="10.8.0.1")
+    p = probe.Prober()
+    p.set(checks={"t1": {"result": "error", "answer": "", "seq": 3}})
+    fresh = {"t1": {"result": "up", "answer": "по DNS", "seq": 4}}
+
+    def ask(server, name):
+        p.set(checks=fresh)            # сетевая проверка закончила туннель раньше
+        return ""
+
+    monkeypatch.setattr(probe.Prober, "_dns_ask", staticmethod(ask))
+    assert p.check_one("t1", None) == ("error", "сервер не отвечает")
+    assert p.snapshot()["checks"] is fresh
+
+
+def test_живой_основной_итог_сетевой_проверки_не_трогает(monkeypatch):
+    _plan(monkeypatch, mode="all")
+    p = probe.Prober()
+    p.set(checks={"t1": {"result": "up", "answer": "1.2.3.4", "seq": 3}})
+    p.check_one("t1", lambda tag: None)
+    assert p.snapshot()["checks"] == {"t1": {"result": "up", "answer": "1.2.3.4", "seq": 3}}
+
+
 # ------------------------------------------------------------ Core._test_conf
 
 class _Tunnel:
