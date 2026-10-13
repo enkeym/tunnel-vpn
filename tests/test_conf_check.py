@@ -152,13 +152,18 @@ def test_живой_основной_итог_сетевой_проверки_н
 
 
 def _fresh(monkeypatch, answers, now):
-    """Пробер с процессом t1, запущенным в 100.0, часами now и ответами DNS
-    answers по очереди; asked — сколько раз спросили."""
+    """Пробер с процессом t1, запущенным в 100.0, часами now (перед
+    каждым вопросом) и ответами DNS answers по очереди; asked — число попыток
+    каждого вопроса: 1 — короткий, CORP_TRIES — полный."""
     _plan(monkeypatch, dns="10.8.0.1")
     asked = []
-    monkeypatch.setattr(probe.Prober, "_dns_ask", staticmethod(
-        lambda server, name: asked.append(name) or answers[len(asked) - 1]))
-    monkeypatch.setattr(probe.time, "monotonic", lambda: now[len(asked) - 1])
+
+    def ask(server, name, tries=probe.CORP_TRIES, timeout=probe.CORP_DNS_TIMEOUT):
+        asked.append(tries)
+        return answers[len(asked) - 1]
+
+    monkeypatch.setattr(probe.Prober, "_dns_ask", staticmethod(ask))
+    monkeypatch.setattr(probe.time, "monotonic", lambda: now[len(asked)])
     p = probe.Prober(started=lambda tid: 100.0)
     monkeypatch.setattr(p.stop_event, "wait", lambda timeout: False)
     return p, asked
@@ -167,24 +172,25 @@ def _fresh(monkeypatch, answers, now):
 def test_свежий_процесс_молчит_ждём_его_ответа(monkeypatch):
     # 13 октября: DNS ответил через 10 с после старта, а проверка через секунду
     # записала «не отвечает».
-    p, asked = _fresh(monkeypatch, ["", "", "10.1.2.3"], [101.0, 106.0, 111.0])
+    p, asked = _fresh(monkeypatch, ["", "", "10.1.2.3"], [101.0, 101.5, 102.0])
 
     assert p.check_one("t1", None) == ("up", probe.BY_DNS)
-    assert len(asked) == 3
+    assert asked == [1, 1, 1]
 
 
 def test_свежий_процесс_молчит_весь_срок_не_отвечает(monkeypatch):
+    # Срок вышел — полная попытка: короткая теряет пакет и у живого сервера.
     p, asked = _fresh(monkeypatch, ["", "", ""], [105.0, 112.0, 100.0 + probe.SIDE_SETTLE])
 
     assert p.check_one("t1", None) == ("error", "сервер не отвечает")
-    assert len(asked) == 3
+    assert asked == [1, 1, probe.CORP_TRIES]
 
 
 def test_давний_процесс_молчит_с_первого_раза(monkeypatch):
     p, asked = _fresh(monkeypatch, [""], [100.0 + probe.SIDE_SETTLE + 1])
 
     assert p.check_one("t1", None) == ("error", "сервер не отвечает")
-    assert len(asked) == 1
+    assert asked == [probe.CORP_TRIES]
 
 
 # ------------------------------------------------------------ Core._test_conf
@@ -265,6 +271,42 @@ def test_запасной_с_ключом_не_везущего_основног
 
     assert core._finish_test(t, "w1", alone=True)["result"] == "up"
     assert core.tunnel.trials == ["t1"]
+
+
+def test_добавленный_в_живой_процесс_проверяется_после_перезапуска(core, monkeypatch):
+    """13 октября временный sing-box с тем же ключом шёл рядом с новым
+    процессом и уводил у него сервер: тот 15 с не соединялся."""
+    t = _tunnel(monkeypatch)
+    seen = []
+    starts = iter([5.0, 5.0, 9.0])
+    monkeypatch.setattr(core, "_side_started", lambda tid: seen.append(tid) or next(starts))
+    monkeypatch.setattr(service.time, "sleep", lambda s: None)
+    core.tunnel = _Tunnel(twin="t1")
+    monkeypatch.setattr(core.prober, "check_one", lambda tid, delay: ("up", f"после {len(seen)}"))
+
+    rec = core._finish_test(t, "w1", swap=5.0)
+
+    assert (rec["result"], rec["answer"]) == ("up", "после 3")
+    assert core.tunnel.trials == []
+
+
+def test_перезапуска_не_дождались_проверка_как_есть(core, monkeypatch):
+    t = _tunnel(monkeypatch)
+    monkeypatch.setattr(service, "SWAP_WAIT", 0.0)
+    monkeypatch.setattr(core, "_side_started", lambda tid: 5.0)
+    monkeypatch.setattr(probe, "trial_check", lambda *a: ("up", "по DNS"))
+
+    assert core._finish_test(t, "w1", swap=5.0)["result"] == "up"
+    assert core.tunnel.trials == ["t1"]
+
+
+def test_ждать_перезапуска_только_живого_процесса_с_этим_конфигом(core, monkeypatch):
+    _tunnel(monkeypatch)
+    monkeypatch.setattr(core, "_side_started", lambda tid: 7.0)
+    assert core._swap_from("t1", "w1") == 7.0
+    assert core._swap_from("t1", "w2") == 0.0         # выбран другой — процесс не сменится
+    monkeypatch.setattr(core, "_side_started", lambda tid: 0.0)
+    assert core._swap_from("t1", "w1") == 0.0         # VPN выключен
 
 
 def test_нечем_проверить_без_запуска(core, monkeypatch):

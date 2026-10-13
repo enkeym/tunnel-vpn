@@ -46,6 +46,11 @@ CORP_HTTP_TIMEOUT = 6.0
 # секунду после старта записала «не отвечает». Молчание процесса
 # моложе стольких секунд — не итог: спрашиваем снова (Prober._list_ask).
 SIDE_SETTLE = 20.0
+# Пока процесс свежий — одна короткая попытка раз в SETTLE_PAUSE: полная
+# (CORP_TRIES по таймауту) замечала пришедший ответ с опозданием до 6 с.
+SETTLE_DNS_TIMEOUT = 1.0
+SETTLE_HTTP_TIMEOUT = 3.0
+SETTLE_PAUSE = 0.5
 # Старые стороны окна: corp — первый туннель «по списку», personal — основной.
 # Их <сторона>_seq пробер ведёт до шага окна, рядом с итогами по туннелям.
 LEGACY_SIDES = ("corp", "personal")
@@ -662,30 +667,38 @@ class Prober:
 
     def _list_ask(self, p):
         """Ответ туннеля «по списку» p тем, чем его проверять (_list_part);
-        '' — молчит. Процесс моложе SIDE_SETTLE спрашиваем снова, пока
-        не ответит или не выйдет срок: до первого соединения с сервером он
-        молчит и с рабочим конфигом. В probe_slow пилюля это время не
-        горит: туннель ещё checking."""
+        '' — молчит. Процесс моложе SIDE_SETTLE спрашиваем короткой попыткой
+        раз в SETTLE_PAUSE, пока не ответит: до первого соединения с сервером
+        он молчит и с рабочим конфигом. Срок вышел — полная попытка, её
+        молчание и есть итог. В probe_slow пилюля это время не горит: туннель
+        ещё checking."""
         ask = self._slow_dns if _list_part(p) == "dns" else self._slow_http
         until = self.started(p["id"]) + SIDE_SETTLE
         while True:
-            answer = ask(p)
-            if answer or time.monotonic() >= until or self.stop_event.is_set():
+            fresh = time.monotonic() < until
+            answer = ask(p, quick=True) if fresh else ask(p)
+            if answer or not fresh or self.stop_event.is_set():
                 return answer
-            self.stop_event.wait(1.0)
+            self.stop_event.wait(SETTLE_PAUSE)
 
-    def _slow_dns(self, p):
+    def _slow_dns(self, p, quick=False):
+        if quick:
+            return self._dns_ask(p["dns"], p["host"] or DNS_ASK_NAME,
+                                 tries=1, timeout=SETTLE_DNS_TIMEOUT)
         return self._dns_ask(p["dns"], p["host"] or DNS_ASK_NAME)
 
-    def _slow_http(self, p):
+    def _slow_http(self, p, quick=False):
+        if quick:
+            return self._http_code(f"https://{p['host']}",
+                                   tries=1, timeout=SETTLE_HTTP_TIMEOUT)
         return self._http_code(f"https://{p['host']}")
 
     @staticmethod
-    def _dns_ask(server, name):
+    def _dns_ask(server, name, tries=CORP_TRIES, timeout=CORP_DNS_TIMEOUT):
         """Адрес name от server; DNS_NO_ADDR — ответил без адреса (NXDOMAIN окончателен,
         повтор не нужен); '' — молчит после всех попыток."""
-        for _ in range(CORP_TRIES):
-            said, ip = winnet.dns_ask_via(name, server, timeout=CORP_DNS_TIMEOUT)
+        for _ in range(tries):
+            said, ip = winnet.dns_ask_via(name, server, timeout=timeout)
             if re.match(r"^[\d.]+$", ip or ""):
                 return ip
             if said:
@@ -693,7 +706,7 @@ class Prober:
         return ""
 
     @staticmethod
-    def _http_code(url, proxy=""):
+    def _http_code(url, proxy="", tries=CORP_TRIES, timeout=CORP_HTTP_TIMEOUT):
         """Код ответа корп-сайта. Нас устраивает любой — важно, что он есть.
         proxy — http-вход временного sing-box (trial_check).
 
@@ -708,10 +721,10 @@ class Prober:
             urllib.request.ProxyHandler({"http": proxy, "https": proxy} if proxy else {}),
             urllib.request.HTTPSHandler(context=ssl._create_unverified_context()),
             _NoRedirect())
-        for _ in range(CORP_TRIES):
+        for _ in range(tries):
             try:
                 req = urllib.request.Request(url, method="HEAD")
-                with opener.open(req, timeout=CORP_HTTP_TIMEOUT) as r:
+                with opener.open(req, timeout=timeout) as r:
                     return str(r.status)
             except urllib.error.HTTPError as exc:
                 return str(exc.code)

@@ -64,6 +64,9 @@ RECONNECT_GAP = 10.0
 # записан в tunnels.json, и отказ «уже идёт» оставил бы его неприменённым.
 # С запасом на start (до 30 с).
 APPLY_WAIT = 40.0
+# Сколько проверка добавленного конфига ждёт перезапуска его живого процесса
+# (Core._await_swap): _apply окна сам ждёт замок до APPLY_WAIT.
+SWAP_WAIT = APPLY_WAIT
 # Мёртвый туннель: keepalive идёт, а TCP через него не открывается (5 октября личный
 # молчал две минуты, корп — до замены конфига). Сетевой пинг давал бы постоянный
 # трафик и ложное «молчит», поэтому смотрим на живые соединения в журнале
@@ -435,7 +438,8 @@ class Core:
                                      payload.get("kind", ""), tid,
                                      payload.get("place", ""))
             if reply.get("ok"):
-                self._test_conf(reply["tunnel"], reply["name"], wait=False)
+                self._test_conf(reply["tunnel"], reply["name"], wait=False,
+                                swap=self._swap_from(reply["tunnel"], reply["name"]))
             return reply
         if op == "test-config":
             return self._test_conf(tid, payload.get("name", ""))
@@ -672,11 +676,12 @@ class Core:
         if name:
             self._test_conf(tid, name, wait=False)
 
-    def _test_conf(self, tunnel, name, wait=True):
+    def _test_conf(self, tunnel, name, wait=True, swap=0.0):
         """Проверяет конфиг name туннеля: отвечает ли его сервер, — и при
         выключенном VPN, и для запасного. Итог — в статусе (tunnels[].tests),
         wait — и в ответе; без wait проверка идёт в потоке, а статус уже
-        показывает checking. Имя приходит через канал от кого угодно — сверяем
+        показывает checking. swap — _swap_from: поток сначала ждёт перезапуска
+        процесса (_await_swap). Имя приходит через канал от кого угодно — сверяем
         со списком, а не склеиваем в путь."""
         try:
             t = self._target(self._tunnels(), tunnel)
@@ -688,15 +693,17 @@ class Core:
         self._note_test(key, stamp=self._conf_stamp(*key), checking=True)
         if not wait:
             threading.Thread(target=self._finish_test, args=(t, name),
-                             daemon=True).start()
+                             kwargs={"swap": swap}, daemon=True).start()
             return {"ok": True}
         return {"ok": True, "test": self._finish_test(t, name)}
 
-    def _finish_test(self, t, name, alone=False):
+    def _finish_test(self, t, name, alone=False, swap=0.0):
         """Проверка после _test_conf: итог в _conf_checks и в журнал, его же — наружу.
-        alone — в _run_test."""
+        alone — в _run_test, swap — в _await_swap."""
         key = (t["id"], name)
         stamp = self._conf_stamp(*key)
+        if swap:
+            self._await_swap(t["id"], swap)
         try:
             with self._tests_lock:
                 lock = self._trial_locks.setdefault(t["id"], threading.Lock())
@@ -710,6 +717,24 @@ class Core:
         self.log(f"→ проверка {name}.conf («{t['name']}»): {result or 'нет итога'}"
                  + (f", {answer}" if answer else ""))
         return {**rec, "checking": False}
+
+    def _swap_from(self, tid, name):
+        """Когда запущен живой процесс туннеля tid (_side_started), если
+        добавленный конфиг name — тот, с которым его перезапустит _apply окна;
+        иначе 0.0."""
+        started = self._side_started(tid)
+        return started if started and self._in_use().get(tid) == name else 0.0
+
+    def _await_swap(self, tid, started):
+        """Ждёт до SWAP_WAIT, пока процесс туннеля tid, запущенный в started,
+        не сменится новым. Проверка добавленного конфига шла раньше замены:
+        временный sing-box с ключом нового конфига работал рядом с новым
+        процессом и уводил у него сервер — 13 октября тот после замены 15 с не
+        соединялся. После перезапуска _run_test находит процесс по ключу и
+        спрашивает его. Не дождались — проверяем как есть."""
+        deadline = time.monotonic() + SWAP_WAIT
+        while self._side_started(tid) == started and time.monotonic() < deadline:
+            time.sleep(0.25)
 
     def _run_test(self, t, name, alone=False):
         """(итог, ответ) конфига name туннеля t.

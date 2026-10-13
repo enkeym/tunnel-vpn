@@ -7,7 +7,9 @@ paths:
 ## Команды канала: проверка, флаги, запуск
 - `test-config` {`tunnel`, `name`} (USER_OPS: ответ без ключей и адресов сети) → `lib/tunnelvpn/service.py:_test_conf`
   → `{ok, test: {result, answer, at, checking}}`; удачные `add-config` и `set-tunnel` (с `include`/`mode`,
-  `_test_active`) запускают её сами в потоке. Итог — `st["tunnels"][i]["tests"]` `{имя: {…}}`
+  `_test_active`) запускают её сами в потоке; у `add-config` конфиг, с которым `_apply` окна перезапустит живой
+  боковой (`_swap_from`), поток проверяет после перезапуска (`_await_swap` ждёт смены `Side.started` до
+  `SWAP_WAIT`): иначе `trial` с тем же ключом уводит сервер у нового процесса. Итог — `st["tunnels"][i]["tests"]` `{имя: {…}}`
   (`_tests_of`, по метке файла `_conf_stamp`). Тот же приватный ключ в живом боковом
   (`lib/tunnelvpn/tunnel.py:side_with_key`, читает `tunnel-<id>.json`) → `lib/tunnelvpn/probe.py:check_one`;
   иначе `lib/tunnelvpn/tunnel.py:trial` (`state\run\trial-<id>.json` из `buildconfig.trial_config`, http-вход,

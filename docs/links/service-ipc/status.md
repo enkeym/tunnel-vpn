@@ -38,7 +38,9 @@ paths:
   и `probe_slow`, итог туннеля «по списку» без смены `seq` — ещё `check_one` (↻ живого, `_note_check`).
   Обе спрашивают туннель «по списку» через `_list_ask`: процесс моложе `probe.SIDE_SETTLE` по
   `lib/tunnelvpn/tunnel.py:Side.started` (ставят `_start_side`/`_swap_slot`, пробер читает через
-  `lib/tunnelvpn/service.py:_side_started`) молчит и с рабочим конфигом — его спрашивают снова, а туннель
+  `lib/tunnelvpn/service.py:_side_started`) молчит и с рабочим конфигом — его спрашивают снова короткой
+  попыткой (`_slow_dns`/`_slow_http` с `quick`: одна попытка `SETTLE_*_TIMEOUT`, пауза `SETTLE_PAUSE`;
+  по сроку — полная, `CORP_TRIES`), а туннель
   до итога остаётся `checking` (пилюля `model.js:problemsOf` его пропускает); `probe_slow` идёт дольше,
   `check_now` ждёт её до `CHECK_WAIT`
   (итог `_check_result`: `up`/`rules`/`error`/`none`/''; `rules` — DNS туннеля ответил
