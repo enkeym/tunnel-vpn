@@ -861,6 +861,18 @@ def test_переписанный_файл_того_же_конфига_тоже
     assert seen["outs"] == []
 
 
+def test_замена_конфига_даёт_процессу_новое_имя_туннеля(live):
+    """По имени журнал службы зовёт процесс, а окно — метку его строк."""
+    tun, _seen = live
+    data = tunnels.load()
+    tunnels.find(data, "home").update(active="nl-2", name="Дом-2")
+    tunnels.save(data)
+
+    tun.reload_sides()
+
+    assert _side(tun, "home").title == "Дом-2"
+
+
 def test_без_смены_конфигов_никого_не_перезапускает(live):
     tun, seen = live
     _use("home", "nl-2")

@@ -933,7 +933,12 @@ class Tunnel:
                 side = Side(tid, title)
                 done.append((side, self._enable_side(side, sides[tid],
                                                      stamps.get(tid))))
-            elif stamps.get(tid) != side.source:
+                order.append(side)
+                continue
+            # Имя туннеля идёт за его .conf: без этого журнал до перезапуска
+            # службы звал процесс по прежнему конфигу.
+            side.title = title
+            if stamps.get(tid) != side.source:
                 done.append((side, self._swap_side(side, sides[tid],
                                                    stamps.get(tid))))
             else:

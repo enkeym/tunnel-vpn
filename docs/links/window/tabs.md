@@ -13,9 +13,9 @@ paths:
   → `killSwitchDone`; мок — `kill_switch` и сценарий `blocked` в `lib/tunnelvpn/ui/dev/mock-api.js`.
 - Журнал: `lib/tunnelvpn/window.py:_push_logs` (на `refresh(full=True)` и на `send('logs')` — его шлёт
   `lib/tunnelvpn/ui/js/log.js` раз в 2 с, пока открыта вкладка) → `renderLogs(lines)`. Форма строки — из
-  `lib/tunnelvpn/service.py:_tail_log`: метка `[<имя туннеля>] ` (= `Tunnel.title`, = `st.tunnels[].name` —
-  по нему чип фильтра и цвет пилюли) перед строкой sing-box `+ZZZZ YYYY-MM-DD HH:MM:SS LEVEL [id] текст`
-  (`LOG_LINE`/`LOG_MARK` в `log.js`). Сменил формат метки или штампа — пилюли, уровни и фильтры молча пропадут.
+  `lib/tunnelvpn/service.py:_tail_log`: метка `[<имя туннеля>] ` (= `Side.title`, = `st.tunnels[].name` —
+  по нему чип фильтра и цвет пилюли; после замены .conf имя обновляет `lib/tunnelvpn/tunnel.py:reload_sides`)
+  перед строкой sing-box `+ZZZZ YYYY-MM-DD HH:MM:SS LEVEL [id] текст` (`LOG_LINE`/`LOG_MARK` в `log.js`). Сменил формат метки или штампа — пилюли, уровни и фильтры молча пропадут.
 - «Сейчас подключено»: `lib/tunnelvpn/window.py:_howto` берёт у службы op `howto` (`lib/tunnelvpn/service.py:_howto`,
   READ_OPS: `state\run\` окну не прочесть). Служба отдаёт `{endpoints: [{tag, address, mtu, awg, peer, dns, nets,
   domains}]}` по каждому включённому из `buildconfig.side_ids`: `dns` — `buildconfig.tunnel_dns`, `nets` —
