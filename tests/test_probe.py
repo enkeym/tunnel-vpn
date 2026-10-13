@@ -589,30 +589,6 @@ def test_http_code_нет_ответа_после_всех_попыток_пус
     assert len(calls) == probe.CORP_TRIES
 
 
-def test_dns_ask_потерянный_пакет_повторяется(monkeypatch):
-    answers = iter([(False, ""), (True, "10.0.0.8")])
-    monkeypatch.setattr(probe.winnet, "dns_ask_via",
-                        lambda name, server, timeout: next(answers))
-
-    assert probe.Prober._dns_ask("10.0.0.1", "corp") == "10.0.0.8"
-
-
-def test_dns_ask_ответ_без_адреса_окончателен(monkeypatch):
-    asked = []
-    monkeypatch.setattr(probe.winnet, "dns_ask_via",
-                        lambda name, server, timeout: asked.append(name) or (True, ""))
-
-    assert probe.Prober._dns_ask("10.0.0.1", "corp") == probe.DNS_NO_ADDR
-    assert asked == ["corp"]
-
-
-def test_dns_ask_молчит_после_всех_попыток_пусто(monkeypatch):
-    monkeypatch.setattr(probe.winnet, "dns_ask_via",
-                        lambda name, server, timeout: (False, ""))
-
-    assert probe.Prober._dns_ask("10.0.0.1", "corp") == ""
-
-
 @pytest.mark.parametrize("plan, name", [
     ([_p_work(), _p_work(id="work-2", host="wiki.corp.example", dns="10.0.0.2")],
      "wiki.corp.example"),
@@ -621,12 +597,13 @@ def test_dns_ask_молчит_после_всех_попыток_пусто(monk
 def test_tunnel_answer_спрашивает_dns_этого_туннеля(monkeypatch, plan, name):
     asked = []
     _plan(monkeypatch, *plan)
-    monkeypatch.setattr(probe.winnet, "dns_ask_via",
-                        lambda name, server, timeout: asked.append((name, server))
-                        or (True, "10.0.0.8"))
+    monkeypatch.setattr(probe, "_dns_via_proxy",
+                        lambda link, server, name, **kw: asked.append((link, name, server))
+                        or "10.0.0.8")
+    links = {"work": {"port": 1}, "work-2": {"port": 2}}
 
-    assert probe.Prober().tunnel_answer("work-2") == "10.0.0.8"
-    assert asked == [(name, "10.0.0.2")]
+    assert probe.Prober(link=links.get).tunnel_answer("work-2") == "10.0.0.8"
+    assert asked == [({"port": 2}, name, "10.0.0.2")]
 
 
 @pytest.mark.parametrize("tid, plan", [
@@ -635,10 +612,10 @@ def test_tunnel_answer_спрашивает_dns_этого_туннеля(monkey
 ])
 def test_tunnel_answer_не_спрашивает_когда_нечем(monkeypatch, tid, plan):
     _plan(monkeypatch, *plan)
-    monkeypatch.setattr(probe.winnet, "dns_ask_via",
+    monkeypatch.setattr(probe, "_dns_via_proxy",
                         lambda *a, **kw: pytest.fail("спросил без DNS"))
 
-    assert probe.Prober().tunnel_answer(tid) == ""
+    assert probe.Prober(link=lambda tid: {"port": 1}).tunnel_answer(tid) == ""
 
 
 def test_check_plan_по_tunnels_json_и_собранному_конфигу(monkeypatch, tmp_path):

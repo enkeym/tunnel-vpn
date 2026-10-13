@@ -79,5 +79,8 @@ paths:
   `check == 'rules'` (сервер жив, правила не те): `cardState` — warn «работает · «домен» не открывается»,
   `model.js:problemsOf` — «проверьте туннелирование», `cards.js:splitState` — красный ⇄,
   `_conf_colors` — `busy`, `_remember_check` — как `up`, `lib/tunnelvpn/cli.py:_check_text` — своя строка.
-  Ответ DNS «без адреса» — `lib/tunnelvpn/winnet.py:dns_ask_via` (`(ответил, адрес)`) → `probe._dns_ask`.
+  Ответ DNS «без адреса» — `lib/tunnelvpn/probe.py:_dns_addr` (`''` на NXDOMAIN) → `probe._dns_via_proxy`.
+  DNS туннеля «по списку» `_slow_dns` спрашивает через вход его процесса: `Prober.link` ←
+  `lib/tunnelvpn/service.py:_side_link` ← `lib/tunnelvpn/tunnel.py:link_of` (слот `Side.slot`). Не через tun:
+  там запрос берёт `hijack-dns` основного процесса — ответ из его кэша и после замены на нерабочий конфиг.
   `corp_ip`/`corp_http` (`probe_slow` для первого «по списку») читает только CLI — до шага 6.

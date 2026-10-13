@@ -661,6 +661,10 @@ class Tunnel:
                                      side.tid, slot)
         return link if link and link.get("port") else None
 
+    def link_of(self, side):
+        """Связь входа, на котором сейчас работает процесс side, иначе None."""
+        return self._link(side, side.slot)
+
     def _spawn(self, side, slot, link, logfile):
         """Процесс туннеля side на слоте slot (связь link) с выводом в logfile:
         (процесс, '') или (упавший процесс или None, ошибка); не открыл socks

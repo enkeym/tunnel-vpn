@@ -19,7 +19,7 @@ paths:
   чужого адреса, выход и процесс не трогаем. Нет основного (`Tunnel.main` — `None`) — выход не трогают.
 - Живая проверка перед перезапуском — `lib/tunnelvpn/service.py:_side_down` для любого туннеля, кроме
   `tunnel.main`; ответ — `lib/tunnelvpn/probe.py:tunnel_answer(side.tid)` (домен `_probe_host`, без него
-  `probe.DNS_ASK_NAME`, у DNS этого туннеля; любой ответ, и NXDOMAIN, — сервер жив, не перезапускаем).
+  `probe.DNS_ASK_NAME`, у DNS этого туннеля через вход его процесса — `Core._side_link`; любой ответ, и NXDOMAIN, — сервер жив, не перезапускаем).
   Строка «не перезапускаю» — раз на смену состояния: `Core._side_said` (сбрасывают `_do_start`,
   `_forget_side`, молчащий DNS). Нет DNS у туннеля — сторож перезапускает по одним таймаутам.
 - Возврат выхода на основной (из `direct` и из `block`) — `lib/tunnelvpn/service.py:_try_back(main, out)` зовёт `lib/tunnelvpn/tunnel.py:delay`

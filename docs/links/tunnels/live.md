@@ -21,8 +21,8 @@ paths:
   `side_ids` даёт и выключенных (собраны без процесса): `_peer_ips` ставит host-маршрут и их пирам (включение
   находит его в `owned`), `peer_addrs` сверяет только тег основного, `service.py:_howto` отбрасывает их по
   `tunnels.json`, `probe.py:check_plan` — по `enabled`.
-- Порт, логин и пароль socks связывают outbound `socks-<id>` в `config.json` и inbound `socks-in` в
-  `tunnel-<id>.json`: пара из одного `lib/tunnelvpn/buildconfig.py:new_link` в `assemble` (`_slot_links`: по связи
+- Порт, логин и пароль socks связывают outbound `socks-<id>` в `config.json` и inbound `socks-in` (тип `mixed`:
+  по нему же `probe._dns_via_proxy` спрашивает DNS туннеля, `Tunnel.link_of`) в `tunnel-<id>.json`: пара из одного `lib/tunnelvpn/buildconfig.py:new_link` в `assemble` (`_slot_links`: по связи
   на слот, `SLOTS = 2`). Второй слот (`socks2-<id>`) — файл `tunnel2-<id>.json` (`side_json(tid, 1)`): пишет
   `lib/tunnelvpn/tunnel.py:_spawn` из `tunnel-<id>.json` через `buildconfig.slot_config` перед стартом, удаляет
   `_drop_stale_sides` на каждой сборке. Перезапуск живого бокового — `tunnel.restart_side` → `_swap_slot`: новый

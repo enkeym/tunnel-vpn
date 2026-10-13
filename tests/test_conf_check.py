@@ -52,6 +52,66 @@ def test_кириллический_домен_уходит_в_idna():
     assert b"xn--" in probe._dns_query("сайт.рф", 1)
 
 
+@contextlib.contextmanager
+def _proxy(answers):
+    """http-вход на loopback: на каждое соединение — CONNECT 200 и ответ DNS
+    по очереди из answers: адрес, '' — без адреса (NXDOMAIN), None — молчит
+    (закрывает соединение). Отдаёт (связь, [(CONNECT, имя)])."""
+    srv = socket.create_server(("127.0.0.1", 0))
+    seen = []
+
+    def serve():
+        for answer in answers:
+            conn, _ = srv.accept()
+            with conn:
+                head = b""
+                while not head.endswith(b"\r\n\r\n"):
+                    head += conn.recv(1)
+                conn.sendall(b"HTTP/1.1 200 OK\r\n\r\n")
+                size = struct.unpack("!H", probe._recv_exact(conn, 2))[0]
+                query = probe._recv_exact(conn, size)
+                qid = struct.unpack("!H", query[:2])[0]
+                name = query[13:13 + query[12]].decode()
+                seen.append((head.split(b"\r\n")[0].decode(), name))
+                if answer is None:
+                    continue
+                reply = (_reply(qid, name, answer) if answer
+                         else _reply(qid, name, rcode=3))
+                conn.sendall(struct.pack("!H", len(reply)) + reply)
+
+    worker = threading.Thread(target=serve, daemon=True)
+    worker.start()
+    try:
+        yield {"port": srv.getsockname()[1], "username": "u", "password": "p"}, seen
+    finally:
+        srv.close()
+        worker.join(2)
+
+
+def test_dns_через_вход_процесса_спрашивает_его_dns():
+    with _proxy(["10.1.2.3"]) as (link, seen):
+        assert probe._dns_via_proxy(link, "10.8.0.1", "corp", timeout=2) == "10.1.2.3"
+    assert seen == [("CONNECT 10.8.0.1:53 HTTP/1.1", "corp")]
+
+
+def test_dns_через_вход_потерянный_ответ_повторяется():
+    with _proxy([None, "10.1.2.3"]) as (link, seen):
+        assert probe._dns_via_proxy(link, "10.8.0.1", "corp", timeout=2) == "10.1.2.3"
+    assert len(seen) == 2
+
+
+def test_dns_через_вход_ответ_без_адреса_окончателен():
+    with _proxy([""]) as (link, seen):
+        assert probe._dns_via_proxy(link, "10.8.0.1", "corp", timeout=2) == probe.DNS_NO_ADDR
+    assert len(seen) == 1
+
+
+def test_dns_через_вход_молчит_после_всех_попыток_пусто():
+    with _proxy([None]) as (link, seen):
+        assert probe._dns_via_proxy(link, "10.8.0.1", "corp", tries=1, timeout=2) == ""
+    assert len(seen) == 1
+
+
 # ------------------------------------------------------------ trial_check
 
 LINK = {"port": 1, "username": "u", "password": "p"}
@@ -111,16 +171,30 @@ def test_живой_основной_проверяется_задержкой_�
 
 def test_живой_по_списку_dns_ответил(monkeypatch):
     _plan(monkeypatch, dns="10.8.0.1", host="corp.example")
-    monkeypatch.setattr(probe.Prober, "_dns_ask", staticmethod(lambda server, name: "10.1.2.3"))
-    assert probe.Prober().check_one("t1", None) == ("up", probe.BY_DNS)
+    asked = []
+    monkeypatch.setattr(probe, "_dns_via_proxy",
+                        lambda link, server, name, **kw: asked.append((link, server, name))
+                        or "10.1.2.3")
+    assert probe.Prober(link=lambda tid: LINK).check_one("t1", None) == ("up", probe.BY_DNS)
+    assert asked == [(LINK, "10.8.0.1", "corp.example")]
+
+
+def test_живой_по_списку_без_процесса_молчит_не_спрашивая(monkeypatch):
+    # Через tun запрос перехватил бы DNS основного процесса и ответил из кэша:
+    # 13 октября нерабочий конфиг «отвечал» адресом от прежнего.
+    _plan(monkeypatch, dns="10.8.0.1", host="corp.example")
+    monkeypatch.setattr(probe, "_dns_via_proxy",
+                        lambda *a, **kw: pytest.fail("спросил без процесса"))
+    assert probe.Prober(link=lambda tid: None).check_one("t1", None) == (
+        "error", "сервер не отвечает")
 
 
 def test_живой_по_списку_снимает_прошлый_error_сетевой_проверки(monkeypatch):
     # 13 октября: сетевая проверка попала на процесс сразу после замены конфига,
     # ↻ говорил «работает», а пилюля до следующей проверки — «не отвечает».
     _plan(monkeypatch, dns="10.8.0.1")
-    monkeypatch.setattr(probe.Prober, "_dns_ask", staticmethod(lambda server, name: "10.1.2.3"))
-    p = probe.Prober()
+    monkeypatch.setattr(probe, "_dns_via_proxy", lambda *a, **kw: "10.1.2.3")
+    p = probe.Prober(link=lambda tid: LINK)
     p.set(check_seq=3, checks={"t1": {"result": "error", "answer": "", "seq": 3},
                                "t2": {"result": "up", "answer": "1.2.3.4", "seq": 3}})
     p.check_one("t1", None)
@@ -130,15 +204,15 @@ def test_живой_по_списку_снимает_прошлый_error_сет
 
 def test_итог_сменился_за_время_замера_не_затирается(monkeypatch):
     _plan(monkeypatch, dns="10.8.0.1")
-    p = probe.Prober()
+    p = probe.Prober(link=lambda tid: LINK)
     p.set(checks={"t1": {"result": "error", "answer": "", "seq": 3}})
     fresh = {"t1": {"result": "up", "answer": "по DNS", "seq": 4}}
 
-    def ask(server, name):
+    def ask(link, server, name, **kw):
         p.set(checks=fresh)            # сетевая проверка закончила туннель раньше
         return ""
 
-    monkeypatch.setattr(probe.Prober, "_dns_ask", staticmethod(ask))
+    monkeypatch.setattr(probe, "_dns_via_proxy", ask)
     assert p.check_one("t1", None) == ("error", "сервер не отвечает")
     assert p.snapshot()["checks"] is fresh
 
@@ -158,13 +232,13 @@ def _fresh(monkeypatch, answers, now):
     _plan(monkeypatch, dns="10.8.0.1")
     asked = []
 
-    def ask(server, name, tries=probe.CORP_TRIES, timeout=probe.CORP_DNS_TIMEOUT):
+    def ask(link, server, name, tries=probe.CORP_TRIES, timeout=probe.CORP_HTTP_TIMEOUT):
         asked.append(tries)
         return answers[len(asked) - 1]
 
-    monkeypatch.setattr(probe.Prober, "_dns_ask", staticmethod(ask))
+    monkeypatch.setattr(probe, "_dns_via_proxy", ask)
     monkeypatch.setattr(probe.time, "monotonic", lambda: now[len(asked)])
-    p = probe.Prober(started=lambda tid: 100.0)
+    p = probe.Prober(started=lambda tid: 100.0, link=lambda tid: LINK)
     monkeypatch.setattr(p.stop_event, "wait", lambda timeout: False)
     return p, asked
 
@@ -221,6 +295,22 @@ def core(monkeypatch):
     core.tunnel = _Tunnel()
     core.prober = probe.Prober()
     return core
+
+
+@pytest.mark.parametrize("alive, want", [(True, {"port": 2}), (False, None)])
+def test_связь_процесса_для_пробера_со_слота_живого(core, monkeypatch, alive, want):
+    # После замены конфига процесс на другом слоте: спрашивать прежний — мимо.
+    monkeypatch.setattr(buildconfig, "read_json", lambda path: {})
+    monkeypatch.setattr(buildconfig, "side_link",
+                        lambda cfg, tid, slot=0: {"port": slot + 1})
+    side = tunnel.Side("t1", "t")
+    side.proc = types.SimpleNamespace(poll=lambda: None if alive else 1)
+    side.slot = 1
+    core.tunnel = tunnel.Tunnel(core.log)
+    core.tunnel.sides = [side]
+
+    assert core._side_link("t1") == want
+    assert core._side_link("t2") is None
 
 
 def _tunnel(monkeypatch, mode="list", include=(), text=CONF):

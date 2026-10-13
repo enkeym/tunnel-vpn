@@ -762,11 +762,16 @@ def side_json(tid, slot=0):
 
 
 def side_config(ep, link, level="info"):
-    """Конфиг бокового процесса: socks-вход на loopback и один endpoint."""
+    """Конфиг бокового процесса: вход на loopback и один endpoint.
+
+    Вход mixed: основной процесс ходит в него по socks, а пробер — CONNECT
+    на DNS туннеля (probe._dns_via_proxy). Через tun этот запрос перехватывал
+    DNS основного процесса и отвечал из кэша: 13 октября после замены на
+    нерабочий конфиг туннель «отвечал» адресом от прежнего."""
     return {
         "log": {"level": level, "timestamp": True},
         "inbounds": [{
-            "type": "socks", "tag": "socks-in",
+            "type": "mixed", "tag": "socks-in",
             "listen": "127.0.0.1", "listen_port": link["port"],
             "users": [{"username": link["username"],
                        "password": link["password"]}],
@@ -783,7 +788,7 @@ def side_config(ep, link, level="info"):
 
 
 def slot_config(cfg, link):
-    """Боковой конфиг cfg со входом socks на связь link другого слота."""
+    """Боковой конфиг cfg со входом на связь link другого слота."""
     inbound = {**cfg["inbounds"][0], "listen_port": link["port"],
                "users": [{"username": link["username"],
                           "password": link["password"]}]}

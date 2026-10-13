@@ -266,7 +266,7 @@ class Core:
     def __init__(self):
         self.lock = threading.Lock()      # один start/stop одновременно
         self.tunnel = tunnel.Tunnel(self.log)
-        self.prober = probe.Prober(self.log, self._side_started)
+        self.prober = probe.Prober(self.log, self._side_started, self._side_link)
         self.server = ipc.Server(self.handle, self.log)
         self.last_error = ""
         self.busy = ""
@@ -1424,6 +1424,14 @@ class Core:
         запущен: по нему пробер ждёт свежий процесс (probe.SIDE_SETTLE)."""
         side = next((s for s in self.tunnel.sides if s.tid == tid), None)
         return side.started if side is not None and side.alive() else 0.0
+
+    def _side_link(self, tid):
+        """Связь входа живого процесса туннеля tid — его текущего слота, None —
+        не запущен: через неё пробер спрашивает DNS туннеля."""
+        side = next((s for s in self.tunnel.sides if s.tid == tid), None)
+        if side is None or not side.alive():
+            return None
+        return self.tunnel.link_of(side)
 
     # ------------------------------------------------------ куда что ходит
 

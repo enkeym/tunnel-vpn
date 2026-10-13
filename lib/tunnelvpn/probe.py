@@ -185,19 +185,19 @@ def _dns_addr(reply, qid):
     return ""
 
 
-def _dns_via_proxy(link, server, name):
+def _dns_via_proxy(link, server, name, tries=CORP_TRIES, timeout=CORP_HTTP_TIMEOUT):
     """Адрес name от DNS server через http-вход link: CONNECT на server:53
-    и запрос по TCP. DNS_NO_ADDR — ответил без адреса; '' — молчит. sing-box
-    отвечает на CONNECT до рукопожатия, поэтому мёртвый сервер — это
-    таймаут чтения ответа."""
+    и запрос по TCP. DNS_NO_ADDR — ответил без адреса (NXDOMAIN окончателен,
+    повтор не нужен); '' — молчит после tries попыток. sing-box отвечает на
+    CONNECT до рукопожатия, поэтому мёртвый сервер — это таймаут чтения ответа."""
     auth = base64.b64encode(f"{link['username']}:{link['password']}".encode()).decode()
-    for _ in range(CORP_TRIES):
+    for _ in range(tries):
         qid = int.from_bytes(os.urandom(2), "big")
         try:
             query = _dns_query(name, qid)
             with socket.create_connection(("127.0.0.1", link["port"]),
-                                          CORP_HTTP_TIMEOUT) as sock:
-                sock.settimeout(CORP_HTTP_TIMEOUT)
+                                          timeout) as sock:
+                sock.settimeout(timeout)
                 sock.sendall(f"CONNECT {server}:53 HTTP/1.1\r\nHost: {server}:53\r\n"
                              f"Proxy-Authorization: Basic {auth}\r\n\r\n".encode())
                 head = b""
@@ -267,13 +267,16 @@ def _from_plain(text):
 
 
 class Prober:
-    def __init__(self, log=None, started=None):
+    def __init__(self, log=None, started=None, link=None):
         # Журнал службы: итог сетевой проверки нужен рядом со строками сторожа,
         # а не только в status.json, который перезаписывается.
         self.log = log
         # started(id) — когда запущен процесс туннеля (time.monotonic, 0.0 —
         # неизвестно): свежий _list_ask ждёт до SIDE_SETTLE.
         self.started = started or (lambda tid: 0.0)
+        # link(id) — связь входа живого процесса туннеля, None — процесса нет:
+        # через неё _slow_dns спрашивает DNS туннеля.
+        self.link = link or (lambda tid: None)
         self.st = {}
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
@@ -682,28 +685,23 @@ class Prober:
             self.stop_event.wait(SETTLE_PAUSE)
 
     def _slow_dns(self, p, quick=False):
+        """DNS туннеля p через вход его процесса (link), а не через tun: там
+        запрос перехватывает DNS основного процесса — отвечает из кэша, а имя
+        не из «пускать» спрашивает у публичного DNS. Процесса нет — молчит."""
+        link = self.link(p["id"])
+        if not link:
+            return ""
+        name = p["host"] or DNS_ASK_NAME
         if quick:
-            return self._dns_ask(p["dns"], p["host"] or DNS_ASK_NAME,
-                                 tries=1, timeout=SETTLE_DNS_TIMEOUT)
-        return self._dns_ask(p["dns"], p["host"] or DNS_ASK_NAME)
+            return _dns_via_proxy(link, p["dns"], name,
+                                  tries=1, timeout=SETTLE_DNS_TIMEOUT)
+        return _dns_via_proxy(link, p["dns"], name, timeout=CORP_DNS_TIMEOUT)
 
     def _slow_http(self, p, quick=False):
         if quick:
             return self._http_code(f"https://{p['host']}",
                                    tries=1, timeout=SETTLE_HTTP_TIMEOUT)
         return self._http_code(f"https://{p['host']}")
-
-    @staticmethod
-    def _dns_ask(server, name, tries=CORP_TRIES, timeout=CORP_DNS_TIMEOUT):
-        """Адрес name от server; DNS_NO_ADDR — ответил без адреса (NXDOMAIN окончателен,
-        повтор не нужен); '' — молчит после всех попыток."""
-        for _ in range(tries):
-            said, ip = winnet.dns_ask_via(name, server, timeout=timeout)
-            if re.match(r"^[\d.]+$", ip or ""):
-                return ip
-            if said:
-                return DNS_NO_ADDR
-        return ""
 
     @staticmethod
     def _http_code(url, proxy="", tries=CORP_TRIES, timeout=CORP_HTTP_TIMEOUT):
