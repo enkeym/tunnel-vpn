@@ -110,6 +110,9 @@ class Side:
         # Слот socks, на котором работает процесс, — его выбирает selector
         # via-<id>; перезапуск живого идёт на другой (Tunnel.restart_side).
         self.slot = 0
+        # Когда запущен текущий процесс (time.monotonic), 0.0 — не запущен:
+        # свежий отвечает не сразу, и пробер ждёт его (probe.SIDE_SETTLE).
+        self.started = 0.0
 
     @property
     def tag(self):
@@ -647,6 +650,8 @@ class Tunnel:
         side.proc, err = self._spawn(side, side.slot, link, side.logfile)
         if side.proc is None:
             self._stop_side(side)
+        else:
+            side.started = time.monotonic()
         return err
 
     @staticmethod
@@ -863,7 +868,7 @@ class Tunnel:
             _end(proc)
             return err
         _end(side.proc)
-        side.proc, side.slot = proc, slot
+        side.proc, side.slot, side.started = proc, slot, time.monotonic()
         return ""
 
     def live_plan(self):

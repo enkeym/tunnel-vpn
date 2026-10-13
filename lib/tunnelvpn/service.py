@@ -263,7 +263,7 @@ class Core:
     def __init__(self):
         self.lock = threading.Lock()      # один start/stop одновременно
         self.tunnel = tunnel.Tunnel(self.log)
-        self.prober = probe.Prober(self.log)
+        self.prober = probe.Prober(self.log, self._side_started)
         self.server = ipc.Server(self.handle, self.log)
         self.last_error = ""
         self.busy = ""
@@ -1393,6 +1393,12 @@ class Core:
         finally:
             self.busy = ""
             self.lock.release()
+
+    def _side_started(self, tid):
+        """Когда запущен живой процесс туннеля tid (time.monotonic), 0.0 — не
+        запущен: по нему пробер ждёт свежий процесс (probe.SIDE_SETTLE)."""
+        side = next((s for s in self.tunnel.sides if s.tid == tid), None)
+        return side.started if side is not None and side.alive() else 0.0
 
     # ------------------------------------------------------ куда что ходит
 

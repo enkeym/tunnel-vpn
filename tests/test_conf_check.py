@@ -151,6 +151,42 @@ def test_живой_основной_итог_сетевой_проверки_н
     assert p.snapshot()["checks"] == {"t1": {"result": "up", "answer": "1.2.3.4", "seq": 3}}
 
 
+def _fresh(monkeypatch, answers, now):
+    """Пробер с процессом t1, запущенным в 100.0, часами now и ответами DNS
+    answers по очереди; asked — сколько раз спросили."""
+    _plan(monkeypatch, dns="10.8.0.1")
+    asked = []
+    monkeypatch.setattr(probe.Prober, "_dns_ask", staticmethod(
+        lambda server, name: asked.append(name) or answers[len(asked) - 1]))
+    monkeypatch.setattr(probe.time, "monotonic", lambda: now[len(asked) - 1])
+    p = probe.Prober(started=lambda tid: 100.0)
+    monkeypatch.setattr(p.stop_event, "wait", lambda timeout: False)
+    return p, asked
+
+
+def test_свежий_процесс_молчит_ждём_его_ответа(monkeypatch):
+    # 13 октября: DNS ответил через 10 с после старта, а проверка через секунду
+    # записала «не отвечает».
+    p, asked = _fresh(monkeypatch, ["", "", "10.1.2.3"], [101.0, 106.0, 111.0])
+
+    assert p.check_one("t1", None) == ("up", probe.BY_DNS)
+    assert len(asked) == 3
+
+
+def test_свежий_процесс_молчит_весь_срок_не_отвечает(monkeypatch):
+    p, asked = _fresh(monkeypatch, ["", "", ""], [105.0, 112.0, 100.0 + probe.SIDE_SETTLE])
+
+    assert p.check_one("t1", None) == ("error", "сервер не отвечает")
+    assert len(asked) == 3
+
+
+def test_давний_процесс_молчит_с_первого_раза(monkeypatch):
+    p, asked = _fresh(monkeypatch, [""], [100.0 + probe.SIDE_SETTLE + 1])
+
+    assert p.check_one("t1", None) == ("error", "сервер не отвечает")
+    assert len(asked) == 1
+
+
 # ------------------------------------------------------------ Core._test_conf
 
 class _Tunnel:

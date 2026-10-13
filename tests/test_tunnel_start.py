@@ -554,6 +554,30 @@ def test_перезапуск_туннеля_не_трогает_остальн�
     assert not any("203.0.113.99" in parts for parts in tun.owned_lines())
 
 
+def test_время_старта_процесса_ставят_запуск_и_перезапуск(env, monkeypatch):
+    """По нему пробер ждёт свежий процесс (probe.SIDE_SETTLE)."""
+    tun, _build, _seen = env
+    assert tun.start() == ""
+    side = _side(tun, "work")
+    assert side.started > 0
+    side.started = 1.0
+    monkeypatch.setattr(tun, "_select", lambda group, tag: True)
+
+    assert tun.restart_side(side) == ""
+
+    assert side.started > 1.0
+
+
+def test_процесс_не_открыл_socks_времени_старта_нет(env, monkeypatch):
+    tun, _build, seen = env
+    seen["socks_open"] = False
+    monkeypatch.setattr(tun, "set_out", lambda _tag: True)
+
+    assert tun.start() == ""
+
+    assert _side(tun, "work").started == 0.0
+
+
 def test_перезапуск_туннеля_без_туннеля_отказ(env):
     tun, _build, seen = env
 

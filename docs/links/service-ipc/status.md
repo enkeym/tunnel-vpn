@@ -35,7 +35,12 @@ paths:
 - `checking` — `lib/tunnelvpn/service.py:_status` (из `lib/tunnelvpn/probe.py:Prober.slow_busy`) → `checking` в
   `lib/tunnelvpn/ui/js/model.js:model` и `cards.js:cardState`: «проверяю…», пока идёт сетевая проверка.
 - Проверка по туннелям: `check_seq` и `checks {id: {result, answer, seq}}` — `lib/tunnelvpn/probe.py:_take_slow`
-  и `probe_slow`, итог туннеля «по списку» без смены `seq` — ещё `check_one` (↻ живого, `_note_check`)
+  и `probe_slow`, итог туннеля «по списку» без смены `seq` — ещё `check_one` (↻ живого, `_note_check`).
+  Обе спрашивают туннель «по списку» через `_list_ask`: процесс моложе `probe.SIDE_SETTLE` по
+  `lib/tunnelvpn/tunnel.py:Side.started` (ставят `_start_side`/`_swap_slot`, пробер читает через
+  `lib/tunnelvpn/service.py:_side_started`) молчит и с рабочим конфигом — его спрашивают снова, а туннель
+  до итога остаётся `checking` (пилюля `model.js:problemsOf` его пропускает); `probe_slow` идёт дольше,
+  `check_now` ждёт её до `CHECK_WAIT`
   (итог `_check_result`: `up`/`rules`/`error`/`none`/''; `rules` — DNS туннеля ответил
   `probe.DNS_NO_ADDR` на домен из «пускать», `answer` — этот домен) → `lib/tunnelvpn/service.py:_status` кладёт в
   `st["tunnels"][i]` поля `check`, `answer`, `seq`, `checking` и убирает `checks` →

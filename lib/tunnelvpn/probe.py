@@ -32,7 +32,8 @@ from . import buildconfig, paths, tunnels, winnet
 # шли через запуск PowerShell, цикл стоил секунды и приходилось реже.
 FAST_EVERY = 2.0
 # Сколько check_now ждёт уже идущую проверку: при плохой сети она до ~12 с —
-# столько стоит корп-HTTPS с повтором; запас — на медленный резолв имён.
+# столько стоит корп-HTTPS с повтором, на свежем процессе — до SIDE_SETTLE
+# сверху; запас — на медленный резолв имён.
 CHECK_WAIT = 40.0
 # Корп-проверка: пакет через WireGuard теряется и при живом туннеле, поэтому
 # одна неудача ещё не «молчит» — повторяем. Попытки короче прежних 12 с, и
@@ -40,6 +41,11 @@ CHECK_WAIT = 40.0
 CORP_TRIES = 2
 CORP_DNS_TIMEOUT = 2.5
 CORP_HTTP_TIMEOUT = 6.0
+# Свежий процесс туннеля «по списку» отвечает не сразу: 13 октября процесс
+# запустили в 08:16:56.8, а DNS через него ответил с 08:17:07 — проверка сети через
+# секунду после старта записала «не отвечает». Молчание процесса
+# моложе стольких секунд — не итог: спрашиваем снова (Prober._list_ask).
+SIDE_SETTLE = 20.0
 # Старые стороны окна: corp — первый туннель «по списку», personal — основной.
 # Их <сторона>_seq пробер ведёт до шага окна, рядом с итогами по туннелям.
 LEGACY_SIDES = ("corp", "personal")
@@ -256,10 +262,13 @@ def _from_plain(text):
 
 
 class Prober:
-    def __init__(self, log=None):
+    def __init__(self, log=None, started=None):
         # Журнал службы: итог сетевой проверки нужен рядом со строками сторожа,
         # а не только в status.json, который перезаписывается.
         self.log = log
+        # started(id) — когда запущен процесс туннеля (time.monotonic, 0.0 —
+        # неизвестно): свежий _list_ask ждёт до SIDE_SETTLE.
+        self.started = started or (lambda tid: 0.0)
         self.st = {}
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
@@ -468,9 +477,8 @@ class Prober:
                 mine.add("exit")
             elif p["running"] and (p["dns"] or p["host"]):
                 how = _list_part(p)
-                fn = self._slow_dns if how == "dns" else self._slow_http
                 name = f"{how} {p['id']}"
-                jobs[name] = functools.partial(ask, how, fn, p)
+                jobs[name] = functools.partial(ask, how, self._list_ask, p)
                 mine.add(name)
             waits[("tunnel", p["id"])] = mine
         waits[("side", "personal")] = {"exit"}
@@ -626,8 +634,7 @@ class Prober:
         before = (self.snapshot().get("checks") or {}).get(tid)
         got = {}
         if p["dns"] or p["host"]:
-            how = _list_part(p)
-            got[how] = (self._slow_dns if how == "dns" else self._slow_http)(p)
+            got[_list_part(p)] = self._list_ask(p)
         self._note_check(p, got, before)
         return _test_result(p, got)
 
@@ -652,6 +659,20 @@ class Prober:
         сервер жив; '' — молчит или DNS у туннеля нет."""
         p = next((p for p in self.check_plan() if p["id"] == tid), None)
         return self._slow_dns(p) if p and p["dns"] else ""
+
+    def _list_ask(self, p):
+        """Ответ туннеля «по списку» p тем, чем его проверять (_list_part);
+        '' — молчит. Процесс моложе SIDE_SETTLE спрашиваем снова, пока
+        не ответит или не выйдет срок: до первого соединения с сервером он
+        молчит и с рабочим конфигом. В probe_slow пилюля это время не
+        горит: туннель ещё checking."""
+        ask = self._slow_dns if _list_part(p) == "dns" else self._slow_http
+        until = self.started(p["id"]) + SIDE_SETTLE
+        while True:
+            answer = ask(p)
+            if answer or time.monotonic() >= until or self.stop_event.is_set():
+                return answer
+            self.stop_event.wait(1.0)
 
     def _slow_dns(self, p):
         return self._dns_ask(p["dns"], p["host"] or DNS_ASK_NAME)
