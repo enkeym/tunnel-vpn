@@ -29,6 +29,16 @@ def _paths_file(monkeypatch, tmp_path):
     return path
 
 
+@pytest.fixture(autouse=True)
+def _detours_file(monkeypatch, tmp_path):
+    """Память обхода и внешний адрес включения — свои у каждого теста; адреса
+    нет, пока тест его не запишет (_real_ip)."""
+    path = tmp_path / "detours.json"
+    monkeypatch.setattr(service, "DETOURS_FILE", str(path))
+    monkeypatch.setattr(service.paths, "REAL_IP_FILE", str(tmp_path / "real-ip"))
+    return path
+
+
 def _timeout(addr, tag="wg-home"):
     return (f"+0300 2026-10-05 09:59:57 ERROR [2478390845 15.1s] connection: open "
             f"connection to {addr} using outbound/wireguard[{tag}]: "
@@ -136,6 +146,7 @@ def _core(monkeypatch):
     core._paths, core._ip_names = {}, {}
     core._log_at, core._side_after, core._side_noted = {}, {}, {}
     core._side_said, core._mend_tried = set(), {}
+    core._side_heard, core._known_tried = {}, {}
     core._tests_lock, core._trial_locks = threading.Lock(), {}
     core.prober = probe.Prober()
     core.tunnel = _Tunnel(core.prober)
@@ -1106,7 +1117,8 @@ def _corp_dead():
 
 def _corp_says(monkeypatch, core, ip):
     asked = []
-    monkeypatch.setattr(core.prober, "tunnel_answer", lambda tid: asked.append(tid) or ip)
+    monkeypatch.setattr(core.prober, "tunnel_answer",
+                        lambda tid, **_kw: asked.append(tid) or ip)
     return asked
 
 
@@ -1429,6 +1441,170 @@ def test_имя_сервера_не_резолвится_обход_на_пре�
     assert core.tunnel.detours == [("work", "")]
     assert [server for _port, server, _name in asked] == list(buildconfig.PUBLIC_DNS)
     assert _said(core, "не резолвится — беру прежний адрес")
+
+
+# ------------------------------------------- быстрая проверка и память обхода по сети
+
+REAL = "192.0.2.10"
+OFFICE_KEY = f"{REAL} {OFFICE[1]}"
+
+
+def _real_ip(tmp_path, ip=REAL):
+    (tmp_path / "real-ip").write_text(ip, encoding="utf-8")
+
+
+def _work_silent(monkeypatch, core, age, said=""):
+    """«Работа» запущен age секунд назад, таймаутов нет (нет трафика), его DNS
+    отвечает said. Отдаёт запросы: (id, quick)."""
+    core.tunnel.work.started = time.monotonic() - age
+    asked = []
+    monkeypatch.setattr(core.prober, "tunnel_answer", lambda tid, quick=False: (
+        asked.append((tid, quick)), said)[1])
+    return asked
+
+
+def test_молчащий_свежий_по_списку_идёт_в_обход_без_таймаутов(monkeypatch, tmp_path):
+    """14 октября обход включался через ~25 с: ждал трёх таймаутов по 15 с. Теперь
+    хватает молчания DNS дольше SIDE_PROBE, и обход запоминается для сети."""
+    core = _core(monkeypatch)
+    _peer_dns(monkeypatch)
+    _real_ip(tmp_path)
+    asked = _work_silent(monkeypatch, core, service.SIDE_PROBE + 1)
+
+    _rounds(core, 1)
+
+    assert asked == [("work", True)]
+    assert core.tunnel.detours == [("work", KOROLEV)]
+    [line] = _said(core, "DNS «Работа» молчит")
+    assert "подключаюсь к нему через «Личный»" in line
+    assert json.loads((tmp_path / "detours.json").read_text()) == {OFFICE_KEY: ["work"]}
+
+
+def test_молчит_меньше_SIDE_PROBE_ждём(monkeypatch):
+    """Свежий рабочий процесс отвечает не сразу (13 октября — через 10 с)."""
+    core = _core(monkeypatch)
+    _peer_dns(monkeypatch)
+    asked = _work_silent(monkeypatch, core, 1.0)
+
+    _rounds(core, 2)
+
+    assert asked == [("work", True)] * 2
+    assert core.tunnel.detours == [] and core.tunnel.restarts == []
+
+
+def test_ответивший_процесс_больше_не_спрашиваем(monkeypatch):
+    core = _core(monkeypatch)
+    asked = _work_silent(monkeypatch, core, 1.0, said="10.20.0.4")
+
+    _rounds(core, 3)
+
+    assert asked == [("work", True)]
+    assert core.tunnel.detours == []
+
+
+@pytest.mark.parametrize("case", ["без DNS", "выход напрямую", "давно запущен"])
+def test_молчание_не_уводит(monkeypatch, case):
+    """Без DNS спросить нечем — как раньше, по таймаутам; при выходе мимо основного
+    обходить не через что; давно работающий — не свежий."""
+    core = _core(monkeypatch)
+    _peer_dns(monkeypatch)
+    age = service.DETOUR_WITHIN + 1 if case == "давно запущен" else service.SIDE_PROBE + 1
+    asked = _work_silent(monkeypatch, core, age, said=None if case == "без DNS" else "")
+    if case == "выход напрямую":
+        core.tunnel.out = buildconfig.DIRECT_TAG
+        core._back_at = time.monotonic() + 1e9
+
+    _rounds(core, 1)
+
+    assert core.tunnel.detours == [] and core.tunnel.restarts == []
+    assert asked == ([("work", True)] if case == "без DNS" else [])
+
+
+def test_обход_молчит_снова_напрямую_и_забывается(monkeypatch, tmp_path):
+    core = _core(monkeypatch)
+    _peer_dns(monkeypatch)
+    _real_ip(tmp_path)
+    (tmp_path / "detours.json").write_text(json.dumps({OFFICE_KEY: ["work"]}))
+    _detoured(core)
+    _work_silent(monkeypatch, core, service.SIDE_PROBE + 1)
+
+    _rounds(core, 1)
+
+    assert core.tunnel.detours == [("work", None)]
+    assert json.loads((tmp_path / "detours.json").read_text()) == {}
+    assert _said(core, "забыл обход «Работа»")
+
+
+def test_в_знакомой_сети_обход_сразу_после_запуска(monkeypatch, tmp_path):
+    """После ⏻ и переподключения на ту же сеть обход не ищется заново."""
+    core = _core(monkeypatch)
+    _peer_dns(monkeypatch)
+    _real_ip(tmp_path)
+    (tmp_path / "detours.json").write_text(json.dumps({OFFICE_KEY: ["work"]}))
+    asked = _work_silent(monkeypatch, core, 0.5)
+
+    _rounds(core, 3)
+
+    assert core.tunnel.detours == [("work", KOROLEV)]
+    assert asked == []
+    assert _said(core, "в этой сети сервер «Работа» напрямую не отвечал")
+
+
+def test_неудачный_обход_по_памяти_один_раз_на_процесс(monkeypatch, tmp_path):
+    core = _core(monkeypatch)
+    _peer_dns(monkeypatch)
+    _real_ip(tmp_path)
+    (tmp_path / "detours.json").write_text(json.dumps({OFFICE_KEY: ["work"]}))
+    _work_silent(monkeypatch, core, 0.5)
+    core.tunnel.side_fail = "процесс «Работа» не открыл socks"
+
+    _rounds(core, 3)
+
+    assert core.tunnel.detours == [("work", KOROLEV)]
+
+
+@pytest.mark.parametrize("real, memory", [
+    (REAL, {f"{REAL} 192.168.20.1": ["work"]}),     # другая подсеть офиса
+    ("198.51.100.1", {OFFICE_KEY: ["work"]}),       # тот же шлюз, другой выход
+    ("", {f" {OFFICE[1]}": ["work"]}),               # внешний адрес не узнали
+])
+def test_память_обхода_только_для_той_же_сети(monkeypatch, tmp_path, real, memory):
+    core = _core(monkeypatch)
+    _peer_dns(monkeypatch)
+    _real_ip(tmp_path, real)
+    (tmp_path / "detours.json").write_text(json.dumps(memory))
+    _work_silent(monkeypatch, core, 0.5)
+
+    _rounds(core, 1)
+
+    assert core.tunnel.detours == []
+
+
+def test_без_внешнего_адреса_обход_не_запоминается(monkeypatch, tmp_path):
+    core = _core(monkeypatch)
+    _peer_dns(monkeypatch)
+    _work_silent(monkeypatch, core, service.SIDE_PROBE + 1)
+
+    _rounds(core, 1)
+
+    assert core.tunnel.detours == [("work", KOROLEV)]
+    assert not (tmp_path / "detours.json").exists()
+
+
+def test_память_хранит_последние_сети(monkeypatch, tmp_path):
+    core = _core(monkeypatch)
+    _peer_dns(monkeypatch)
+    _real_ip(tmp_path)
+    old = {f"198.51.100.{i} 10.0.0.1": ["work"] for i in range(service.DETOURS_KEEP)}
+    (tmp_path / "detours.json").write_text(json.dumps(old))
+    _work_silent(monkeypatch, core, service.SIDE_PROBE + 1)
+
+    _rounds(core, 1)
+
+    kept = json.loads((tmp_path / "detours.json").read_text())
+    assert len(kept) == service.DETOURS_KEEP
+    assert list(kept)[-1] == OFFICE_KEY
+    assert "198.51.100.0 10.0.0.1" not in kept
 
 
 # ------------------------------------------------------------ журнал сторожа

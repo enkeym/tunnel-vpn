@@ -96,6 +96,19 @@ DEAD_GAP = 60.0
 # раньше: обход — туннель в туннеле, и в других сетях всё остаётся как было. Снимает
 # обход переподключение на новой сети, новый .conf или сторож, если не работает и он.
 DETOUR_WITHIN = 3 * DEAD_GAP
+# Свежий процесс «по списку» сторож спрашивает через его DNS короткой попыткой
+# каждый круг (_side_silent): молчит дольше стольких секунд с запуска — не работает,
+# не дожидаясь таймаутов соединений (по 15 с, и те — только при трафике): 14 октября
+# обход включался через ~25 с. Через обход DNS korolev ответил за 3,4 с после
+# запуска; 13 октября рабочий процесс напрямую — за 10 с (probe.SIDE_SETTLE).
+SIDE_PROBE = 12.0
+# Обход по сетям: {«внешний адрес шлюз» включения: [id туннелей]} (_net_key). В
+# знакомой сети туннель, чей сервер отсюда напрямую не отвечал, идёт через основной
+# сразу после запуска процесса. По внешнему адресу и шлюзу, не по MAC шлюза: у
+# офисных Wi-Fi (192.168.19.x) и Ethernet (192.168.20.x) MAC один. Забывается,
+# когда не помог и обход. Последние DETOURS_KEEP сетей.
+DETOURS_FILE = os.path.join(paths.STATE, "detours.json")
+DETOURS_KEEP = 20
 # Пока выход идёт напрямую, личный проверяем задержкой через его socks не чаще
 # этого: проверка ждёт до 5 с, а круг сторожа — раз в FAST_EVERY.
 BACK_EVERY = 15.0
@@ -297,6 +310,10 @@ class Core:
         # Обход туннеля → на какой процесс основного (id, started; None — напрямую)
         # _mend_detours уже переключал его: неудача не повторяется каждый круг.
         self._mend_tried = {}
+        # Туннель → started процесса, чей DNS уже ответил (_side_silent) и
+        # которого уже уводили в обход по памяти сети (_known_detour): раз на процесс.
+        self._side_heard = {}
+        self._known_tried = {}
         # Проверки конфигов (_test_conf): запись итога — по одной; временные
         # процессы — по одному на туннель (id → замок): json в run\ и журнал у
         # них по id, а разные туннели — «Проверить все» без VPN — проверяются разом.
@@ -1269,14 +1286,18 @@ class Core:
             return
         self.prober.set(out=out)
         self._mend_detours()
+        known = self._detours_here()
         for side in self.tunnel.sides:
             if self._round_human != self._human:
                 return
+            if side.tid in known and self._known_detour(side, out):
+                continue
             hits = dead.get(side.tag)
             # Живой основной, через который проверка не дошла: трафика через
             # него нет, и таймаутов в журнале не будет.
             stuck = side is main and carries is False
-            if side.alive() and not hits and not stuck:
+            silent = not hits and self._side_silent(side, out)
+            if side.alive() and not hits and not stuck and not silent:
                 continue
             if (side is main and hits and not stuck and side.alive()
                     and out not in buildconfig.AWAY_TAGS
@@ -1306,12 +1327,14 @@ class Core:
                 continue
             # Таймауты того туннеля разобраны: чем бы ни кончилось, счёт заново.
             self._dead_hits = tuple(h for h in self._dead_hits if h[1] != side.tag)
-            why = self._side_down(side, hits)
+            why = self._side_down(side, hits, silent)
             if why:
                 self._side_after[side.tid] = now + DEAD_GAP
-                via, what = self._side_way(side, hits, out, now)
+                via, what = self._side_way(side, hits or silent, out, now)
                 self.log(f"!! {why} — {what}")
                 self._restart_side(side, via)
+                if via is not None:
+                    self._keep_detour(side, side.detour is not None)
 
     def _side_way(self, side, hits, out, now):
         """Куда перезапускать не работающий туннель side: (через основной —
@@ -1322,12 +1345,95 @@ class Core:
         main = self.tunnel.main
         if side.detour is not None:
             return False, f"через обход не работает — подключаю «{side.title}» напрямую"
-        if (hits and side.alive() and main is not None and side is not main
-                and main.alive() and out == buildconfig.via_tag(main.tid)
+        if (hits and side.alive() and self._can_detour(side, out)
                 and side.started and now - side.started < DETOUR_WITHIN):
             return True, (f"сервер «{side.title}» напрямую не отвечает — "
                           f"подключаюсь к нему через «{main.title}»")
         return None, f"перезапускаю процесс «{side.title}»"
+
+    def _can_detour(self, side, out):
+        """Есть ли через что вести side в обход: он не основной, а основной жив
+        и выход out идёт через него — то есть он везёт."""
+        main = self.tunnel.main
+        return (main is not None and side is not main and main.alive()
+                and out == buildconfig.via_tag(main.tid))
+
+    def _side_silent(self, side, out):
+        """Свежий (младше DETOUR_WITHIN) процесс «по списку» side молчит дольше
+        SIDE_PROBE: его DNS не ответил и короткой попыткой этого круга. Ответил —
+        процесс больше не спрашиваем (_side_heard). Только там, где есть куда
+        уйти (_side_way): в обход или из него; и не в паузу DEAD_GAP — иначе круг ждал
+        бы ответа вхолостую. Без DNS у туннеля — как раньше, по таймаутам."""
+        now = time.monotonic()
+        if (not side.alive() or not side.started
+                or now - side.started >= DETOUR_WITHIN
+                or self._side_heard.get(side.tid) == side.started
+                or now < self._side_after.get(side.tid, 0.0)
+                or (side.detour is None and not self._can_detour(side, out))):
+            return False
+        said = self.prober.tunnel_answer(side.tid, quick=True)
+        if said is None:
+            return False
+        if said:
+            self._side_heard[side.tid] = side.started
+            return False
+        return time.monotonic() - side.started >= SIDE_PROBE
+
+    def _known_detour(self, side, out):
+        """side в этой сети уже ходил в обход (_detours_here): свежий прямой процесс
+        — через основной сразу, не дожидаясь SIDE_PROBE. Попытка — одна на процесс
+        (_known_tried): не вышло — дальше решает сторож, как в незнакомой. True —
+        перезапускали, круг этому туннелю больше не нужен."""
+        if (side.detour is not None or not side.alive() or not side.started
+                or self._known_tried.get(side.tid) == side.started
+                or not self._can_detour(side, out)):
+            return False
+        self._known_tried[side.tid] = side.started
+        self._side_after[side.tid] = time.monotonic() + DEAD_GAP
+        self.log(f"→ в этой сети сервер «{side.title}» напрямую не отвечал — "
+                 f"сразу подключаюсь к нему через «{self.tunnel.main.title}»")
+        self._restart_side(side, True)
+        return True
+
+    def _net_key(self):
+        """Чем узнавать сеть в DETOURS_FILE: «внешний адрес шлюз» включения; '' —
+        адрес при включении не узнали (Tunnel.start), и не запоминаем: по одному
+        шлюзу чужие 192.168.0.1 друг от друга не отличить."""
+        uplink = self.tunnel.uplink
+        try:
+            with open(paths.REAL_IP_FILE, encoding="utf-8") as fh:
+                real = fh.read().strip()
+        except OSError:
+            real = ""
+        return f"{real} {uplink[1]}" if real and uplink else ""
+
+    def _detours_here(self):
+        """id туннелей, что в этой сети ходят в обход (DETOURS_FILE)."""
+        key = self._net_key()
+        got = buildconfig.read_json(DETOURS_FILE).get(key) if key else None
+        return {t for t in got if isinstance(t, str)} if isinstance(got, list) else set()
+
+    def _keep_detour(self, side, on):
+        """Запомнить (on) или забыть, что side в этой сети идёт в обход. Сеть с
+        обходом — в конец файла, старшие сверх DETOURS_KEEP уходят. Не записалось —
+        только строка в журнал: без памяти обход найдётся снова."""
+        key = self._net_key()
+        if not key or (side.tid in self._detours_here()) == on:
+            return
+        data = buildconfig.read_json(DETOURS_FILE)
+        got = data.pop(key, None)
+        tids = [t for t in got if t != side.tid] if isinstance(got, list) else []
+        if on:
+            tids.append(side.tid)
+        if tids:
+            data[key] = tids
+        try:
+            buildconfig.write_json(DETOURS_FILE, dict(list(data.items())[-DETOURS_KEEP:]))
+        except OSError as exc:
+            self.log(f"!! обход «{side.title}» не запомнить: {exc}")
+            return
+        self.log(f"→ запомнил: в этой сети ({key}) «{side.title}» идёт через обход"
+                 if on else f"→ забыл обход «{side.title}» в этой сети ({key})")
 
     def _mend_detours(self):
         """Обход идёт через процесс основного, а тот сменился: перезапуск,
@@ -1357,16 +1463,20 @@ class Core:
                          f"«{side.title}» через него")
                 self._restart_side(side, True)
 
-    def _side_down(self, side, hits):
+    def _side_down(self, side, hits, silent=False):
         """Что с туннелем, для журнала, или '' — туннель «по списку» всё-таки
         отвечает: его DNS ответил хоть чем-то. Таймауты тогда — к адресам, до
         которых этот сервер не достаёт (правила от другой сети), и перезапуск
-        их не вылечит: раньше так процесс перезапускался каждые DEAD_GAP."""
+        их не вылечит: раньше так процесс перезапускался каждые DEAD_GAP.
+        silent — DNS свежего процесса только что молчал (_side_silent): переспрашивать нечего."""
         if not side.alive():
             if side.proc is None:
                 return f"процесс «{side.title}» не запущен"
             return (f"процесс «{side.title}» завершился сам "
                     f"(код {side.proc.returncode})")
+        if silent:
+            return (f"DNS «{side.title}» молчит {time.monotonic() - side.started:.0f} с "
+                    f"после запуска процесса")
         if not hits:
             return f"через {side.tag} не дошла проверка выхода"
         now = time.monotonic()

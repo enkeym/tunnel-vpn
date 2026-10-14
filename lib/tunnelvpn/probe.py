@@ -672,11 +672,12 @@ class Prober:
             self.st["checks"] = {**checks, p["id"]: {
                 "result": result, "answer": answer, "seq": (before or {}).get("seq", 0)}}
 
-    def tunnel_answer(self, tid):
-        """Ответ DNS туннеля tid через туннель (_slow_dns): адрес или DNS_NO_ADDR —
-        сервер жив; '' — молчит или DNS у туннеля нет."""
+    def tunnel_answer(self, tid, quick=False):
+        """Ответ DNS туннеля tid через туннель (_slow_dns; quick — одна короткая
+        попытка): адрес или DNS_NO_ADDR — сервер жив; '' — молчит; None — DNS у
+        туннеля нет, спросить нечем."""
         p = next((p for p in self.check_plan() if p["id"] == tid), None)
-        return self._slow_dns(p) if p and p["dns"] else ""
+        return self._slow_dns(p, quick) if p and p["dns"] else None
 
     def _list_ask(self, p):
         """Ответ туннеля «по списку» p тем, чем его проверять (_list_part);

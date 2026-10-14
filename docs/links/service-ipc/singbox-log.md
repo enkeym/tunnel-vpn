@@ -33,6 +33,16 @@ paths:
   (`Core._mend_tried`). Запуск, не обновивший `Side.started`,
   оставит обход на погашенном входе. Снимают обход новые `Side` при переподключении и `_place_side` (новый `.conf`;
   `_swap_side` при неудаче возвращает прежний), не помог — `_side_way` ведёт напрямую.
+- Молчание без таймаутов — `lib/tunnelvpn/service.py:_side_silent` из `_mind_sides`: свежий процесс «по списку»
+  (моложе `DETOUR_WITHIN`, не в паузе `_side_after`) спрашивается `probe.py:tunnel_answer(tid, quick=True)` каждый
+  круг, пока не ответит (`Core._side_heard` по `Side.started`); молчит дольше `SIDE_PROBE` — `_side_way` как при
+  таймаутах. `tunnel_answer` → `None` (DNS у туннеля нет) — не молчание: без DNS — только по таймаутам. Спрашивает
+  только при `_can_detour` или уже в обходе: иначе свежий без пути в обход перезапускался бы по кругу.
+- Память обхода по сети — `service.DETOURS_FILE` (`state\detours.json`, `{"<внешний IP> <шлюз>": [id]}`, последние
+  `DETOURS_KEEP`): ключ `_net_key` — `paths.REAL_IP_FILE` (пишет `tunnel.start`, пустой при чужом VPN — память
+  выключена) и `Tunnel.uplink[1]`. Пишет `_keep_detour` после `_restart_side` из `_mind_sides` (обход — запомнить,
+  «через обход не работает» — забыть); читает `_known_detour`: свежий прямой процесс туннеля из памяти — сразу
+  `_restart_side(side, True)`, раз на процесс (`Core._known_tried`).
 - Возврат выхода на основной (из `direct` и из `block`) — `lib/tunnelvpn/service.py:_try_back(main, out)` зовёт `lib/tunnelvpn/tunnel.py:delay`
   (`DELAY_URL` через `via-<id основного>` в clash_api основного — замер идёт через выбранный слот). Без `clash_api` в `config.json` выход
   останется на `direct` навсегда.
