@@ -162,6 +162,7 @@ def test_выбор_конфига_сразу_применяется(sent, argv,
 
 @pytest.mark.parametrize("reply, shown", [
     ({"ok": True, "applied": "off"}, "применится при включении"),
+    ({"ok": True, "applied": "off", "empty": True}, "конфигов не осталось — VPN выключен"),
     ({"ok": True, "applied": "sides", "restarted": ["home"]}, "перезапущен процесс: home"),
     ({"ok": True, "applied": "sides", "restarted": []}, "перезапускать нечего"),
     ({"ok": True, "applied": "full"}, "VPN перезапущен"),

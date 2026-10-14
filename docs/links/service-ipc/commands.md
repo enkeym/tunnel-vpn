@@ -52,7 +52,10 @@ paths:
   `corp_probe` в нём нет.
 - `apply` (USER_OPS) ↔ `lib/tunnelvpn/window.py:_apply`, `lib/tunnelvpn/cli.py:_apply`
   → `lib/tunnelvpn/service.py:_apply`:
-  ответ `{ok, applied: off|sides|full|ask, restarted?: [id], error?}`; `sides` — уже после того, как sing-box
+  ответ `{ok, applied: off|sides|full|ask, restarted?: [id], empty?, error?}`; `empty` — живой VPN, а `.conf` ни у одного
+  туннеля (`_any_conf` в `_apply_locked`, до `live_plan` и `ask`): `_stop_locked`, `{ok: True, applied: off, empty: True}`
+  — не `NO_CONFS` отказом `_start_locked` (окно `_guard` показало бы ошибку) и не «Переподключить?»;
+  CLI `_apply` печатает «конфигов не осталось», мок `ui/dev/mock-api.js:emptied` гасит `st.up`. `sides` — уже после того, как sing-box
   принял rule-set (`Tunnel._write_sets`), `ask` ставит `Core.pending_apply` (статус `pending_apply`, снимает
   следующий `apply` и `_stop_locked`). `lib/tunnelvpn/window.py:_save_rules` шлёт `rulesSaved` с `applied` (у
   отказа — `failed`) только по ответу `apply` и до `askFull` — тост «Сохранено» в `ui/js/rules.js`. Занятый `lock` ждёт до `APPLY_WAIT`, а не

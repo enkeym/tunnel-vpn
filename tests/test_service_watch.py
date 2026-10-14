@@ -1060,6 +1060,23 @@ def test_сменился_основной_конфиг_полный_перез�
     assert _said(core, "сменилось то, что держит основной процесс")
 
 
+def test_удалён_последний_конфиг_на_живом_vpn_выключено_без_ошибки(monkeypatch):
+    """Включать больше нечего: не «Переподключить?» и не NO_CONFS ошибкой в окне,
+    а выключенный VPN — окно само говорит «Добавьте конфиг»."""
+    core = _core(monkeypatch)
+    seen = _reload(monkeypatch, core, None)
+    monkeypatch.setattr(core, "_any_conf", lambda: False)
+    human = core._human
+
+    reply = core._apply(ask=True)
+
+    assert reply == {"ok": True, "applied": "off", "empty": True}
+    assert core.tunnel.uplink is None and core.tunnel.starts == 0 and seen == []
+    assert core.last_error == "" and core._status()["pending_apply"] is False
+    # Круг сторожа, начатый до правки, не поднимает VPN обратно.
+    assert core._human > human
+
+
 def test_полный_перезапуск_с_ask_только_спрашивает(monkeypatch):
     """Окно спрашивает человека до падения tun: служба ничего не трогает."""
     core = _core(monkeypatch)

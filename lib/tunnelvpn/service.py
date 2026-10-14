@@ -1017,10 +1017,17 @@ class Core:
     def _apply_locked(self, ask=False):
         """Правка конфигов на поднятый VPN (_apply); замок уже взят.
         Ответ sides — когда sing-box уже принял rule-set (Tunnel._write_sets);
-        отказ — полный перезапуск тут же, без вопроса: правка уже наполовину на VPN."""
+        отказ — полный перезапуск тут же, без вопроса: правка уже наполовину на VPN.
+        Удалён последний конфиг — VPN выключается (empty): включать нечего, и это
+        не сбой — окно говорит «Добавьте конфиг», а не ошибку NO_CONFS."""
         self.pending_apply = False
         if self.tunnel.uplink is None:
             return {"ok": True, "applied": "off"}
+        if not self._any_conf():
+            self._human += 1
+            self.log("→ удалён последний конфиг — выключаю VPN")
+            self._stop_locked()
+            return {"ok": True, "applied": "off", "empty": True}
         plan = self.tunnel.live_plan()
         if plan is None and ask:
             self.pending_apply = True

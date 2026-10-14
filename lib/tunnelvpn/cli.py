@@ -139,7 +139,9 @@ def _apply():
         print(f"не вышло: {r.get('error')}")
         return 1
     applied = r.get("applied")
-    if applied == "off":
+    if r.get("empty"):
+        print("  конфигов не осталось — VPN выключен")
+    elif applied == "off":
         print("  VPN выключен — применится при включении")
     elif applied == "sides":
         names = ", ".join(r.get("restarted") or [])
