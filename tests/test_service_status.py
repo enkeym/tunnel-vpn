@@ -41,6 +41,7 @@ def _core(monkeypatch, up):
     core._side_said = set()
     core.tunnel = _Tunnel(net)
     core.prober = probe.Prober()
+    monkeypatch.setattr(core, "_any_conf", lambda: True)
     monkeypatch.setattr(core.prober, "probe_fast", lambda: core.prober.set(
         tun=7 if net.up else None, r_low=net.up))
     core.prober.probe_fast()

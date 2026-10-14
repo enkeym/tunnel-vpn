@@ -143,6 +143,7 @@ def _core(monkeypatch):
     monkeypatch.setattr(core, "log", core.logged.append)
     # Запасных конфигов нет: иначе сторож читал бы tunnels.json других тестов.
     monkeypatch.setattr(core, "_spares", lambda tid: (None, []))
+    monkeypatch.setattr(core, "_any_conf", lambda: True)
     monkeypatch.setattr(core.prober, "probe_fast", lambda: None)
     monkeypatch.setattr(probe.Prober, "current_profile", staticmethod(lambda: "p"))
     monkeypatch.setattr(service, "RECONNECT_GAP", 0.0)
@@ -429,6 +430,31 @@ def test_повторное_включение_ждёт_идущее_и_отда
 
     assert first_out == second_out == [{"ok": True}]
     assert core.tunnel.starts == 1
+
+
+def test_без_конфигов_включать_нечего_и_это_не_ошибка(monkeypatch):
+    """Свежая установка: трей и автоподключение жмут «Включить» сами —
+    окно без last_error пишет «Добавьте конфиг», а не «Не запускается»."""
+    core = _core(monkeypatch)
+    core.tunnel.uplink = None
+    core.last_error = "прежняя"
+    monkeypatch.setattr(core, "_any_conf", lambda: False)
+    core.tunnel.start = lambda _profile: pytest.fail("собирал без конфигов")
+
+    out = core._do_start(retries=service.RECONNECT_TRIES, wake=True)
+
+    assert out == {"ok": False, "error": service.NO_CONFS}
+    assert core.last_error == "" and core._retry_left == 0 and core.busy == ""
+
+
+def test_есть_ли_конфиги_по_папкам_туннелей(monkeypatch):
+    monkeypatch.setattr(service.tunnels, "load",
+                        lambda: {"tunnels": [{"id": "a"}, {"id": "b"}]})
+    monkeypatch.setattr(service.tunnels, "list_confs",
+                        lambda tid: ["x"] if tid == "b" else [])
+    assert service.Core._any_conf() is True
+    monkeypatch.setattr(service.tunnels, "list_confs", lambda tid: [])
+    assert service.Core._any_conf() is False
 
 
 def test_выключение_посреди_включения_отменяет_его(monkeypatch):

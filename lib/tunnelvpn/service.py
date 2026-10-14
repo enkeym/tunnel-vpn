@@ -25,6 +25,8 @@ import time
 from . import buildconfig, ipc, paths, probe, routelist, tunnel, tunnels, winnet
 
 AUTOSTART_FILE = os.path.join(paths.STATE, "autostart")
+# Ответ «Включить», когда ни у одного туннеля нет .conf: не сбой, last_error не ставится.
+NO_CONFS = "конфигов нет — добавьте файл .conf, и VPN можно будет включить"
 SERVICE_LOG = os.path.join(paths.LOGS, "service.log")
 # Строки пишут несколько потоков разом (процессы туннелей запускаются
 # параллельно). Дозапись «a» на Windows — переход в конец и запись, не одна
@@ -873,6 +875,14 @@ class Core:
                 return {"ok": False, "error": "человек уже решил сам"}
             if not reconnect:
                 self._retry_left = 0
+            if not self._any_conf():
+                # Свежая установка: трей на первом запуске (_bring_up) и автоподключение
+                # жмут «Включить» сами. Включать нечего — это не сбой: с last_error окно
+                # показывало «Не запускается», а значок трея — красный, хотя человек
+                # ещё ничего не добавил. Окно само говорит «Добавьте конфиг».
+                self.last_error = ""
+                self.log("→ конфигов нет — включать нечего")
+                return {"ok": False, "error": NO_CONFS}
             self.busy = "переподключаю" if reconnect else "включаю"
             if reconnect:
                 self._flush_paths()
@@ -918,6 +928,15 @@ class Core:
         finally:
             self._probe_now()
             self.busy = ""
+
+    @staticmethod
+    def _any_conf():
+        """Хоть у одного туннеля есть .conf. Испорченный tunnels.json — True:
+        причину скажет сборка."""
+        try:
+            return any(tunnels.list_confs(t["id"]) for t in tunnels.load()["tunnels"])
+        except ValueError:
+            return True
 
     def _only(self, tunnel):
         """Включён только tunnel, остальные выключены — одной записью: общая

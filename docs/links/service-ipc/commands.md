@@ -66,6 +66,10 @@ paths:
   ответ `applied: "ask"` без перезапуска → `js('askFull')` в `lib/tunnelvpn/ui/js/sheets.js` → «Переподключить» шлёт
   `send('apply_full')` → `apply` без `ask`. План из `live_plan` уходит в `reload_sides(plan)` — сборка одна.
   CLI шлёт без `ask`: полный перезапуск у него без вопроса; трей `apply` не шлёт. Новый `applied` — CLI `_apply` его не печатает.
+- `start` без единого `.conf` (`lib/tunnelvpn/service.py:_any_conf` в `_start_locked`) — `{ok: False, error: NO_CONFS}`
+  без `last_error` и повторов: его шлют сами `lib/tunnelvpn/tray.py:_bring_up` и автоподключение службы на свежей
+  установке. Заголовок «Добавьте конфиг» рисует `lib/tunnelvpn/ui/js/model.js` (`missing` по `hasConf`), значок
+  трея — `off` (`tray._tray_state` по `last_error`). Поставить тут `last_error` — снова «Не запускается» и красный значок.
 - `add-config` без `tunnel`/`kind` — авто: `lib/tunnelvpn/service.py:_place` по `buildconfig.is_full`/`allowed_nets`
   и частному `[Interface] DNS` (`_private_dns`) → `place` в ответе: `all` (запасным в основной, active прежний),
   `list` (новый туннель `t<N>`, `name` = имя файла), `replace` (молча), иначе `{ok: False, ask: {id, name, conf}}`
