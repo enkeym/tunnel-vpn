@@ -26,11 +26,8 @@ paths:
   `conf\` → `conf\corp|personal`, профиль в `PROFILE_FILE`), затем `tunnels.migrate`. Порядок обязателен:
   второй шаг берёт то, что разложил первый. Каталоги — `lib/tunnelvpn/paths.py:ensure_dirs` (`CONF_TUNNELS`;
   `CONF_CORP`/`CONF_PERSONAL` остались только для переезда).
-- Файл `site.env` читают только `lib/tunnelvpn/paths.py:site_env` → `tunnels.migrate` (переезд). Команды
-  `get-site`/`set-site` (отправителей с 5б нет, уйдут в шаге 6) — переходник в `tunnels.json`
-  (`lib/tunnelvpn/service.py:_read_site`/`_set_site`):
-  `CORP_DOMAINS` ↔ `include`, `SB_CORP_EXCLUDE` ↔ `exclude` первого туннеля «по списку»
-  (`tunnels.by_kind(…, "corp")`), `SB_LOG_LEVEL` ↔ `log_level`; разбор текста — `paths.parse_env`.
+- Файл `site.env` читают только `lib/tunnelvpn/paths.py:site_env` → `tunnels.migrate` (переезд). Команд
+  `get-site`/`set-site` больше нет.
 - Правка `tunnels.json` через канал — `lib/tunnelvpn/service.py:_add_tunnel` (id `t<N>`, мимо занятых папок
   `conf\tunnels\`), `_set_tunnel` (списки текстом через `routelist.parse`, потолок `service.MAX_RULES`),
   `_remove_tunnel` (папка конфигов удаляется после записи), `_set_tunnel` ещё меняет `mode` (all →

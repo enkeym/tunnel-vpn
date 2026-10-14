@@ -136,7 +136,7 @@ def test_замена_рабочего_убирает_прежние(core):
     r = core._add_config("Офис Иванов", WG, kind="corp")
 
     assert r["ok"] and r["name"] == "Офис Иванов"
-    assert r["corp"] == ["Офис Иванов"] and r["profiles"] == ["nl-1"]
+    assert _files("home") == ["nl-1.conf"]
     # Рабочий ровно один, со своим именем и выбран; личные не тронуты.
     assert _files("work") == ["Офис Иванов.conf"]
     assert _active("work") == "Офис Иванов"
@@ -225,7 +225,7 @@ def test_удаление_выбранного_личного_переключа
 
     r = core._remove_config("nl-1", "personal")
 
-    assert r["ok"] and r["profiles"] == ["nl-2"]
+    assert r["ok"]
     # Не corp: рабочий личным туннелем не бывает.
     assert _active("home") == "nl-2"
 
@@ -1310,55 +1310,11 @@ def test_испорченный_tunnels_json_команды_туннелей_н�
 
     for r in (core._get_tunnels(), core._add_tunnel("x", "list"),
               core._set_tunnel("work", {"name": "x"}), core._remove_tunnel("work"),
-              core._set_log_level("debug"),
-              core._set_site('CORP_DOMAINS="a.ru"')):
+              core._set_log_level("debug")):
         assert not r["ok"] and "tunnels.json" in r["error"]
 
     with open(paths.TUNNELS_JSON, encoding="utf-8") as fh:
         assert fh.read() == "{не json"
-
-
-# ----------------------------------------- site.env старого окна → tunnels.json
-
-def test_поля_окна_пишутся_в_первый_туннель_по_списку(core):
-    r = core._set_site('CORP_DOMAINS="corp.example *.x.example"\n'
-                       'CORP_PROBE="git.corp.example"\nCORP_HOSTS="a b"\n'
-                       'SB_CORP_EXCLUDE="198.51.100.7"\nSB_LOG_LEVEL="Debug"\n')
-
-    assert r["ok"]
-    data = tunnels.load()
-    work = tunnels.find(data, "work")
-    assert work["include"] == ["corp.example", "*.x.example"]
-    assert work["exclude"] == ["198.51.100.7/32"]
-    assert data["log_level"] == "debug"
-    assert not os.path.exists(os.path.join(paths.CONF, "site.env"))
-
-
-def test_поля_окна_читаются_из_tunnels_json(core):
-    core._set_tunnel("work", {"include": "corp.example", "exclude": "203.0.113.9"})
-
-    env = paths.parse_env(core._read_site())
-
-    assert env == {"CORP_DOMAINS": "corp.example", "CORP_PROBE": "corp.example",
-                   "SB_CORP_EXCLUDE": "203.0.113.9/32"}
-
-
-def test_пустые_поля_окна_очищают_списки(core):
-    core._set_tunnel("work", {"include": "corp.example"})
-    core._set_log_level("debug")
-
-    assert core._set_site("")["ok"]
-
-    data = tunnels.load()
-    assert tunnels.find(data, "work")["include"] == [] and data["log_level"] == "info"
-    assert core._read_site() == ""
-
-
-def test_непонятое_в_полях_окна_отказывает(core):
-    r = core._set_site('CORP_DOMAINS="corp.example foo_bar"\nSB_CORP_EXCLUDE="foo_bar 1.2.3"')
-
-    assert not r["ok"] and r["error"] == "не понял: foo_bar, 1.2.3"
-    assert tunnels.find(tunnels.load(), "work")["include"] == []
 
 
 # ------------------------------------- «Добавить конфиг…» без туннеля

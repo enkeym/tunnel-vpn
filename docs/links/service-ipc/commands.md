@@ -48,8 +48,8 @@ paths:
   `check`, `answer`, `checking`). `add-config` с `tunnel=<id>` без `place` (окно `add_config {tunnel}` →
   `lib/tunnelvpn/window.py:_send_config`; трей конфиги не добавляет): конфиг становится активным, прежние остаются;
   общий частный DNS с выбранным конфигом туннеля «по списку» (`lib/tunnelvpn/service.py:_same_dns`, `_list_confs` —
-  те же, что у `_place`) → `place: replace`, прежние удалены; затем `apply`. Ответ `check` — `{ok, status}`,
-  `corp_probe` в нём нет.
+  те же, что у `_place`) → `place: replace`, прежние удалены; затем `apply`. Ответ `check` — `{ok, status}`.
+  Ответы `add-config`/`remove-config` без `profiles`/`corp`.
 - `apply` (USER_OPS) ↔ `lib/tunnelvpn/window.py:_apply`, `lib/tunnelvpn/cli.py:_apply`
   → `lib/tunnelvpn/service.py:_apply`:
   ответ `{ok, applied: off|sides|full|ask, restarted?: [id], empty?, error?}`; `empty` — живой VPN, а `.conf` ни у одного

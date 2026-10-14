@@ -79,7 +79,7 @@ def test_отказ_в_uac_даёт_ошибку_а_не_исключение(mo
         raise _WinError(1223, "ShellExecuteEx", "Операция отменена пользователем")
     calls = _fake_win32(monkeypatch, cancelled)
 
-    reply = window.Api({})._admin_call("set-site", text="")
+    reply = window.Api({})._admin_call("set-kill-switch", on=True)
 
     assert reply["ok"] is False and "отменён" in reply["error"]
     assert [c[0] for c in calls] == ["execute"]

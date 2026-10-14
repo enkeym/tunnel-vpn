@@ -29,7 +29,7 @@ paths:
   собранного `config.json`) → `probe_slow` (часть — `_list_part`: `_slow_dns` при DNS у туннеля, иначе
   `_slow_http`; HTTPS при DNS не делается — адрес домена бывает в «не пускать» и мерил бы соседа; итог
   `_check_result`), `_slow_summary`, CLI `корп-DNS` (`HTTP` только при `corp_http`),
-  `Prober.tunnel_answer` (сторож); `Prober.corp_probe` — только показ `CORP_PROBE` в `get-site` до шага 6.
+  `Prober.tunnel_answer` (сторож).
 - Теги по id туннеля — только через `buildconfig.ep_tag` (`wg-<id>`), `socks_tag` (`socks-<id>`, слот 1 —
   `socks2-<id>`: не начинается с `socks-`, `side_ids` его не берёт), `via_tag` (`via-<id>`, selector над слотами), `dns_tag`
   (`dns-<id>`); постоянные — `out`, `direct`, `dns` (публичный, `PUBLIC_DNS_TAG`), без префикса с дефисом,

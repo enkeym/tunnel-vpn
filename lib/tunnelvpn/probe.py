@@ -51,9 +51,6 @@ SIDE_SETTLE = 20.0
 SETTLE_DNS_TIMEOUT = 1.0
 SETTLE_HTTP_TIMEOUT = 3.0
 SETTLE_PAUSE = 0.5
-# Старые стороны окна: corp — первый туннель «по списку», personal — основной.
-# Их <сторона>_seq пробер ведёт до шага окна, рядом с итогами по туннелям.
-LEGACY_SIDES = ("corp", "personal")
 # Что спрашивать у DNS туннеля «по списку» без домена в «пускать»: важен любой
 # ответ, даже NXDOMAIN от сервера без выхода наружу — сервер жив.
 DNS_ASK_NAME = "dns.msftncsi.com"
@@ -361,16 +358,6 @@ class Prober:
         return main["active"] if main else ""
 
     @staticmethod
-    def corp_probe():
-        """Чем проверять рабочую сеть — домен проверки первого туннеля «по
-        списку» (_probe_host). '' — проверить нечем."""
-        try:
-            data = tunnels.load()
-        except ValueError:
-            return ""
-        return _probe_host(tunnels.by_kind(data["tunnels"], "corp"))
-
-    @staticmethod
     def check_plan():
         """Что проверять у каждого туннеля, по порядку tunnels.json:
         [{id, name, mode, host, dns, running}]. host — домен проверки «по
@@ -487,7 +474,7 @@ class Prober:
                 self.set(**{legacy[how]: "" if answer == DNS_NO_ADDR else answer})
 
         jobs = {"exit": self._slow_exit, "v6": self._slow_v6}
-        # (вид, имя) → части, после которых известен итог туннеля или старой стороны.
+        # id туннеля → части, после которых известен его итог.
         waits = {}
         for p in plan:
             mine = set()
@@ -498,21 +485,15 @@ class Prober:
                 name = f"{how} {p['id']}"
                 jobs[name] = functools.partial(ask, how, self._list_ask, p)
                 mine.add(name)
-            waits[("tunnel", p["id"])] = mine
-        waits[("side", "personal")] = {"exit"}
-        waits[("side", "corp")] = set(waits[("tunnel", work["id"])]) if work else set()
+            waits[p["id"]] = mine
         wid = work["id"] if work else ""
         self.set(corp_dns=work["dns"] if work else "",
                  **{field: "" for how, field in legacy.items()
                     if f"{how} {wid}" not in jobs})
 
-        def finish(key):
-            """Итог туннеля или стороны известен. Под self.lock; номер — вместе
-            с итогом: кто увидел свежий seq, видит и свежий итог."""
-            kind, name = key
-            if kind == "side":
-                self.st[f"{name}_seq"] = seq
-                return
+        def finish(name):
+            """Итог туннеля известен. Под self.lock; номер — вместе с итогом:
+            кто увидел свежий seq, видит и свежий итог."""
             result, answer = _check_result(by_id[name], got, self.st)
             # Новый словарь, а не правка прежнего: snapshot отдаёт его без замка.
             self.st["checks"] = {**(self.st.get("checks") or {}), name: {

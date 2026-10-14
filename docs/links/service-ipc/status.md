@@ -10,7 +10,7 @@ paths:
   `lib/tunnelvpn/cli.py:_print_status`, `lib/tunnelvpn/tray.py:_title`, `lib/tunnelvpn/tray.py:_menu`,
   `lib/tunnelvpn/tray.py:_state_word`, `lib/tunnelvpn/tray.py:_conf_colors`
   и `lib/tunnelvpn/ui/js/core.js:render` (вид — `model.js:model`, `cards.js`, `topbar.js`, `settings.js`). Переименовал ключ (`up`, `busy`, `last_error`, `exit_state`,
-  `corp_ip`, `v6_leak`, `profiles`, `corp`, `last`, `log_level`) — читатель молча видит пустое значение.
+  `corp_ip`, `v6_leak`, `log_level`) — читатель молча видит пустое значение.
 - `main_v6` — `lib/tunnelvpn/service.py:_status` (`_conf_facts(...)["v6"]` активного конфига `tunnels.main_on`,
   та же `buildconfig.has_v6`, что `v6` в `assemble`) → строка IPv6 в `lib/tunnelvpn/ui/js/settings.js` и
   `lib/tunnelvpn/cli.py:_print_status`. `v6_off` (правило брандмауэра) при включённом VPN истинно всегда —
@@ -29,16 +29,13 @@ paths:
 - `last` — `lib/tunnelvpn/service.py:_last_results` (`{id: итог}`, файл `last-check.json` по id туннеля,
   пишет `_remember_check` из `st["tunnels"][i]["check"]`) → `st["tunnels"][i]["last"]` →
   `lib/tunnelvpn/tray.py:_conf_colors` и `lib/tunnelvpn/ui/js/cards.js:cardState` («раньше работал»); старый `st["last"]` по
-  `corp`/`personal` (через `_kind_tunnel`) читателей больше нет — уйдёт в шаге 6. Кружки при выключенном VPN.
-- `split` — `lib/tunnelvpn/service.py:_status` (есть `include`/`exclude` у `tunnels.by_kind(…, "corp")`);
-  окно его больше не читает — уйдёт в шаге 6.
+  `corp`/`personal` убран. Кружки при выключенном VPN.
 - `tunnels` — `lib/tunnelvpn/service.py:_status` (`[{id, name, mode, active, confs, rules, full, awg, check, answer,
   seq, last, checking}]`, без списков правил: `rules` — их число, `full` — у конфига из `_in_use` есть
   0.0.0.0/0, `awg` — `{конфиг: bool}` по `lib/tunnelvpn/buildconfig.py:is_awg` (`AWG_KEYS`); оба —
   `_conf_facts` с кэшем `_conf_cache` по `(путь, mtime_ns)`) → `lib/tunnelvpn/window.py:_edit_conf`,
   карточки окна (`paintCard`, `cardMenu`, бейдж `badge` в `lib/tunnelvpn/ui/js/cards.js`), трей (пункты меню по id —
-  `_tunnel_entries`, `_sync_menu`), CLI. Старые `profiles`/`corp`/`last` считаются из туннелей через
-  `tunnels.by_kind` (`_kind_tunnel`, `_in_use`) — до шага 6.
+  `_tunnel_entries`, `_sync_menu`), CLI. Старых `profiles`/`corp`/`last`/`split` в статусе нет.
 - `checking` — `lib/tunnelvpn/service.py:_status` (из `lib/tunnelvpn/probe.py:Prober.slow_busy`) → `checking` в
   `lib/tunnelvpn/ui/js/model.js:model` и `cards.js:cardState`: «проверяю…», пока идёт сетевая проверка.
 - Проверка по туннелям: `check_seq` и `checks {id: {result, answer, seq}}` — `lib/tunnelvpn/probe.py:_take_slow`
@@ -60,8 +57,6 @@ paths:
   ждать, не убирать. Удалённый туннель (`lib/tunnelvpn/service.py:_drop_tunnel` из `_remove_tunnel`,
   `_remove_config`/`_move_config` с `drop_tunnel`) снимает свою запись `Prober.forget_check`: `_new_tid` отдаёт его
   id новому туннелю, и тот показывал бы чужой итог.
-  Старые `corp_seq`/`personal_seq` (`probe.LEGACY_SIDES`) → `checking_corp`/`checking_personal` читателей
-  больше нет — уйдут в шаге 6.
 - `busy === 'переподключаю'` — `lib/tunnelvpn/service.py:_start_locked` (reconnect из
   `lib/tunnelvpn/service.py:_watch_once`) → заголовок «Переподключаю» в
   `lib/tunnelvpn/ui/js/model.js:headOf`. Строку менять с обеих сторон.
@@ -98,7 +93,7 @@ paths:
   (`tunnel.side_with_key`) мерит этот процесс (`prober.check_one`), какой бы конфиг в нём ни стоял к ответу:
   заменили конфиг, пока проверка ждёт, — итог старого файла от нового процесса. Показать его не даёт только
   `_tests_of` (файла нет в `list_confs` или другой `_conf_stamp`); убрать эту сверку — ложный итог на плитке.
-  `corp_ip`/`corp_http` (`probe_slow` для первого «по списку») читает только CLI — до шага 6.
+  `corp_ip`/`corp_http` (`probe_slow` для первого «по списку») читает только CLI.
 
 ## Срок ответа
 - `lib/tunnelvpn/service.py:_status` отвечает быстрее `lib/tunnelvpn/ipc.py:STATUS_TIMEOUT` (5 с): дольше —

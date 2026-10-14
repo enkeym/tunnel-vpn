@@ -63,7 +63,7 @@ paths:
   оверлей `DROP` и `preventDefault` у dragover/drop — `sheets.js`. Дальше `_add_file` → `_send_config`, как
   «Добавить конфиг…» без туннеля. Мок (`lib/tunnelvpn/ui/dev/mock-api.js`) на drop зовёт `add_config` сам.
 
-## Уйдёт в шаге 6
+## Мёртвое
 - `lib/tunnelvpn/window.py:_parse_env`/`_format_env` окно больше не зовёт, держит `tests/test_site_env.py`.
-  Op `get-site/set-site` (переходник в `tunnels.json`, `lib/tunnelvpn/service.py:_read_site`/`_set_site`)
-  отправителей в окне нет; статус `split`, `profiles`, `corp`, `last`, `checking_*`, `corp_*` окно не читает.
+  Ключей статуса `split`, `profiles`, `corp`, `last`, `checking_*` и команд `get-site`/`set-site`/`list-profiles`
+  больше нет; `corp_dns`/`corp_ip`/`corp_http` окно не читает, их читает только CLI.

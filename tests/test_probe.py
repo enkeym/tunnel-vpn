@@ -260,14 +260,13 @@ def test_основной_проверен_раньше_молчащего_ра�
 
     assert _wait(lambda: (p.snapshot().get("checks") or {}).get("home", {}).get("seq") == 1)
     s = p.snapshot()
-    assert s["check_seq"] == 1 and s["personal_seq"] == 1
-    assert "work" not in s["checks"] and s.get("corp_seq", 0) == 0
+    assert s["check_seq"] == 1
+    assert "work" not in s["checks"]
 
     work_go.set()
     check.join(2)
     s = p.snapshot()
     assert s["checks"]["work"] == {"result": "error", "answer": "", "seq": 1}
-    assert s["corp_seq"] == 1
 
 
 def _exit_services(monkeypatch, answers):
@@ -669,33 +668,12 @@ def test_check_plan_испорченный_tunnels_json_пусто(monkeypatch):
     assert probe.Prober.check_plan() == []
 
 
-def test_corp_probe_первый_домен_первого_туннеля_по_списку(monkeypatch):
-    _tunnels(monkeypatch,
-             _work(include=["198.51.100.7", "*.corp.example", "git.corp.example",
-                            "wiki.corp.example"]),
-             _work(id="work-2", include=["other.example"]),
-             _home())
-
-    assert probe.Prober.corp_probe() == "git.corp.example"
-
-
-@pytest.mark.parametrize("items", [
-    [],
-    [{"id": "home", "name": "Личный", "mode": "all"}],
-    [{"id": "work", "name": "Работа", "mode": "list", "include": ["*.corp.example"]}],
-])
-def test_corp_probe_пусто_когда_проверять_нечем(monkeypatch, items):
-    _tunnels(monkeypatch, *items)
-
-    assert probe.Prober.corp_probe() == ""
-
-
 def test_испорченный_tunnels_json_проверку_не_роняет(monkeypatch):
     def broken():
         raise ValueError("tunnels.json не читается")
     monkeypatch.setattr(probe.tunnels, "load", broken)
 
-    assert probe.Prober.corp_probe() == ""
+    assert probe.Prober.check_plan() == []
     assert probe.Prober.current_profile() == ""
 
 

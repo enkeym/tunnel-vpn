@@ -51,7 +51,7 @@ MAX_RULES = routelist.MAX_RULES
 CONF_OPS = frozenset({
     "set-profile", "set-active", "set-enabled", "add-config", "remove-config",
     "move-config", "add-tunnel", "set-tunnel", "remove-tunnel", "set-log-level",
-    "set-kill-switch", "set-site"})
+    "set-kill-switch"})
 # Сколько кругов пробера (по FAST_EVERY) новая сеть должна продержаться,
 # прежде чем переподключаться: Wi-Fi при смене точки и пробуждении моргает,
 # и на каждый пропавший на секунду маршрут перезапуск только мешал бы.
@@ -436,8 +436,6 @@ class Core:
         if op == "set-enabled":
             # Строго True, как on: строка «false» из канала выключила бы чужие туннели.
             return self._set_enabled(tid, payload.get("on"), payload.get("replace") is True)
-        if op == "list-profiles":
-            return {"ok": True, "profiles": self._profiles(), "corp": self._corp()}
         if op == "check":
             return self._check()
         if op == "set-autostart":
@@ -489,10 +487,6 @@ class Core:
         if op == "set-kill-switch":
             # Строго True/False, как on у set-enabled.
             return self._set_kill_switch(payload.get("on"))
-        if op == "set-site":
-            return self._set_site(payload.get("text", ""))
-        if op == "get-site":
-            return {"ok": True, "text": self._read_site()}
         if op == "log":
             return {"ok": True, "lines": self._tail_log(int(payload.get("lines", 200)))}
         return {"ok": False, "error": f"неизвестная команда: {op}"}
@@ -512,10 +506,6 @@ class Core:
         # Идёт ли сетевая проверка — и та, что сама после подъёма туннеля:
         # без этого окно до её ответа показывало «корп молчит».
         st["checking"] = self.prober.slow_busy.is_set()
-        # И по сторонам: личный проверен раньше корпа — его кружок уже свежий.
-        for side in probe.LEGACY_SIDES:
-            st[f"checking_{side}"] = (st["checking"] and st.get(f"{side}_seq", 0)
-                                      < st.get("check_seq", 0))
         checks = st.pop("checks", None) or {}
         st["last_error"] = self.last_error
         st["pending_apply"] = self.pending_apply
@@ -546,10 +536,6 @@ class Core:
                      seq=seq, last=last.get(t["id"], ""),
                      checking=st["checking"] and seq < st.get("check_seq", 0),
                      tests=self._tests_of(t["id"], t["confs"]))
-        # Раздельное туннелирование включено, когда у рабочего туннеля
-        # есть правила; иначе кнопка в окне говорит «выключено».
-        work = self._kind_tunnel("corp", data)
-        st["split"] = bool(work and (work["include"] or work["exclude"]))
         # IPv6 через туннель — по v6-адресу в конфиге работающего основного
         # (как v6 в buildconfig.assemble). Правило брандмауэра (v6_off) этого
         # не скажет: оно закрывает физический адаптер всегда, пока VPN включён.
@@ -561,13 +547,6 @@ class Core:
         st["log_level"] = data["log_level"]
         # Галочка kill-switch: пишет set-kill-switch (администратор), читать — любому.
         st["kill_switch"] = data["kill_switch"]
-        st["profiles"] = self._profiles(data)
-        st["corp"] = self._corp(data)
-        # Старые стороны окна — до шага окна.
-        st["last"] = {}
-        for kind in tunnels.LEGACY:
-            t = self._kind_tunnel(kind, data)
-            st["last"][kind] = last.get(t["id"], "") if t else ""
         return st
 
     @staticmethod
@@ -1586,27 +1565,6 @@ class Core:
         except ValueError:
             return tunnels.empty()
 
-    @staticmethod
-    def _kind_tunnel(kind, data=None):
-        """Туннель старого типа corp|personal (tunnels.by_kind), иначе None."""
-        data = data if data is not None else Core._tunnels()
-        return tunnels.by_kind(data["tunnels"], kind)
-
-    @staticmethod
-    def _kind_confs(kind, data=None):
-        t = Core._kind_tunnel(kind, data)
-        return tunnels.list_confs(t["id"]) if t else []
-
-    @staticmethod
-    def _profiles(data=None):
-        """Конфиги основного туннеля — из них выбирают профиль."""
-        return Core._kind_confs("personal", data)
-
-    @staticmethod
-    def _corp(data=None):
-        """Конфиги первого туннеля «по списку» — бывшего рабочего."""
-        return Core._kind_confs("corp", data)
-
     def _migrate(self):
         """Старая установка — в туннели, один раз после обновления: плоский
         conf\\ (до 0.3) — по папкам типов, папки типов и site.env (до 0.4) — в
@@ -1809,8 +1767,7 @@ class Core:
                     self.log(f"→ удалён прежний конфиг {old}.conf")
                 except OSError as exc:
                     self.log(f"→ не удалить {old}.conf: {exc}")
-        return {"ok": True, "name": name, "tunnel": t["id"], "place": where,
-                "profiles": self._profiles(data), "corp": self._corp(data)}
+        return {"ok": True, "name": name, "tunnel": t["id"], "place": where}
 
     def _read_config(self, name, kind="", tunnel=""):
         """Отдаёт конфиг целиком, вместе с ключами.
@@ -1856,7 +1813,7 @@ class Core:
                 data = tunnels.save(data)
             except (OSError, ValueError) as exc:
                 return {"ok": False, "error": f"конфиг удалён, но выбор не записать: {exc}"}
-        return {"ok": True, "profiles": self._profiles(data), "corp": self._corp(data)}
+        return {"ok": True}
 
     def _move_config(self, tunnel, name, to, drop_tunnel=False):
         """Полный конфиг (0.0.0.0/0) — между основным туннелем и своим «по списку».
@@ -2303,44 +2260,6 @@ class Core:
             self.prober.set(out=away)
             self.prober.remeasure()
         return reply
-
-    # ------------------------------- поля site.env старого окна, до шага окна
-
-    def _read_site(self):
-        """Поля окна «Раздельное туннелирование» из tunnels.json в виде site.env.
-
-        Домены и исключения — первого туннеля «по списку»; CORP_PROBE — чем
-        служба проверяет рабочую сеть, только показ. CORP_HOSTS не читал никто.
-        """
-        data = self._tunnels()
-        work = self._kind_tunnel("corp", data)
-        values = {
-            "CORP_DOMAINS": " ".join(work["include"]) if work else "",
-            "CORP_PROBE": probe.Prober.corp_probe(),
-            "SB_CORP_EXCLUDE": " ".join(work["exclude"]) if work else "",
-            "SB_LOG_LEVEL": "" if data["log_level"] == "info" else data["log_level"],
-        }
-        return "".join(f'{k}="{v}"\n' for k, v in values.items() if v)
-
-    def _set_site(self, text):
-        """Поля окна — обратно в tunnels.json: CORP_DOMAINS в include,
-        SB_CORP_EXCLUDE в exclude первого туннеля «по списку», SB_LOG_LEVEL в
-        log_level. Непонятая запись — отказ с причиной: в старом окне её
-        негде показать, а молча выкинуть нельзя."""
-        text = (text or "").lstrip("\ufeff")
-        env = paths.parse_env(text)
-        try:
-            data, t = self._load_target(kind="corp")
-            include, bad = self._rules(env.get("CORP_DOMAINS", ""))
-            exclude, bad_ex = self._rules(env.get("SB_CORP_EXCLUDE", ""))
-        except ValueError as exc:
-            return {"ok": False, "error": str(exc)}
-        bad += [b for b in bad_ex if b not in bad]
-        if bad:
-            return {"ok": False, "error": f"не понял: {', '.join(bad)}"}
-        t["include"], t["exclude"] = include, exclude
-        data["log_level"] = env.get("SB_LOG_LEVEL", "").strip().lower() or "info"
-        return self._save_tunnels(data, "обновлены настройки рабочей сети")
 
     def _tail_log(self, lines):
         """Последние строки журналов sing-box — основного и туннелей, по

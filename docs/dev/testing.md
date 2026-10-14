@@ -46,6 +46,10 @@ No `playwright-cdp` in `claude mcp list` (new machine):
 
 ## Windows-MCP: wizard and tray
 
+**Start the server first, then use the tools.** `windows-mcp` is not started by Claude Code: with no server on
+`127.0.0.1:8790` the session reports `CONNECT_TIMEOUT` and no `windows-mcp` tools exist. Run step 1 below, check
+the `401`, then `/mcp` → reconnect `windows-mcp` (step 2).
+
 UI Automation over real windows: Inno wizard, uninstaller, tray menu, toasts. The wizard, the tray and the
 window run elevated, and UIPI keeps an unelevated process from driving them, so the server runs elevated over
 HTTP on `127.0.0.1:8790` rather than over stdio.

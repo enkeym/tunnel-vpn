@@ -61,49 +61,13 @@ def test_после_выключения_снимок_уже_без_туннел
 def _quiet(monkeypatch, core):
     """Поля статуса, которые читают систему и conf\\, — пустые."""
     for name, value in (("autostart_enabled", False), ("_singbox_version", ""),
-                        ("_profiles", []), ("_corp", []), ("_last_results", {})):
+                        ("_last_results", {})):
         monkeypatch.setattr(core, name, lambda *_a, value=value: value)
 
 
 def _with_tunnels(monkeypatch, *items):
     data = tunnels.validate({"tunnels": list(items)})
     monkeypatch.setattr(service.Core, "_tunnels", staticmethod(lambda: data))
-
-
-def test_статус_по_сторонам_личный_проверен_корп_ещё_нет(monkeypatch):
-    core = _core(monkeypatch, up=True)
-    _quiet(monkeypatch, core)
-    core.prober._take_slow()
-    core.prober.set(personal_seq=core.prober.snapshot()["check_seq"])
-
-    st = core._status()
-    assert st["checking"] and st["checking_corp"] and not st["checking_personal"]
-
-    core.prober.slow_busy.clear()
-    st = core._status()
-    assert not st["checking_corp"] and not st["checking_personal"]
-
-
-def test_раздельное_туннелирование_включено_когда_у_рабочего_есть_правила(monkeypatch):
-    core = _core(monkeypatch, up=False)
-    _quiet(monkeypatch, core)
-    home = {"id": "home", "name": "Личный", "mode": "all",
-            "exclude": ["203.0.113.9"]}
-
-    _with_tunnels(monkeypatch, {"id": "work", "name": "Работа", "mode": "list",
-                                "include": ["corp.example"]}, home)
-    assert core._status()["split"] is True
-
-    _with_tunnels(monkeypatch, {"id": "work", "name": "Работа", "mode": "list",
-                                "exclude": ["198.51.100.7"]}, home)
-    assert core._status()["split"] is True
-
-    # «Мимо VPN» у основного — не раздельное туннелирование рабочей сети.
-    _with_tunnels(monkeypatch, {"id": "work", "name": "Работа", "mode": "list"}, home)
-    assert core._status()["split"] is False
-
-    _with_tunnels(monkeypatch, home)
-    assert core._status()["split"] is False
 
 
 def test_номер_статуса_растёт_и_после_перезапуска_службы(monkeypatch):

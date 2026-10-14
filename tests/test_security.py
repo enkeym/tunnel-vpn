@@ -13,7 +13,7 @@ from tunnelvpn import buildconfig, ipc
 
 # ---------------------------------------------------- кому что разрешено
 
-@pytest.mark.parametrize("op", ["status", "list-profiles", "log", "check", "howto"])
+@pytest.mark.parametrize("op", ["status", "log", "check", "howto"])
 def test_чтение_состояния_доступно_всем(op):
     """Трей опрашивает статус и просит проверку от обычного пользователя,
     без всякого UAC. howto — окно на каждом открытии; списки правил в нём
@@ -32,7 +32,7 @@ def test_управление_туннелем_доступно_вошедшем
 
 
 @pytest.mark.parametrize("op", [
-    "add-config", "remove-config", "move-config", "read-config", "get-site", "set-site",
+    "add-config", "remove-config", "move-config", "read-config",
     "get-tunnels", "add-tunnel", "set-tunnel", "check-rules", "remove-tunnel",
     "set-log-level", "set-kill-switch",
 ])
