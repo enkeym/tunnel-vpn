@@ -1201,7 +1201,10 @@ class Core:
             # без сети туннель не оживёт.
             self._dead_hits = ()
         if not cur[1] or cur == had:
-            if seen:
+            if seen and streak >= UPLINK_SETTLE:
+                self.log(f"→ сеть: интерфейс {seen[0]}, шлюз {seen[1]} пропала, так и "
+                         f"не пропустив трафик — остаюсь на прежней")
+            elif seen:
                 self.log(f"→ сеть моргнула: интерфейс {seen[0]}, шлюз {seen[1]} "
                          f"продержалась {streak} из {UPLINK_SETTLE} кругов — "
                          f"остаюсь на прежней")
@@ -1211,6 +1214,15 @@ class Core:
             if streak == 1:
                 self.log(f"→ вижу новую сеть: интерфейс {cur[0]}, шлюз {cur[1]} "
                          f"— жду {UPLINK_SETTLE} кругов, прежде чем переподключать")
+            return cur, streak, retry_at
+        # 14 октября в 15:17 сторож перешёл на Ethernet без сети (DHCP не отдал DNS,
+        # «unreachable net») и уронил VPN, который работал через Wi-Fi. На новую
+        # сеть — только когда через неё открывается соединение наружу; пока нет,
+        # проверяем каждый круг, прежний аплинк не трогаем.
+        if not winnet.passes_traffic(cur[0]):
+            if streak == UPLINK_SETTLE:
+                self.log(f"→ сеть: интерфейс {cur[0]}, шлюз {cur[1]} не пропускает "
+                         f"трафик — остаюсь на прежней, пока не пропустит")
             return cur, streak, retry_at
         self.log(f"→ сеть сменилась: интерфейс {had[0]}, шлюз {had[1]} → "
                  f"интерфейс {cur[0]}, шлюз {cur[1]} — переподключаю")

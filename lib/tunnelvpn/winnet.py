@@ -20,6 +20,7 @@ PowerShell не запускается вовсе: не ответил WMI — �
 
 import ctypes
 import os
+import queue
 import random
 import re
 import socket
@@ -172,6 +173,48 @@ def interface_exists(if_index):
                   f" WHERE InterfaceIndex={int(if_index)} AND AddressFamily=2",
                   ("InterfaceIndex",))
     return bool(rows)
+
+
+# Чем проверять, что сеть пропускает трафик (passes_traffic): TCP 443 на адреса без
+# имён — на неготовой сети не работает как раз DNS. Владельцы разные: один из них
+# сеть может и закрыть.
+NET_CHECK = (("77.88.8.8", 443), ("1.1.1.1", 443), ("8.8.8.8", 443))
+NET_CHECK_TIMEOUT = 3.0
+
+
+def iface_addrs(if_index):
+    """IPv4-адреса интерфейса, кроме 169.254.x.x: такой Windows ставит сама, когда
+    DHCP не ответил. [] — адреса нет или WMI не ответил."""
+    rows = _query("SELECT IPAddress FROM MSFT_NetIPAddress"
+                  f" WHERE InterfaceIndex={int(if_index)} AND AddressFamily=2",
+                  ("IPAddress",)) or []
+    return [r["IPAddress"] for r in rows
+            if r.get("IPAddress") and not r["IPAddress"].startswith("169.254.")]
+
+
+def passes_traffic(if_index, timeout=NET_CHECK_TIMEOUT):
+    """Открывается ли через интерфейс if_index соединение наружу (NET_CHECK).
+
+    Сокет привязан к адресу интерфейса: Windows (сильная модель хоста) ищет
+    маршрут только на нём, и при поднятом туннеле проверка идёт мимо tun.
+    Проверено 14 октября: с адреса Ethernet без сети — ошибка 10051, а не
+    ответ через туннель. Адреса спрашиваем разом, хватает первого ответа.
+    """
+    addrs = iface_addrs(if_index)
+    if not addrs:
+        return False
+    got = queue.Queue()
+
+    def ask(dst):
+        try:
+            socket.create_connection(dst, timeout, source_address=(addrs[0], 0)).close()
+            got.put(True)
+        except OSError:
+            got.put(False)
+
+    for dst in NET_CHECK:
+        threading.Thread(target=ask, args=(dst,), daemon=True).start()
+    return any(got.get() for _ in NET_CHECK)
 
 
 def routes_for(prefix):

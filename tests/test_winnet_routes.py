@@ -187,3 +187,42 @@ def test_повтор_одного_сбоя_в_журнал_не_пишется(
 
     assert reported == ["WMI: a", "WMI: b", "WMI: a"]
     assert winnet.last_error == "WMI: a"
+
+
+def _addrs(monkeypatch, addrs, open_to=()):
+    """Адреса интерфейса в WMI и какие NET_CHECK отвечают; возвращает попытки
+    соединения (куда, с какого адреса)."""
+    tried = []
+
+    def connect(dst, _timeout, source_address):
+        tried.append((dst, source_address))
+        if dst not in open_to:
+            raise OSError(10051, "сеть недоступна")
+        return types.SimpleNamespace(close=lambda: None)
+
+    monkeypatch.setattr(winnet, "_query",
+                        lambda _wql, _props: [{"IPAddress": a} for a in addrs])
+    monkeypatch.setattr(winnet.socket, "create_connection", connect)
+    return tried
+
+
+def test_сеть_пропускает_трафик_если_ответил_хоть_один_адрес(monkeypatch):
+    tried = _addrs(monkeypatch, ["192.168.20.57"], open_to=[winnet.NET_CHECK[-1]])
+
+    assert winnet.passes_traffic(19)
+    # С адреса интерфейса: иначе соединение ушло бы через tun.
+    assert {src for _, src in tried} == {("192.168.20.57", 0)}
+
+
+def test_сеть_без_ответов_трафик_не_пропускает(monkeypatch):
+    _addrs(monkeypatch, ["192.168.20.57"])
+
+    assert not winnet.passes_traffic(19)
+
+
+def test_без_адреса_от_dhcp_сеть_не_проверяется(monkeypatch):
+    """169.254.x.x Windows ставит сама: DHCP не ответил, сети нет."""
+    tried = _addrs(monkeypatch, ["169.254.36.16"], open_to=winnet.NET_CHECK)
+
+    assert not winnet.passes_traffic(19)
+    assert tried == []

@@ -158,6 +158,8 @@ def _core(monkeypatch):
     monkeypatch.setattr(core.prober, "probe_fast", lambda: None)
     monkeypatch.setattr(probe.Prober, "current_profile", staticmethod(lambda: "p"))
     monkeypatch.setattr(service, "RECONNECT_GAP", 0.0)
+    # Новая сеть пропускает трафик, пока тест не скажет иначе: без сокетов наружу.
+    monkeypatch.setattr(service.winnet, "passes_traffic", lambda _idx: True)
     _net(core, OFFICE)
     return core
 
@@ -207,6 +209,41 @@ def test_новая_сеть_после_устойчивых_кругов_пер
     assert core.busy == ""
     # Ответы корпа и адрес выхода мерили старую сеть — нужна новая проверка.
     assert core.prober._remeasure.is_set()
+
+
+def test_сеть_без_трафика_не_переподключает_пока_не_оживёт(monkeypatch):
+    """14 октября в 15:17 сторож перешёл на Ethernet без сети и уронил VPN через Wi-Fi."""
+    core = _core(monkeypatch)
+    ready = {HOME[0]: False}
+    monkeypatch.setattr(service.winnet, "passes_traffic", lambda idx: ready[idx])
+    _net(core, HOME)
+
+    state = _rounds(core, service.UPLINK_SETTLE * 3)
+
+    assert core.tunnel.starts == 0
+    assert core.tunnel.uplink == OFFICE
+    # Одна строка, а не каждый круг.
+    assert sum("не пропускает трафик" in line for line in core.logged) == 1
+
+    ready[HOME[0]] = True
+    _rounds(core, 1, state)
+
+    assert core.tunnel.starts == 1
+    assert core.tunnel.uplink == HOME
+
+
+def test_сеть_без_трафика_пропала_счёт_кругов_снова(monkeypatch):
+    core = _core(monkeypatch)
+    monkeypatch.setattr(service.winnet, "passes_traffic", lambda idx: idx != HOME[0])
+    _net(core, HOME)
+    state = _rounds(core, service.UPLINK_SETTLE + 1)
+
+    _net(core, OFFICE)
+    state = _rounds(core, 1, state)
+
+    assert state[:2] == (None, 0)
+    assert any("так и не пропустив трафик" in line for line in core.logged)
+    assert core.tunnel.starts == 0
 
 
 def test_неудачное_переподключение_проверку_не_просит(monkeypatch):

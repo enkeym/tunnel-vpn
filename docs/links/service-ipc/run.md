@@ -54,3 +54,10 @@ paths:
   повторяет `stop`, пока `busy`, — теперь первый же `stop` дожидается отмены. Сторож (`_reconnect`,
   `_restart_side`) берёт `lock` без ожидания. `_restart_side` с обходом под замком ещё резолвит сервер
   (`_detour_peer`: до двух `probe.CORP_DNS_TIMEOUT`) — укладывается в `APPLY_WAIT` команды.
+- Переподключение на новую сеть — `lib/tunnelvpn/service.py:_watch_once`: аплинк (`iface`, `gw`) из снимка пробера
+  (`lib/tunnelvpn/probe.py:probe_fast` → `winnet.default_route`) ≠ `Tunnel.uplink` `UPLINK_SETTLE` кругов подряд и
+  `lib/tunnelvpn/winnet.py:passes_traffic(iface)` → `_reconnect`. Проверка — TCP на `winnet.NET_CHECK` с адреса
+  интерфейса (`iface_addrs`, без 169.254): привязка к адресу ведёт мимо tun только при сильной модели хоста Windows;
+  включённый `weakhostsend` на интерфейсе пустит её через туннель, и неготовая сеть сойдёт за готовую. Не пропускает —
+  круг возвращает (сеть, счёт) без `_reconnect`, проверка каждый круг (до `NET_CHECK_TIMEOUT`, круг сторожа длиннее),
+  строка «не пропускает трафик» — на круге `UPLINK_SETTLE`.

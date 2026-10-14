@@ -85,3 +85,6 @@ paths:
   только `lib/tunnelvpn/tunnel.py:start`) ↔ `lib/tunnelvpn/tunnel.py:mend_peer_routes` берёт пиров
   оттуда и сверяет с `winnet.routes_for` на аплинке; зовут конец `start` и каждый круг
   `lib/tunnelvpn/service.py:_watch_once` на прежней сети. Другой вид строки `host` — сверка молча ничего не видит.
+  Пока новая сеть не пропускает трафик (`winnet.passes_traffic`), сторож на ней не переподключается: таймауты
+  (`_mind_sides`) разбираются дальше по журналам прежних процессов, а маршруты к пирам не сверяются — снимок
+  пробера показывает новую сеть, не `Tunnel.uplink`.
