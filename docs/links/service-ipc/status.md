@@ -88,3 +88,10 @@ paths:
   заменили конфиг, пока проверка ждёт, — итог старого файла от нового процесса. Показать его не даёт только
   `_tests_of` (файла нет в `list_confs` или другой `_conf_stamp`); убрать эту сверку — ложный итог на плитке.
   `corp_ip`/`corp_http` (`probe_slow` для первого «по списку») читает только CLI — до шага 6.
+
+## Срок ответа
+- `lib/tunnelvpn/service.py:_status` отвечает быстрее `lib/tunnelvpn/ipc.py:STATUS_TIMEOUT` (5 с): дольше —
+  `ipc.call("status")` бросает `NotRunning`, как при мёртвой службе, и молчание дольше
+  `lib/tunnelvpn/tray.py:HEAL_AFTER` перезапускает службу (`tray._maybe_heal`). Ничего долгого и ничего под
+  `self.lock`/`tunnels.LOCK` в `_status`: `start` держит `self.lock` до тридцати секунд. Исключение — первый
+  `_singbox_version` (запуск `sing-box version`, кэш до перезапуска службы).

@@ -38,6 +38,7 @@ def win(monkeypatch):
     )
     win32pipe = types.SimpleNamespace(
         WaitNamedPipe=lambda *a: None,
+        PeekNamedPipe=lambda h, n: calls.append("PeekNamedPipe") or _peek(reads),
         DisconnectNamedPipe=lambda h: calls.append("DisconnectNamedPipe"),
     )
     pywintypes = types.SimpleNamespace(error=_WinError)
@@ -45,6 +46,16 @@ def win(monkeypatch):
                       ("pywintypes", pywintypes)):
         monkeypatch.setitem(sys.modules, name, mod)
     return types.SimpleNamespace(calls=calls, reads=reads)
+
+
+def _peek(reads):
+    """Как PeekNamedPipe: сколько байт ждёт чтения; обрыв — ошибка сразу.
+    Пустой reads — служба приняла соединение и молчит."""
+    if not reads:
+        return b"", 0, 0
+    if isinstance(reads[0], Exception):
+        raise reads.pop(0)
+    return b"", len(reads[0]), 0
 
 
 def _next_read(reads, n):
@@ -79,6 +90,26 @@ def test_закрытый_канал_без_ответа_значит_служб
     win.reads.append(_WinError(109, "broken pipe"))
     with pytest.raises(ipc.NotRunning):
         ipc.call("status")
+
+
+def test_молчащая_служба_на_status_не_отвечает_после_таймаута(win, monkeypatch):
+    """Служба приняла соединение и зависла: раньше трей и окно ждали вечно,
+    и ни самолечение, ни кнопка «Перезапустить службу» не срабатывали."""
+    monkeypatch.setattr(ipc, "STATUS_TIMEOUT", 0.1)
+    monkeypatch.setattr(ipc, "_PEEK_EVERY", 0.01)
+
+    with pytest.raises(ipc.NotRunning, match="нет ответа"):
+        ipc.call("status")
+
+    assert win.calls[-1] == "CloseHandle"
+
+
+def test_долгие_команды_ждут_ответа_без_таймаута(win):
+    """start честно работает до тридцати секунд — его не обрываем."""
+    win.reads.append(b'{"ok": true}\n')
+
+    assert ipc.call("start") == {"ok": True}
+    assert "PeekNamedPipe" not in win.calls
 
 
 def test_сервер_сбрасывает_буфер_до_отключения(win, monkeypatch):

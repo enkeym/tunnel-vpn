@@ -24,6 +24,7 @@ OSError: [Errno 22] Invalid argument, хотя сам канал исправе�
 import contextlib
 import json
 import threading
+import time
 
 from . import paths
 
@@ -249,9 +250,12 @@ class NotRunning(RuntimeError):
 def call(op, **payload):
     """Шлёт команду службе и возвращает её ответ.
 
-    Вызов блокирующий и таймаута не имеет — это осознанно: `start` честно
+    Вызов блокирующий, и таймаута у команд нет — это осознанно: `start` честно
     работает до тридцати секунд, и обрывать его по таймеру значило бы бросить
-    туннель на полпути, с уже расставленными маршрутами.
+    туннель на полпути, с уже расставленными маршрутами. Кроме `status`: он
+    только читает, и ответ дольше STATUS_TIMEOUT значит, что служба приняла
+    соединение и зависла. Без таймаута трей и окно ждали бы её вечно, и ни
+    самолечение трея, ни кнопка «Перезапустить службу» не срабатывали.
     """
     import pywintypes
     import win32file
@@ -281,7 +285,7 @@ def call(op, **payload):
                 f"служба {paths.SERVICE_NAME} не отвечает: канал занят")
 
         win32file.WriteFile(handle, req)
-        data = _read_reply(handle)
+        data = _read_reply(handle, STATUS_TIMEOUT if op == "status" else None)
     except pywintypes.error as exc:
         # Код Windows остаётся в __cause__: его пишет журнал трея (tray._heal).
         raise NotRunning(
@@ -298,6 +302,10 @@ def call(op, **payload):
 
 # Как часто check_by_side спрашивает статус, пока идёт проверка.
 CHECK_POLL = 0.3
+
+# Сколько ждать ответа на status (см. call) и как часто заглядывать в канал.
+STATUS_TIMEOUT = 5.0
+_PEEK_EVERY = 0.05
 
 
 def check_by_side(on_side, poll=CHECK_POLL, lock=None):
@@ -350,19 +358,24 @@ def check_by_side(on_side, poll=CHECK_POLL, lock=None):
 _ERROR_BROKEN_PIPE = 109
 
 
-def _read_reply(handle):
+def _read_reply(handle, timeout=None):
     """Читает ответ целиком — до перевода строки, которым его кончает сервер.
 
     Одного ReadFile мало: ответ может прийти по частям, а лог на четыреста
     строк или статус со многими профилями больше буфера. Обрезанный ответ
     json.loads не разбирал, и окно писало «служба ответила неразборчиво».
+
+    timeout — секунды на весь ответ; нет ответа — NotRunning.
     """
     import pywintypes
     import win32file
 
+    deadline = None if timeout is None else time.monotonic() + timeout
     chunks = []
     while True:
         try:
+            if deadline is not None:
+                _wait_data(handle, deadline, timeout)
             _, chunk = win32file.ReadFile(handle, _BUF)
         except pywintypes.error as exc:
             if exc.winerror == _ERROR_BROKEN_PIPE and chunks:
@@ -374,3 +387,23 @@ def _read_reply(handle):
         if chunk.endswith(b"\n"):
             break
     return b"".join(chunks)
+
+
+def _wait_data(handle, deadline, timeout):
+    """Ждёт, пока в канале будет что читать; к deadline нечего — NotRunning.
+
+    Канал открыт без FILE_FLAG_OVERLAPPED, и начатый ReadFile не прервать:
+    CancelIoEx в pywin32 нет. Поэтому заглядываем через PeekNamedPipe и
+    читаем, только когда данные уже пришли. Сервер оборвал соединение —
+    PeekNamedPipe бросает pywintypes.error, как бросил бы и ReadFile.
+    """
+    import win32pipe
+
+    while True:
+        _, avail, _ = win32pipe.PeekNamedPipe(handle, 0)
+        if avail:
+            return
+        if time.monotonic() >= deadline:
+            raise NotRunning(f"служба {paths.SERVICE_NAME} не отвечает: "
+                             f"нет ответа {timeout:.0f} с")
+        time.sleep(_PEEK_EVERY)
