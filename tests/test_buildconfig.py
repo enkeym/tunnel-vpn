@@ -767,6 +767,21 @@ def test_туннель_без_конфига_в_полной_сборке_за�
     assert tunnel._fixed(live) == tunnel._fixed(stub)
 
 
+def test_заглушка_после_туннеля_с_dns(build, tmp_path):
+    """Туннель без .conf после туннеля с DNS: DNS соседа не подменяет dns
+    прошлой сборки — 15.10.2026 включение падало на «'tuple' object has no
+    attribute 'get'», когда t2 с DNS шёл в tunnels.json раньше пустого t1."""
+    first, _ = build(THREE)
+    data = tunnels.validate({"tunnels": THREE})
+    confs = {tid: _write(tmp_path, f"{tid}.conf", CONFS[tid]) for tid in ("work", "home")}
+    out = str(tmp_path / "config.json")
+
+    assert buildconfig.build(data, confs, out, log=lambda line: None,
+                             dns=buildconfig.tunnel_dns(first)) == [
+        ("work", "Work"), ("home", "Home")]
+    assert buildconfig.side_ids(buildconfig.read_json(out)) == ["work", "lab", "home"]
+
+
 def test_выключенный_туннель_собирается_с_пустыми_rule_set(build, tmp_path):
     """Основной конфиг тот же, что у включённого: вкл/выкл меняет только
     rule-set и боковой. Процесс не запускается, пир не резолвится."""

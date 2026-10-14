@@ -1021,7 +1021,8 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
     stubs=True — заглушка и без id в links: полная сборка (build), иначе после
     перезапуска службы первый .conf такого туннеля — новый socks и полный перезапуск.
     """
-    links, level, dns = links or {}, data["log_level"], dns or {}
+    # dns прошлой сборки — под своим именем: в цикле dns — DNS текущего туннеля.
+    links, level, live_dns = links or {}, data["log_level"], dns or {}
     # (туннель, разобранный .conf, endpoint). Выключенный тоже: в основном
     # конфиге у него socks, DNS и правило с пустым rule-set — включение и
     # выключение меняют файл rule-set и боковой процесс, а не основной конфиг.
@@ -1100,8 +1101,8 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
             sets[rules_tag(t["id"])] = rule_set(None)
             rules.append({"rule_set": [rules_tag(t["id"])],
                           "outbound": via_tag(t["id"])})
-            if dns.get(t["id"]):
-                dns_tunnels.append((t["id"], dns[t["id"]], []))
+            if live_dns.get(t["id"]):
+                dns_tunnels.append((t["id"], live_dns[t["id"]], []))
                 sets[names_tag(t["id"])] = rule_set(None)
             report.append(f"  [{t['id']}] {t['name']}: конфига нет, процесс не запущен")
             continue
