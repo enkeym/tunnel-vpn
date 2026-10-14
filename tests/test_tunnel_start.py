@@ -769,6 +769,41 @@ def test_пиры_после_перезапуска_службы_берутся_
     assert sorted(tun._peer_ips()) == ["203.0.113.10", "203.0.113.20"]
 
 
+def test_включение_не_резолвит_пира_выключенного_туннеля(env, monkeypatch):
+    """Имя пира выключенного t1 не отвечало и держало подъём рабочего t2 12 с:
+    пира выключенного резолвит его включение (_place_side)."""
+    tun, _build, seen = env
+    cfg = buildconfig.read_json(paths.CONFIG_JSON)
+    cfg["outbounds"].append({"type": "socks", "tag": "socks-off", "server_port": 1084})
+    buildconfig.write_json(paths.CONFIG_JSON, cfg)
+    buildconfig.write_json(buildconfig.side_json("off"), _side_cfg("t1.example", 1084))
+    asked = []
+    monkeypatch.setattr(seen["net"], "resolve4", lambda host: asked.append(host),
+                        raising=False)
+
+    assert tun.start() == ""
+
+    assert asked == []
+    assert "→ пиры (пойдут мимо туннеля): 203.0.113.10, 203.0.113.20" in seen["log"]
+
+
+def test_имена_пиров_резолвятся_разом(env, monkeypatch):
+    """Два имени по 0,3 с — вместе, а не друг за другом."""
+    tun, _build, seen = env
+    for tid, host in (("work", "corp.example"), ("home", "nl.example")):
+        buildconfig.write_json(buildconfig.side_json(tid), _side_cfg(host))
+
+    def resolve4(host):
+        time.sleep(0.3)
+        return {"corp.example": "203.0.113.20", "nl.example": "203.0.113.10"}[host]
+
+    monkeypatch.setattr(seen["net"], "resolve4", resolve4, raising=False)
+    begun = time.monotonic()
+
+    assert tun._peer_ips(["work", "home"]) == ["203.0.113.10", "203.0.113.20"]
+    assert time.monotonic() - begun < 0.5
+
+
 # ------------------------------------------------- смена конфига на ходу
 
 

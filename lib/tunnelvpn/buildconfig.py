@@ -968,16 +968,20 @@ def _summary(t, ep, nets, domains, dns):
     return lines
 
 
-def build(data, confs, out_path, side_path=None, log=print, set_path=None):
+def build(data, confs, out_path, side_path=None, log=print, set_path=None,
+          dns=None):
     """Основной конфиг и по боковому на туннель. Возвращает [(id, имя)]
     включённых — чьи процессы запускать — по порядку файла.
 
     data — tunnels.validate(); confs — {id: путь к активному .conf}. Туннель
-    без конфига пропускается: пустой слот не держит остальные. Выключенный
+    без конфига — заглушка без процесса (assemble), её DNS — из dns ({id: адрес}
+    прошлой сборки): вернувшийся .conf тогда — на лету. Выключенный
     собирается с пустым rule-set, без процесса.
     """
+    keep_sides = side_path is None
     side_path = side_path or side_json
-    config, sides, sets, built, report = assemble(data, confs, log)
+    config, sides, sets, built, report = assemble(data, confs, log, stubs=True,
+                                                  dns=dns)
     if set_path:
         # Сборка в сторону (--out): rule-set в state\run\ работающий
         # sing-box перечитал бы на лету.
@@ -990,6 +994,11 @@ def build(data, confs, out_path, side_path=None, log=print, set_path=None):
     write_json(out_path, config)
     for tid, side in sides.items():
         write_json(side_path(tid), side)
+    if keep_sides:
+        # У заглушки в боковом прошлого запуска — ключ удалённого конфига.
+        for tid in side_ids(config):
+            if tid not in sides:
+                drop_side(tid)
 
     print(f"собрано: {out_path}")
     for line in report:
@@ -998,7 +1007,7 @@ def build(data, confs, out_path, side_path=None, log=print, set_path=None):
 
 
 def assemble(data, confs, log=print, links=None, api=None, resolve=True,
-             dns=None):
+             dns=None, stubs=False):
     """(основной конфиг, {id: боковой конфиг}, {тег: rule-set}, [(id, имя)],
     строки сводки) без записи на диск.
 
@@ -1009,6 +1018,8 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
     (id в links), остаётся в основном заглушкой — socks, DNS и правило с
     пустыми rule-set, без бокового. Иначе удаление .conf и его возврат меняли
     бы основной конфиг и роняли tun со всеми туннелями (Tunnel.live_plan).
+    stubs=True — заглушка и без id в links: полная сборка (build), иначе после
+    перезапуска службы первый .conf такого туннеля — новый socks и полный перезапуск.
     """
     links, level, dns = links or {}, data["log_level"], dns or {}
     # (туннель, разобранный .conf, endpoint). Выключенный тоже: в основном
@@ -1020,7 +1031,7 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
     for t in data["tunnels"]:
         path = confs.get(t["id"])
         if not path:
-            if t["id"] in links:
+            if stubs or t["id"] in links:
                 log(f"  [{t['id']}] «{t['name']}»: конфига нет — процесс не "
                     f"запускаю, правила пустые")
                 built.append((t, None, None))
@@ -1044,9 +1055,11 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
                 conf = parse_conf(path)
                 ep = endpoint(conf, ep_tag(t["id"]), 1280, log, resolve=False)
             except SystemExit as exc:
+                stub = stubs or t["id"] in links
                 log(f"  [{t['id']}] «{t['name']}»: выключен, конфиг не собрать "
-                    f"({exc}) — туннель пропускаю")
-                if t["id"] in links:
+                    f"({exc}) — " + ("процесс не запускаю, правила пустые"
+                                     if stub else "туннель пропускаю"))
+                if stub:
                     built.append((t, None, None))
                 continue
             log(f"  [{t['id']}] «{t['name']}»: выключен — процесс не запускаю, "
@@ -1317,7 +1330,9 @@ def main(log=print, check_running=True):
         set_path = lambda tag: f"{stem}.{tag}.json"
 
     data, confs = sources()
-    built = build(data, confs, out_path, side_path, log, set_path)
+    # DNS туннелей прошлой сборки — заглушкам (build).
+    built = build(data, confs, out_path, side_path, log, set_path,
+                  dns=tunnel_dns(read_json(out_path)))
     if side_path is None:
         # Выключенные тоже: их боковые и rule-set ждут включения.
         _drop_stale_sides(side_ids(read_json(out_path)))

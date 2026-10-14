@@ -451,7 +451,7 @@ class Tunnel:
         else:
             self.log(f"!! IPv6 заблокировать не вышло: {winnet.last_error or 'без причины'}")
 
-        peers = self._peer_ips()
+        peers = self._peer_ips([side.tid for side in self.sides])
         if not peers:
             return "не определить адреса пиров — прерываю, иначе будет петля"
         self.log(f"→ пиры (пойдут мимо туннеля): {', '.join(peers)}")
@@ -603,20 +603,23 @@ class Tunnel:
         except OSError:
             pass
 
-    def _peer_ips(self):
-        """Адреса пиров из всех собранных конфигов, имена резолвим сейчас.
+    def _peer_ips(self, tids=None):
+        """Адреса пиров из собранных конфигов, имена резолвим сейчас, все разом.
 
         Пока DNS ещё системный: после подъёма туннеля он уйдёт внутрь, и имя
         сервера станет нерезолвимым ровно тогда, когда оно нужнее всего.
         Боковые — по основному конфигу, а не по self.sides: после перезапуска
         службы список пуст, а stop без журнала чистит именно по ним.
+        tids — только эти туннели: включение не ждёт имени выключенного, его
+        пира резолвит включение туннеля (_place_side).
         """
-        out = []
+        out, hosts = [], []
         endpoints = []
         main_cfg = buildconfig.read_json(paths.CONFIG_JSON)
         for cfg_path in (paths.CONFIG_JSON,
                          *(buildconfig.side_json(tid)
-                           for tid in buildconfig.side_ids(main_cfg))):
+                           for tid in buildconfig.side_ids(main_cfg)
+                           if tids is None or tid in tids)):
             endpoints += buildconfig.read_json(cfg_path).get("endpoints", [])
         for ep in endpoints:
             for peer in ep.get("peers", []):
@@ -626,9 +629,10 @@ class Tunnel:
                 if all(c in "0123456789." for c in host):
                     out.append(host)
                 else:
-                    ip = winnet.resolve4(host)
-                    if ip:
-                        out.append(ip)
+                    hosts.append(host)
+        if hosts:
+            with ThreadPoolExecutor(len(hosts)) as pool:
+                out += [ip for ip in pool.map(winnet.resolve4, hosts) if ip]
         return sorted(set(out))
 
     @staticmethod

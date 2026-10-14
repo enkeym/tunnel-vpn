@@ -18,8 +18,9 @@ paths:
   после перезапуска службы список пуст), `lib/tunnelvpn/probe.py:peer_addrs` (по `side_ids`; тег основного —
   `Prober.main_tag` → `_slow_exit`) и `lib/tunnelvpn/service.py:_howto` (op `howto` → `lib/tunnelvpn/window.py:_howto`
   → `lib/tunnelvpn/ui/js/settings.js:renderHowto`; ключи и пароли не отдаёт, подсети и домены — только администратору).
-  `side_ids` даёт и выключенных (собраны без процесса): `_peer_ips` ставит host-маршрут и их пирам (включение
-  находит его в `owned`), `peer_addrs` сверяет только тег основного, `service.py:_howto` отбрасывает их по
+  `side_ids` даёт и выключенных (собраны без процесса): `start` зовёт `_peer_ips` только по `Tunnel.sides`
+  (имя пира выключенного не резолвит: неотвечающее держало включение 12 с; host-маршрут ему ставит
+  `_place_side` при включении), `stop` без журнала — по всем `side_ids`; имена резолвятся разом, `peer_addrs` сверяет только тег основного, `service.py:_howto` отбрасывает их по
   `tunnels.json`, `probe.py:check_plan` — по `enabled`.
 - Порт, логин и пароль socks связывают outbound `socks-<id>` в `config.json` и inbound `socks-in` (тип `mixed`:
   по нему же `probe._dns_via_proxy` спрашивает DNS туннеля, `Tunnel.link_of`) в `tunnel-<id>.json`: пара из одного `lib/tunnelvpn/buildconfig.py:new_link` в `assemble` (`_slot_links`: по связи

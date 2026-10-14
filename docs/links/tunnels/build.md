@@ -13,10 +13,13 @@ paths:
   собирает socks, DNS, правило и боковой конфиг (пир не резолвит, испорченный конфиг — пропуск), но rule-set
   пустые и в возвращаемом `built` его нет — процесс не запускается; `tunnel._stamps` не метит, `Core._promote`
   не повышает; пробер и сторож не видят — процесса нет (`check_plan` `running` = `enabled`, `side_ids` и
-  `probe._has_conf`). Туннель без `.conf`: полная сборка пропускает целиком; сборка на ходу (`links` с его id)
-  оставляет **заглушку** `(t, None, None)` на его месте в `data["tunnels"]` — socks из `links`, DNS из `dns`
-  (`tunnel_dns` работающего), пустые `rules-<id>`/`names-<id>`, без бокового и без `built`; его `tunnel-<id>.json`,
-  `tunnel2-` убирает `buildconfig.drop_side` из `tunnel.reload_sides`. Читатели бокового по
+  `probe._has_conf`). Туннель без `.conf` — **заглушка** `(t, None, None)` на его месте в `data["tunnels"]`:
+  в полной сборке (`build` → `assemble(stubs=True)`) и на ходу (`links` с его id) — socks из `links` (в полной —
+  новые), DNS из `dns` (на ходу — `tunnel_dns` работающего, в полной — `buildconfig.main` даёт `tunnel_dns`
+  прошлого `config.json`), пустые `rules-<id>`/`names-<id>`, без бокового и без `built`; его `tunnel-<id>.json`,
+  `tunnel2-` убирает `buildconfig.drop_side` из `build` (только своя `state\run\`, не `--out`) и из
+  `tunnel.reload_sides`. Без заглушки в полной сборке первый `.conf` после перезапуска службы — новый socks
+  в основном и полный перезапуск; `.conf` с DNS, которого не было в прошлой сборке, — тоже полный. Читатели бокового по
   `side_ids` (`service._howto`, `probe.peer_addrs`, `tunnel._peer_ips`) без файла получают `{}`. `site.env` сборка больше не читает, окружение для неё
   `tunnel.start` не готовит; `SB_CORP_*`, `SB_STACK` — по-прежнему переменные окружения службы.
 - `log_level` из `tunnels.json` → `"log"` конфига sing-box. Уровень выше `info` глушит строки, которые

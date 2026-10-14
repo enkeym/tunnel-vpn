@@ -744,6 +744,29 @@ def test_туннель_без_конфига_пропускается(build, tm
     assert any("«Work»: конфига нет" in line for line in lines)
 
 
+def test_туннель_без_конфига_в_полной_сборке_заглушка(build, tmp_path):
+    """После перезапуска службы туннель без .conf тоже собирается заглушкой:
+    иначе его первый .conf — новый socks в основном и 14 с без сети. DNS
+    заглушки — из прошлой сборки (dns), ключ удалённого конфига — с диска."""
+    first, _ = build(THREE)
+    data = tunnels.validate({"tunnels": THREE})
+    confs = {tid: _write(tmp_path, f"{tid}.conf", CONFS[tid]) for tid in ("lab", "home")}
+    out = str(tmp_path / "config.json")
+
+    assert buildconfig.build(data, confs, out, log=lambda line: None,
+                             dns=buildconfig.tunnel_dns(first)) == [
+        ("lab", "Lab"), ("home", "Home")]
+    stub = buildconfig.read_json(out)
+    assert buildconfig.side_ids(stub) == ["work", "lab", "home"]
+    assert not os.path.exists(buildconfig.side_json("work"))
+
+    confs["work"] = _write(tmp_path, "work.conf", CORP)
+    live, *_ = buildconfig.assemble(
+        data, confs, lambda line: None, buildconfig.links_of(stub),
+        tunnel._api_link(stub), resolve=False, dns=buildconfig.tunnel_dns(stub))
+    assert tunnel._fixed(live) == tunnel._fixed(stub)
+
+
 def test_выключенный_туннель_собирается_с_пустыми_rule_set(build, tmp_path):
     """Основной конфиг тот же, что у включённого: вкл/выкл меняет только
     rule-set и боковой. Процесс не запускается, пир не резолвится."""
@@ -843,11 +866,13 @@ def test_первая_программа_полный_перезапуск_сл�
 
 
 def test_испорченный_конфиг_выключенного_сборку_не_держит(build):
+    """Туннель остаётся заглушкой без бокового: исправленный .conf — на лету."""
     items = [dict(THREE[0], enabled=False), *THREE[1:]]
 
-    main, _ = build(items, texts=dict(CONFS, work="[Interface]\n"))
+    main, sides = build(items, texts=dict(CONFS, work="[Interface]\n"))
 
-    assert buildconfig.side_ids(main) == ["lab", "home"]
+    assert buildconfig.side_ids(main) == ["work", "lab", "home"]
+    assert list(sides) == ["lab", "home"]
 
 
 def test_все_включённые_без_конфига_причина_про_выключенные(tmp_path):
