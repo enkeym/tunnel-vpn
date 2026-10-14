@@ -72,10 +72,12 @@ class Server:
         import win32file
         import win32pipe
 
-        sa = self._security()
+        sa = None
         while not self.stop_event.is_set():
             pipe = None
             try:
+                if sa is None:
+                    sa = self._security()
                 pipe = win32pipe.CreateNamedPipe(
                     paths.PIPE_NAME,
                     win32pipe.PIPE_ACCESS_DUPLEX,
@@ -85,20 +87,30 @@ class Server:
                     _BUF, _BUF, 0, sa,
                 )
                 win32pipe.ConnectNamedPipe(pipe, None)
-            except pywintypes.error as exc:
+                # Каждое соединение — в своём потоке, и сразу открываем следующий
+                # экземпляр канала. Иначе `start`, честно работающий до тридцати
+                # секунд, всё это время не давал бы трею даже спросить статус.
+                threading.Thread(target=self._serve_one, args=(pipe,),
+                                 daemon=True).start()
+                pipe = None                  # дальше канал закрывает _serve_one
+            except Exception as exc:         # noqa: BLE001
+                # Цикл канала один на службу. Раньше любое исключение, кроме
+                # pywintypes.error, молча завершало его поток: процесс службы
+                # жил, диспетчер служб считал её работающей, а окно до
+                # перезагрузки писало «Служба не отвечает». Теперь сбой — в
+                # журнал, и следующий круг.
+                windows = isinstance(exc, pywintypes.error)
                 if not self.stop_event.is_set():
-                    self.log(f"канал: {exc}")
+                    self.log(f"канал: {exc}" if windows else f"канал: {exc!r}")
                 if pipe is not None:
                     try:
                         win32file.CloseHandle(pipe)
                     except Exception:
                         pass
-                continue
-            # Каждое соединение — в своём потоке, и сразу открываем следующий
-            # экземпляр канала. Иначе `start`, честно работающий до тридцати
-            # секунд, всё это время не давал бы трею даже спросить статус.
-            threading.Thread(target=self._serve_one, args=(pipe,),
-                             daemon=True).start()
+                if not windows:
+                    # Сбой не от Windows сам не пройдёт: без паузы цикл
+                    # крутился бы вхолостую и забил журнал.
+                    self.stop_event.wait(1.0)
 
     def _serve_one(self, pipe):
         try:
@@ -271,6 +283,7 @@ def call(op, **payload):
         win32file.WriteFile(handle, req)
         data = _read_reply(handle)
     except pywintypes.error as exc:
+        # Код Windows остаётся в __cause__: его пишет журнал трея (tray._heal).
         raise NotRunning(
             f"служба {paths.SERVICE_NAME} не отвечает: {exc.strerror}") from exc
     finally:

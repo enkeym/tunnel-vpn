@@ -56,3 +56,8 @@ paths:
   `exit_state` и работающему основному (`_main_on`: `mode all`, `enabled`) статуса службы (порядок — как у
   заголовка окна). `out`/`exit_state` мимо основного разбирает `_away` (`block` → `blocked`, `icon.TRAY["blocked"]`;
   `direct` → `fallback`); новое состояние — ключ в `icon.TRAY`, его различимость без цвета проверяет `tests/test_icon.py`.
+- Самолечение службы: `lib/tunnelvpn/tray.py:_poll_locked` → `_maybe_heal` (канал молчит `HEAL_AFTER`, не чаще
+  `HEAL_EVERY`; мимо — `update.pending`, `portable.is_portable`, `settings.service_state` с `start: disabled`) →
+  `_heal` → `lib/tunnelvpn/settings.py:restart_service`, итог — в `LOGS\tray.log`. Установщик и деинсталлятор
+  снимают трей раньше службы (`installer/tunnelvpn.iss`: `KillImage` до `StopService`, `[UninstallRun]` `KillTray`
+  до `StopService`). Поменяли порядок — живой трей через `HEAL_AFTER` запустит службу посреди установки или удаления.

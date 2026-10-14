@@ -32,6 +32,14 @@ from .settings import TRAY_TASK
 POLL_EVERY = 1.0
 # Сколько выход ждёт, пока служба закончит начатый start и примет stop.
 QUIT_WAIT = 40.0
+# Служба молчит по каналу дольше HEAL_AFTER — трей перезапускает её сам, не
+# чаще раза в HEAL_EVERY. Раньше окно звало перезагрузить компьютер: процесс
+# службы жив, и диспетчер служб сам её не перезапустит. Не меньше: служба
+# объявляет себя работающей раньше, чем открывает канал (Core.start → _migrate).
+HEAL_AFTER = 15.0
+HEAL_EVERY = 120.0
+# Журнал трея (в LOGS): что он сделал со службой сам. Больше — начинается заново.
+TRAY_LOG_BYTES = 256 * 1024
 # Сколько живое окно имеет на то, чтобы принять сигнал и стать видимым.
 # Не стало — процесс завис, его снимаем и запускаем новое окно.
 WINDOW_SHOW_WAIT = 5.0
@@ -162,6 +170,11 @@ class Tray:
         self._offer_item = None
         self._menu_offer = None
         self.stop_event = threading.Event()
+        # С какого опроса служба молчит (monotonic), когда трей последний раз
+        # её перезапускал и идёт ли перезапуск сейчас (_maybe_heal).
+        self._silent_since = None
+        self._healed_at = None
+        self._healing = False
 
     # ------------------------------------------------------------- статус
 
@@ -184,12 +197,14 @@ class Tray:
         self.installing = _installing()
         try:
             self.status = ipc.call("status").get("status", {})
+            self._silent_since = None
             new = ("busy" if self._pending or self.installing
                    else _tray_state(self.status))
-        except ipc.NotRunning:
+        except ipc.NotRunning as exc:
             self.status = {}
+            self._maybe_heal(exc)
             # Установщик остановил службу — это ход обновления, не сбой.
-            new = "busy" if self.installing else "error"
+            new = "busy" if self.installing or self._healing else "error"
         if new != self.state:
             self.state = new
             self._refresh_icon()
@@ -202,6 +217,44 @@ class Tray:
         # «выключен», и пункты, зависящие от статуса, так и оставались серыми.
         if self._menu_sig() != self._last_menu_sig:
             self._post(WM_SYNC_MENU)
+
+    def _maybe_heal(self, exc):
+        """Служба молчит HEAL_AFTER подряд — перезапуск в своём потоке.
+
+        Не трогаем: обновление (службу остановил установщик), портативную
+        версию (службы нет, канал держит сам трей), выход и службу, которую
+        выключили руками («Отключена»). Сама команда — settings.restart_service.
+        """
+        now = time.monotonic()
+        if self._silent_since is None:
+            self._silent_since = now
+        if (self._healing or self.installing or self.stop_event.is_set()
+                or now - self._silent_since < HEAL_AFTER
+                or (self._healed_at is not None and now - self._healed_at < HEAL_EVERY)
+                or portable.is_portable()):
+            return
+        svc = settings.service_state()
+        if not svc or not svc["installed"] or svc["start"] == "disabled":
+            return
+        self._healing = True
+        self._healed_at = now
+        threading.Thread(target=self._heal, args=(exc, svc), daemon=True).start()
+
+    def _heal(self, exc, svc):
+        state = "работает" if svc["running"] else "остановлена"
+        # Код Windows: 2 — канала нет, 5 — нет доступа, 109/232 — служба оборвала
+        # соединение. По нему в следующий раз видно, что сломалось.
+        code = getattr(exc.__cause__, "winerror", None)
+        why = f"{exc}, код {code}" if code is not None else str(exc)
+        _log(f"служба молчит {HEAL_AFTER:.0f} с ({why}), в диспетчере служб — {state}: "
+             f"перезапускаю")
+        try:
+            _log("→ " + settings.restart_service())
+        except Exception as err:                           # noqa: BLE001
+            _log(f"!! перезапуск не вышел: {err}")
+        finally:
+            self._healing = False
+            self._silent_since = None
 
     def _menu_sig(self):
         """То, от чего зависят подписи и доступность пунктов меню."""
@@ -283,7 +336,8 @@ class Tray:
         if self.installing:
             return "Обновляю TunnelVPN…"
         if not st:
-            return "TunnelVPN — служба не отвечает"
+            return ("TunnelVPN — служба не отвечает, перезапускаю её…" if self._healing
+                    else "TunnelVPN — служба не отвечает")
         if st.get("busy"):
             return f"TunnelVPN — {st['busy']}…"
         if not st.get("up"):
@@ -758,6 +812,18 @@ class Tray:
         icon.visible = True
         threading.Thread(target=self.poll, daemon=True).start()
         threading.Thread(target=self._watch_updates, daemon=True).start()
+
+
+def _log(line):
+    """Строка в журнал трея tray.log. Сбой записи — не повод ронять опрос."""
+    path = os.path.join(paths.LOGS, "tray.log")
+    try:
+        paths.ensure_dirs()
+        fresh = os.path.exists(path) and os.path.getsize(path) >= TRAY_LOG_BYTES
+        with open(path, "w" if fresh else "a", encoding="utf-8") as fh:
+            fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}\n")
+    except OSError:
+        pass
 
 
 def _installing():

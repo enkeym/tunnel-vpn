@@ -150,6 +150,88 @@ def service_state():
     return {"installed": True, "running": running, "start": start}
 
 
+# Останов службы убирает маршруты (SvcStop просит у диспетчера до 60 с),
+# запуск — секунды. Зависшая служба не отпустит и свой останов: по истечении
+# STOP_WAIT её процесс снимаем.
+SERVICE_STOP_WAIT = 60.0
+SERVICE_START_WAIT = 30.0
+_ALREADY_RUNNING = 1056     # ERROR_SERVICE_ALREADY_RUNNING
+
+
+def restart_service(stop_wait=SERVICE_STOP_WAIT, start_wait=SERVICE_START_WAIT):
+    """Поднимает службу, которая не отвечает по каналу: остановленную
+    запускает, работающую перезапускает, зависшую снимает и запускает.
+
+    Раньше окно в этом случае звало перезагрузить компьютер: процесс службы
+    жив, диспетчер служб считает её работающей и сам не перезапустит.
+    Возвращает итог для журнала; не вышло — OSError или pywintypes.error.
+    Нужны права администратора: у трея и окна они есть.
+    """
+    import pywintypes
+    import win32service
+
+    scm = win32service.OpenSCManager(None, None, win32service.SC_MANAGER_CONNECT)
+    try:
+        h = win32service.OpenService(
+            scm, paths.SERVICE_NAME,
+            win32service.SERVICE_QUERY_STATUS | win32service.SERVICE_START
+            | win32service.SERVICE_STOP)
+        try:
+            how = "запущена"
+            first = win32service.QueryServiceStatusEx(h)["CurrentState"]
+            st = _wait_service(h, (win32service.SERVICE_STOPPED,
+                                   win32service.SERVICE_RUNNING), 10)
+            if (first == win32service.SERVICE_START_PENDING
+                    and st["CurrentState"] == win32service.SERVICE_RUNNING):
+                # Застали запуск (вход в систему): перезапуск только сорвал бы его.
+                return "служба запускалась сама — дождался"
+            if st["CurrentState"] != win32service.SERVICE_STOPPED:
+                try:
+                    win32service.ControlService(h, win32service.SERVICE_CONTROL_STOP)
+                except pywintypes.error:
+                    # Уже стоит или не принимает команду (висит в *_PENDING):
+                    # первое покажет ожидание, второе снимем ниже.
+                    pass
+                st = _wait_service(h, (win32service.SERVICE_STOPPED,), stop_wait)
+                how = "перезапущена"
+                if st["CurrentState"] != win32service.SERVICE_STOPPED:
+                    # taskkill, а не TerminateProcess: он сам включает
+                    # SeDebugPrivilege, без неё процесс LocalSystem не открыть.
+                    _run([system32("taskkill.exe"), "/PID", str(st["ProcessId"]), "/F"])
+                    _wait_service(h, (win32service.SERVICE_STOPPED,), 10)
+                    how = f"не остановилась за {stop_wait:.0f} с — процесс снят, запущена"
+            try:
+                win32service.StartService(h, None)
+            except pywintypes.error as exc:
+                # После снятого процесса диспетчер мог запустить её сам
+                # (действие при сбое — перезапуск через 5 с).
+                if exc.winerror != _ALREADY_RUNNING:
+                    raise
+            st = _wait_service(h, (win32service.SERVICE_RUNNING,), start_wait)
+            if st["CurrentState"] != win32service.SERVICE_RUNNING:
+                raise TimeoutError(f"служба не запустилась за {start_wait:.0f} с")
+            return f"служба {how}"
+        finally:
+            win32service.CloseServiceHandle(h)
+    finally:
+        win32service.CloseServiceHandle(scm)
+
+
+def _wait_service(h, states, timeout):
+    """Статус службы (QueryServiceStatusEx), как только она в одном из states,
+    или последний, если за timeout секунд не дошла."""
+    import time
+
+    import win32service
+
+    deadline = time.monotonic() + timeout
+    while True:
+        st = win32service.QueryServiceStatusEx(h)
+        if st["CurrentState"] in states or time.monotonic() >= deadline:
+            return st
+        time.sleep(0.25)
+
+
 # ------------------------------------------------------------- обновления
 
 def _version_key(text):

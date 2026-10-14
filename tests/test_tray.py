@@ -545,6 +545,74 @@ def test_пока_ставится_обновление_значок_занят_
     assert (t.state, t._title()) == ("error", "TunnelVPN — служба не отвечает")
 
 
+_SVC_UP = {"installed": True, "running": True, "start": "auto"}
+
+
+def _healable(monkeypatch, svc=_SVC_UP, is_portable=False):
+    """Служба молчит; перезапуск ждёт release. Возвращает (вызовы, журнал, release)."""
+    monkeypatch.setattr(ipc, "call", _no_service)
+    monkeypatch.setattr(tray.portable, "is_portable", lambda: is_portable)
+    monkeypatch.setattr(tray.settings, "service_state", lambda: svc)
+    calls, logged, release = [], [], threading.Event()
+
+    def restart():
+        calls.append(1)
+        release.wait(5)
+        return "служба перезапущена"
+    monkeypatch.setattr(tray.settings, "restart_service", restart)
+    monkeypatch.setattr(tray, "_log", logged.append)
+    return calls, logged, release
+
+
+def _wait(cond):
+    deadline = time.monotonic() + 5
+    while not cond() and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
+def test_молчащую_службу_трей_перезапускает_сам_и_один_раз(monkeypatch):
+    """Служба жива, а канал молчит: раньше окно до перезагрузки звало
+    перезагрузить компьютер. Теперь трей перезапускает её сам."""
+    calls, logged, release = _healable(monkeypatch)
+    t = tray.Tray()
+
+    t._poll_once()
+    assert (calls, t.state) == ([], "error")           # один опрос — ещё не повод
+
+    t._silent_since -= tray.HEAL_AFTER
+    t._poll_once()
+    _wait(lambda: calls)
+    t._poll_once()                                      # пока идёт — второго нет
+    assert (t.state, t._title()) == ("busy", "TunnelVPN — служба не отвечает, перезапускаю её…")
+
+    release.set()
+    _wait(lambda: not t._healing)
+    assert calls == [1]
+    assert logged[-1] == "→ служба перезапущена"
+
+    t._poll_once()
+    t._silent_since -= tray.HEAL_AFTER
+    t._poll_once()                                      # снова молчит — ждём HEAL_EVERY
+    assert (calls, t.state) == ([1], "error")
+
+
+@pytest.mark.parametrize("svc, is_portable", [
+    (_SVC_UP, True),
+    ({"installed": True, "running": False, "start": "disabled"}, False),
+    ({"installed": False, "running": False, "start": ""}, False),
+    (None, False),
+], ids=["портативная", "отключена руками", "не установлена", "не узнать"])
+def test_службу_которую_не_поднять_трей_не_трогает(monkeypatch, svc, is_portable):
+    calls, _logged, _release = _healable(monkeypatch, svc, is_portable)
+    t = tray.Tray()
+
+    t._poll_once()
+    t._silent_since -= tray.HEAL_AFTER
+    t._poll_once()
+
+    assert (calls, t._healing, t.state) == ([], False, "error")
+
+
 def test_пока_ставится_обновление_включить_и_перезапустить_недоступны(monkeypatch, mark):
     pytest.importorskip("pystray")
     monkeypatch.setattr(ipc, "call", lambda _op, **_kw: {"ok": True, "status": {"up": True}})

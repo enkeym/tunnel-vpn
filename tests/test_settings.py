@@ -3,9 +3,87 @@
 import base64
 import io
 import subprocess
+import sys
+import types
 import urllib.error
 
 from tunnelvpn import ipc, paths, settings, window
+
+# ------------------------------------------------ перезапуск службы треем
+
+STOPPED, START_PENDING, RUNNING = 1, 2, 4
+
+
+class _ScmError(Exception):
+    def __init__(self, winerror):
+        super().__init__(winerror)
+        self.winerror = winerror
+
+
+def _scm(monkeypatch, state, hung=False, starting=False):
+    """Поддельный диспетчер служб. hung — служба не отпускает свой останов;
+    starting — первый опрос застаёт START_PENDING. calls — что с ней делали."""
+    svc = types.SimpleNamespace(state=state, starting=starting, calls=[])
+
+    def query(_h):
+        if svc.starting:
+            svc.starting = False
+            return {"CurrentState": START_PENDING, "ProcessId": 77}
+        return {"CurrentState": svc.state, "ProcessId": 77}
+
+    def control(_h, _code):
+        svc.calls.append("stop")
+        if not hung:
+            svc.state = STOPPED
+
+    def start(_h, _args):
+        svc.calls.append("start")
+        svc.state = RUNNING
+
+    def kill(args, **_kw):
+        svc.calls.append(" ".join(args[1:]))
+        svc.state = STOPPED
+    mod = types.SimpleNamespace(
+        SC_MANAGER_CONNECT=1, SERVICE_QUERY_STATUS=4, SERVICE_START=16, SERVICE_STOP=32,
+        SERVICE_CONTROL_STOP=1, SERVICE_STOPPED=STOPPED,
+        SERVICE_START_PENDING=START_PENDING, SERVICE_RUNNING=RUNNING,
+        OpenSCManager=lambda *_a: "scm", OpenService=lambda *_a: "h",
+        CloseServiceHandle=lambda _h: None, QueryServiceStatusEx=query,
+        ControlService=control, StartService=start)
+    monkeypatch.setitem(sys.modules, "win32service", mod)
+    monkeypatch.setitem(sys.modules, "pywintypes", types.SimpleNamespace(error=_ScmError))
+    monkeypatch.setattr(settings, "_run", kill)
+    return svc
+
+
+def test_остановленную_службу_только_запускает(monkeypatch):
+    svc = _scm(monkeypatch, STOPPED)
+
+    assert settings.restart_service() == "служба запущена"
+    assert svc.calls == ["start"]
+
+
+def test_работающую_но_молчащую_службу_перезапускает(monkeypatch):
+    svc = _scm(monkeypatch, RUNNING)
+
+    assert settings.restart_service() == "служба перезапущена"
+    assert svc.calls == ["stop", "start"]
+
+
+def test_зависшую_службу_снимает_и_запускает(monkeypatch):
+    svc = _scm(monkeypatch, RUNNING, hung=True)
+
+    assert settings.restart_service(stop_wait=0.1).startswith("служба не остановилась")
+    assert svc.calls == ["stop", "/PID 77 /F", "start"]
+
+
+def test_запускающуюся_службу_не_перезапускает(monkeypatch):
+    """Трей при входе в систему застал запуск: перезапуск сорвал бы его."""
+    svc = _scm(monkeypatch, RUNNING, starting=True)
+
+    assert settings.restart_service() == "служба запускалась сама — дождался"
+    assert svc.calls == []
+
 
 TASK = """<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">

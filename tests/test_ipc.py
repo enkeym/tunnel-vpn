@@ -90,6 +90,36 @@ def test_сервер_сбрасывает_буфер_до_отключения(
                          "CloseHandle"]
 
 
+def test_сбой_не_от_windows_не_роняет_цикл_канала(win, monkeypatch):
+    """Раньше всё, кроме pywintypes.error, молча убивало поток канала: служба
+    жила, а окно до перезагрузки писало «Служба не отвечает»."""
+    logged, served = [], threading.Event()
+    server = ipc.Server(handler=None, log=logged.append)
+    monkeypatch.setattr(server, "_security", lambda: None)
+    monkeypatch.setattr(server.stop_event, "wait", lambda _t: None)
+    monkeypatch.setattr(server, "_serve_one", lambda pipe: served.set())
+    pipes = [RuntimeError("сбой"), "p2"]
+
+    def create(*_a):
+        if not pipes:
+            server.stop_event.set()
+            raise _WinError(232)
+        item = pipes.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+    for name, value in (("PIPE_ACCESS_DUPLEX", 3), ("PIPE_TYPE_BYTE", 0),
+                        ("PIPE_READMODE_BYTE", 0), ("PIPE_WAIT", 0),
+                        ("PIPE_UNLIMITED_INSTANCES", 255), ("CreateNamedPipe", create),
+                        ("ConnectNamedPipe", lambda pipe, _ov: None)):
+        monkeypatch.setattr(sys.modules["win32pipe"], name, value, raising=False)
+
+    server.serve_forever()
+
+    assert served.wait(5)
+    assert logged == ["канал: RuntimeError('сбой')"]
+
+
 def _status(check_seq, checking, home, work):
     return {"check_seq": check_seq, "checking": checking,
             "tunnels": [{"id": "work", "seq": work}, {"id": "home", "seq": home}]}
