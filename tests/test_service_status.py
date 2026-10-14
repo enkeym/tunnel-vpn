@@ -106,6 +106,24 @@ def test_раздельное_туннелирование_включено_ко
     assert core._status()["split"] is False
 
 
+def test_номер_статуса_растёт_и_после_перезапуска_службы(monkeypatch):
+    """rev: окно не кладёт статус старше показанного (core.js:render). Два
+    статуса в один тик грубых часов Windows всё равно по порядку; перезапущенная
+    служба счёт с нуля не начинает — иначе окно отбросило бы все её статусы."""
+    core = _core(monkeypatch, up=True)
+    _quiet(monkeypatch, core)
+    _with_tunnels(monkeypatch, {"id": "home", "name": "Личный", "mode": "all"})
+    monkeypatch.setattr(service.time, "monotonic_ns", lambda: 5_000_000_000)
+
+    first, second = core._status()["rev"], core._status()["rev"]
+
+    assert second > first
+    restarted = _core(monkeypatch, up=True)
+    _quiet(monkeypatch, restarted)
+    monkeypatch.setattr(service.time, "monotonic_ns", lambda: 6_000_000_000)
+    assert restarted._status()["rev"] > second
+
+
 def test_ipv6_через_туннель_по_конфигу_работающего_основного(monkeypatch):
     """main_v6 — v6-адрес в активном конфиге включённого основного, а не
     правило брандмауэра: оно на физическом адаптере стоит всегда."""

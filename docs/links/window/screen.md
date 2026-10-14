@@ -26,8 +26,11 @@ paths:
   `core.js`; там же сброс `WANT` карточек); `askFull` зовёт `pend('restart')`. Кнопка VPN `#btn-toggle` — с подписью
   «Включить / Выключить»; её ореол и его дыхание в `app.css` общие с `.power` карточки (ровный — `::after`,
   у VPN цвета `--st` из `#top`; дыхание — `::before`, класс `working`). После замеченного
-  подъёма VPN, пока ни один включённый туннель не ответил (`m.settling`, `model.js`; не дольше `PENDING_MS` из `topbar.js`), дышат обе — `paintButtons`
-  и `paintCard`; дыхание у обеих одного цвета (`--text`); условие ответа — то же, что гасит `busy` у `cardState` (`t.check` и не `checking`). «Проверить все»
+  подъёма VPN, пока не ответил основной (без работающего основного — любой включённый; `m.settling`, `model.js`; не дольше `PENDING_MS` из `topbar.js`), дышат обе — `paintButtons`
+  и `paintCard`; дыхание у обеих одного цвета (`--text`); условие ответа — то же, что гасит `busy` у `cardState` (`t.check` и не `checking`).
+  Пока дышат (`m.settling`) или плитка включённого туннеля с выбранным конфигом пишет «проверяю…» (`m.waiting`:
+  без `check` или `checking`), `headOf` пишет «Проверяю…», а не «Всё работает»: условие `waiting` правится вместе с
+  веткой `busy` в `cardState`. «Проверить все»
   (`checkAll`): VPN работает — `send('check')`, выключен — `testStart` выбранного конфига каждой плитки (`cards.js`);
   крутится только за свою проверку — `CHECKING && CHECK_BY_HAND` или `testingAny(s) && TEST_ALL`, а заблокирована
   при любой (`CHECKING || testingAny(s)`); `TESTING`, `TEST_ALL` — в `model.js`: `topbar.js` грузится раньше `cards.js`.
@@ -42,7 +45,9 @@ paths:
   `exit_state`/`out` у основного; меню ⋮ (`cardMenu`, у запасного — `spareMenu`) — «Всё остальное через этот
   туннель»/«Запасным к» только при `full`, вопрос при удалении последнего — по `rules` (`dropAsk`),
   «Выключить»/«Включить» у всех (`flipEnabled`, только флаг), круглая кнопка ⏻ (`r.pow` → `tilePower`,
-  `aria-pressed` по `enabled`, `working` пока `WANT` или VPN включается/выключается) — у любого
+  `aria-pressed` по `enabled`, `working` пока `WANT` или VPN включается/выключается; `WANT` снимает `sendWanted` по
+  ответу моста — `window.py` отвечает после `refresh` со статусом после команды; ветка `_dispatch` без `refresh` до
+  возврата вернёт кнопку к прошлому статусу) — у любого
   туннеля с конфигом, нажать — только с выбранным (`confOf`). VPN выключен — `startOnly` шлёт
   `start_only {tunnel}` → `window.py:_dispatch` → `start-only` службы (`_do_start(only=…)`: флаги одной
   записью и start под одним замком, не поднялся — флаги как были). Выключен последний включённый при живом VPN — `toggleVpn` (stop), флаг остаётся: пустой набор

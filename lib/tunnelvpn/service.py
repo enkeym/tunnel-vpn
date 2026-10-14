@@ -323,6 +323,11 @@ class Core:
     # (id туннеля, имя конфига) → {result, answer, at, stamp, checking}: итоги
     # _test_conf. Пишется новым словарём под _tests_lock: статус читает без замка.
     _conf_checks = {}
+    # Номер статуса (rev): окно не кладёт статус старше показанного (core.js:render).
+    # От часов с загрузки системы — перезапущенная служба счёт с нуля не начинает;
+    # +1 — часы Windows грубые, два статуса в один тик всё равно по порядку.
+    _rev = 0
+    _rev_lock = threading.Lock()
 
     # ---------------------------------------------------------------- лог
 
@@ -492,8 +497,16 @@ class Core:
             return {"ok": True, "lines": self._tail_log(int(payload.get("lines", 200)))}
         return {"ok": False, "error": f"неизвестная команда: {op}"}
 
+    def _next_rev(self):
+        with self._rev_lock:
+            self._rev = max(self._rev + 1, time.monotonic_ns() // 1000)
+            return self._rev
+
     def _status(self):
+        # Номер — раньше снимка: статус, начатый позже, и номер получит больший.
+        rev = self._next_rev()
         st = self.prober.snapshot()
+        st["rev"] = rev
         st["up"] = bool(st.get("tun")) and bool(st.get("r_low"))
         st["busy"] = self.busy
         # Идёт ли сетевая проверка — и та, что сама после подъёма туннеля:

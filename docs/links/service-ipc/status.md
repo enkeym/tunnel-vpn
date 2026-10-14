@@ -18,6 +18,10 @@ paths:
 - `pending_apply` — `lib/tunnelvpn/service.py:_status` (`Core.pending_apply`: `apply` с `ask` ответил `ask`, правка
   на диске, VPN по старой; снимают следующий `apply` и `_stop_locked`) → заголовок «Правка ждёт переподключения» в
   `lib/tunnelvpn/ui/js/model.js:headOf` (перед «Всё работает»). Трей и CLI его не читают.
+- `rev` — `lib/tunnelvpn/service.py:_status` (`_next_rev`: растёт на каждый статус, от `time.monotonic_ns` — после
+  перезапуска службы не меньше прежнего) → `lib/tunnelvpn/ui/js/core.js:render` отбрасывает статус с `rev` меньше
+  показанного; без службы (`no_service`) номера нет. Номер, начатый с нуля или взятый после снимка, — окно
+  отбросит свежие статусы или положит старый поверх нового. Мок — `snap` в `lib/tunnelvpn/ui/dev/mock-api.js`.
 - `log_level` — `lib/tunnelvpn/service.py:_status` (из `tunnels.json`) → галочка «подробный журнал» в
   `lib/tunnelvpn/ui/js/settings.js` (`=== 'debug'`).
 - `kill_switch` — `lib/tunnelvpn/service.py:_status` (из `tunnels.json`) → переключатель «Kill-switch» в
