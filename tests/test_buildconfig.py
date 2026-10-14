@@ -594,72 +594,6 @@ def test_второй_слот_свой_socks_и_файл(build):
     assert buildconfig.side_json("work", 1).endswith("tunnel2-work.json")
 
 
-def test_обход_ведёт_сервер_туннеля_через_вход_основного(build):
-    """14 октября из офисной подсети wg0-korolev ответил только через socks личного;
-    без логина вход основного отвечает «unsupported auth method: 255»."""
-    main, sides = build(THREE)
-    link = buildconfig.side_link(main, "home")
-
-    cfg = buildconfig.detour_config(sides["work"], link, "203.0.113.77")
-
-    ep = cfg["endpoints"][0]
-    assert ep["detour"] == buildconfig.DETOUR_TAG
-    assert ep["peers"][0]["address"] == "203.0.113.77"
-    assert cfg["outbounds"] == [{
-        "type": "socks", "tag": buildconfig.DETOUR_TAG, "server": "127.0.0.1",
-        "server_port": link["port"], "username": link["username"],
-        "password": link["password"]}]
-    assert cfg["inbounds"] == sides["work"]["inbounds"]
-    # Прямой конфиг цел: по нему ставятся и снимаются маршруты к пирам.
-    assert "detour" not in sides["work"]["endpoints"][0]
-    assert sides["work"]["endpoints"][0]["peers"][0]["address"] == "198.51.100.10"
-
-
-def test_обход_без_адреса_оставляет_прежний(build):
-    main, sides = build(THREE)
-
-    cfg = buildconfig.detour_config(sides["work"], buildconfig.side_link(main, "home"), "")
-
-    assert cfg["endpoints"][0]["peers"] == sides["work"]["endpoints"][0]["peers"]
-
-
-def test_конфиг_обхода_свой_файл_на_слот():
-    assert buildconfig.detour_json("work").endswith("detour-work.json")
-    assert buildconfig.detour_json("work", 1).endswith("detour2-work.json")
-
-
-@pytest.fixture
-def confs(tmp_path, monkeypatch):
-    """tunnels.json и папки конфигов туннелей во временной conf\\."""
-    monkeypatch.setattr(paths, "TUNNELS_JSON", str(tmp_path / "tunnels.json"))
-    monkeypatch.setattr(paths, "CONF_TUNNELS", str(tmp_path / "tunnels"))
-
-    def put(tid, text, active="corp"):
-        (tmp_path / "tunnels" / tid).mkdir(parents=True, exist_ok=True)
-        (tmp_path / "tunnels" / tid / f"{active}.conf").write_text(text, encoding="utf-8")
-        tunnels.save({"tunnels": [{"id": tid, "name": tid.title(), "mode": "list",
-                                   "active": active}]})
-    return put
-
-
-@pytest.mark.parametrize("endpoint, peer", [
-    ("vpn.korolev.example:51820", "vpn.korolev.example"),
-    ("198.51.100.10:51820", "198.51.100.10"),
-])
-def test_сервер_туннеля_из_endpoint_активного_конфига(confs, endpoint, peer):
-    confs("work", CORP.replace("198.51.100.10:51820", endpoint))
-
-    assert buildconfig.peer_name("work") == peer
-
-
-def test_сервера_нет_без_туннеля_или_его_конфига(confs, tmp_path):
-    confs("work", CORP, active="corp")
-    (tmp_path / "tunnels" / "work" / "corp.conf").unlink()
-
-    assert buildconfig.peer_name("work") == ""
-    assert buildconfig.peer_name("lab") == ""
-
-
 def test_пароль_socks_новый_на_каждую_сборку(build):
     first, _ = build(THREE)
     second, _ = build(THREE)
@@ -1008,9 +942,7 @@ def test_без_работающего_запуска_заглушки_нет(bu
 
 def test_drop_side_убирает_конфиги_туннеля_всех_слотов(build, tmp_path):
     build(THREE)
-    for path in (buildconfig.side_json("work", 1), buildconfig.detour_json("work"),
-                 buildconfig.detour_json("work", 1)):
-        _write(tmp_path, os.path.basename(path), "{}")
+    _write(tmp_path, os.path.basename(buildconfig.side_json("work", 1)), "{}")
 
     buildconfig.drop_side("work")
 
@@ -1158,11 +1090,9 @@ def _load(path):
 
 
 def test_собирает_туннели_из_tunnels_json(state):
-    # Конфиги второго слота и обхода прошлого запуска: в них ключ и старые пароли.
+    # Конфиг второго слота прошлого запуска: в нём ключ и старый пароль.
     state.mkdir(parents=True)
-    stale = ("tunnel2-home.json", "detour-work.json", "detour2-work.json")
-    for name in stale:
-        (state / name).write_text("{}", encoding="utf-8")
+    (state / "tunnel2-home.json").write_text("{}", encoding="utf-8")
 
     built = buildconfig.main(log=lambda line: None)
 
@@ -1171,7 +1101,7 @@ def test_собирает_туннели_из_tunnels_json(state):
     assert buildconfig.side_ids(main) == ["work", "home"]
     assert (state / "tunnel-work.json").exists()
     assert (state / "tunnel-home.json").exists()
-    assert not any((state / name).exists() for name in stale)
+    assert not (state / "tunnel2-home.json").exists()
     [rule] = buildconfig.rule_set_rules(main, "rules-work")
     assert rule["rules"][0]["domain_suffix"] == ["corp.example"]
     assert rule["rules"][1] == {"ip_cidr": ["10.10.5.9/32"], "invert": True}

@@ -615,7 +615,7 @@ def test_tunnel_answer_не_спрашивает_когда_нечем(monkeypat
     monkeypatch.setattr(probe, "_dns_via_proxy",
                         lambda *a, **kw: pytest.fail("спросил без DNS"))
 
-    assert probe.Prober(link=lambda tid: {"port": 1}).tunnel_answer(tid) is None
+    assert probe.Prober(link=lambda tid: {"port": 1}).tunnel_answer(tid) == ""
 
 
 def test_check_plan_по_tunnels_json_и_собранному_конфигу(monkeypatch, tmp_path):

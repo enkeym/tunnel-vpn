@@ -16,7 +16,7 @@ paths:
   `probe._has_conf`). Туннель без `.conf`: полная сборка пропускает целиком; сборка на ходу (`links` с его id)
   оставляет **заглушку** `(t, None, None)` на его месте в `data["tunnels"]` — socks из `links`, DNS из `dns`
   (`tunnel_dns` работающего), пустые `rules-<id>`/`names-<id>`, без бокового и без `built`; его `tunnel-<id>.json`,
-  `tunnel2-`, `detour*-` убирает `buildconfig.drop_side` из `tunnel.reload_sides`. Читатели бокового по
+  `tunnel2-` убирает `buildconfig.drop_side` из `tunnel.reload_sides`. Читатели бокового по
   `side_ids` (`service._howto`, `probe.peer_addrs`, `tunnel._peer_ips`) без файла получают `{}`. `site.env` сборка больше не читает, окружение для неё
   `tunnel.start` не готовит; `SB_CORP_*`, `SB_STACK` — по-прежнему переменные окружения службы.
 - `log_level` из `tunnels.json` → `"log"` конфига sing-box. Уровень выше `info` глушит строки, которые
@@ -36,11 +36,6 @@ paths:
   `check_plan` отдаёт `dns` только «по списку», иначе сторож и `корп-DNS` спрашивали бы DNS основного), `tunnel_domains`
   (→ `lib/tunnelvpn/tunnel.py:_corp_domains` → `winnet.nrpt_set`), `tunnel_nets` (→ `window.py:_howto`).
   Сменил форму тега — правка этих функций, иначе NRPT не ставится и боковые не находят socks.
-- Обход бокового через основной — `lib/tunnelvpn/buildconfig.py:detour_config` (endpoint с `detour` → outbound
-  `DETOUR_TAG` = `detour`, socks на вход основного с его логином) в `detour_json` (`detour[2]-<id>.json`); сервер
-  для резолва — `peer_name` из Endpoint `tunnels.active_conf` (`parse_conf`). Пишет и читает только
-  `lib/tunnelvpn/tunnel.py:_spawn`; поменял форму endpoint или peers в `side_config` — правка `detour_config`.
-  В файле приватный ключ и пароль socks основного: каждая сборка убирает все `detour*` (`_drop_stale_sides`).
 - Что забирает туннель «по списку» — не в `config.json`, а в локальных rule-set `state\run\rules-<id>.json`
   (маршрут) и `names-<id>.json` (домены его DNS): `buildconfig.rules_tag`/`names_tag`/`rule_set_json`, пишет
   `build` раньше `config.json` (`sing-box check` без файла отказывает), убирает `_drop_stale_sides`. В основном

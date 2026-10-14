@@ -586,68 +586,6 @@ def test_перезапуск_туннеля_без_туннеля_отказ(en
     assert seen["started"] == []
 
 
-# ------------------------------------------------------------ обход через основной
-
-
-def test_обход_пишет_свой_конфиг_а_прямой_не_трогает(env):
-    tun, _build, seen = env
-    assert tun.start() == ""
-    work = _side(tun, "work")
-    direct = buildconfig.read_json(buildconfig.side_json("work"))
-
-    assert tun.set_detour(work, "203.0.113.77") == ""
-
-    path = buildconfig.detour_json("work", 1)
-    assert seen["started"][-1] == path
-    cfg = buildconfig.read_json(path)
-    assert cfg["endpoints"][0]["detour"] == buildconfig.DETOUR_TAG
-    assert cfg["endpoints"][0]["peers"][0]["address"] == "203.0.113.77"
-    assert cfg["outbounds"][0]["server_port"] == 1081
-    assert cfg["inbounds"][0]["listen_port"] == 1082
-    assert buildconfig.read_json(buildconfig.side_json("work")) == direct
-    assert work.detour["of"] == ("home", tun.main.started)
-    # Пакеты к серверу несёт основной внутри своего туннеля: host-маршрут не нужен.
-    assert not any(r[0] == "203.0.113.77/32" for r in seen["net"].added)
-
-
-def test_снова_напрямую_с_прямого_конфига(env):
-    tun, _build, seen = env
-    assert tun.start() == ""
-    work = _side(tun, "work")
-    assert tun.set_detour(work, "203.0.113.77") == ""
-
-    assert tun.set_detour(work) == ""
-
-    assert work.detour is None
-    assert seen["started"][-1] == buildconfig.side_json("work")
-
-
-def test_обход_при_лежащем_основном_отказ_путь_прежний(env):
-    tun, _build, seen = env
-    assert tun.start() == ""
-    work = _side(tun, "work")
-    tun.main.proc.returncode = 1
-    started = list(seen["started"])
-
-    assert "обходить не через что" in tun.set_detour(work, "203.0.113.77")
-
-    assert work.detour is None
-    assert seen["started"] == started
-
-
-def test_неудачный_перезапуск_оставляет_прежний_путь(env):
-    tun, _build, seen = env
-    assert tun.start() == ""
-    work = _side(tun, "work")
-    assert tun.set_detour(work, "203.0.113.77") == ""
-    before = work.detour
-    seen["socks_open"] = False
-
-    assert "не открыл socks" in tun.set_detour(work)
-
-    assert work.detour is before
-
-
 TRIAL_CONF = """[Interface]
 PrivateKey = cHJpdmF0ZS1rZXktcHJpdmF0ZS1rZXktcHJpdmF0ZS0=
 Address = 10.8.0.2/32
@@ -941,37 +879,6 @@ def test_переписанный_файл_того_же_конфига_тоже
     assert work.terminated
     # Не основной: выход не трогаем.
     assert seen["outs"] == []
-
-
-def test_новый_конфиг_снимает_обход(live):
-    """Сервер у нового конфига свой: сперва напрямую, обход решит сторож."""
-    tun, seen = live
-    work = _side(tun, "work")
-    assert tun.set_detour(work, "203.0.113.77") == ""
-    with open(tunnels.active_conf(tunnels.find(tunnels.load(), "work")), "a",
-              encoding="utf-8") as fh:
-        fh.write("MTU = 1380\n")
-
-    tun.reload_sides()
-
-    assert work.detour is None
-    assert seen["started"][-1] == buildconfig.side_json("work")
-
-
-def test_новый_конфиг_не_поднялся_обход_у_старого_процесса_остаётся(live):
-    """Старый процесс работает дальше через основной: сторож должен это знать."""
-    tun, seen = live
-    work = _side(tun, "work")
-    assert tun.set_detour(work, "203.0.113.77") == ""
-    before = work.detour
-    with open(tunnels.active_conf(tunnels.find(tunnels.load(), "work")), "a",
-              encoding="utf-8") as fh:
-        fh.write("MTU = 1380\n")
-    seen["socks_open"] = False
-
-    tun.reload_sides()
-
-    assert work.alive() and work.detour is before
 
 
 def test_замена_конфига_даёт_процессу_новое_имя_туннеля(live):

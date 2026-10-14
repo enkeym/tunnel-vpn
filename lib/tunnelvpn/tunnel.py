@@ -113,10 +113,6 @@ class Side:
         # Когда запущен текущий процесс (time.monotonic), 0.0 — не запущен:
         # свежий отвечает не сразу, и пробер ждёт его (probe.SIDE_SETTLE).
         self.started = 0.0
-        # Путь к серверу через процесс основного (Tunnel.set_detour): {of: (id
-        # основного, его started), link: связь его входа, peer: адрес сервера или
-        # ''}; None — напрямую. Новая сеть — новые Side, и снова напрямую.
-        self.detour = None
 
     @property
     def tag(self):
@@ -678,20 +674,14 @@ class Tunnel:
         на этот порт, и до его открытия первые запросы получили бы отказ.
         """
         cfg_path = buildconfig.side_json(side.tid)
-        if slot or side.detour:
-            # Сборка пишет конфиг первого слота напрямую; другой слот и обход —
-            # тот же со своей связью и с выходом через основной.
+        if slot:
+            # Сборка пишет конфиг первого слота; другой — тот же с его связью.
             cfg = buildconfig.read_json(cfg_path)
-            if not cfg.get("inbounds") or not cfg.get("endpoints"):
+            if not cfg.get("inbounds"):
                 return None, f"конфиг процесса «{side.title}» не прочитать"
-            cfg = buildconfig.slot_config(cfg, link)
             cfg_path = buildconfig.side_json(side.tid, slot)
-            if side.detour:
-                cfg = buildconfig.detour_config(cfg, side.detour["link"],
-                                                side.detour["peer"])
-                cfg_path = buildconfig.detour_json(side.tid, slot)
             try:
-                buildconfig.write_json(cfg_path, cfg)
+                buildconfig.write_json(cfg_path, buildconfig.slot_config(cfg, link))
             except OSError as exc:
                 return None, f"конфиг процесса «{side.title}» не записать: {exc}"
         self.log(f"→ запускаю процесс «{side.title}», журнал: {logfile.name}")
@@ -861,28 +851,6 @@ class Tunnel:
         err = self._swap_slot(side) if side.alive() else self._start_side(side)
         if not err:
             self.log(f"→ процесс «{side.title}» перезапущен")
-        return err
-
-    def set_detour(self, side, peer=None):
-        """Боковой side — к серверу через процесс основного на адрес peer ('' —
-        прежний) или, peer None, снова напрямую; перезапуском (restart_side).
-        '' или ошибка; при ошибке путь прежний.
-
-        Host-маршрут к адресу обхода не нужен: пакеты к серверу несёт процесс
-        основного внутри своего туннеля."""
-        before = side.detour
-        if peer is None:
-            side.detour = None
-        else:
-            main = self.main
-            link = (self.link_of(main) if main is not None and main is not side
-                    and main.alive() else None)
-            if not link:
-                return f"«{side.title}»: основной туннель не работает — обходить не через что"
-            side.detour = {"of": (main.tid, main.started), "link": link, "peer": peer}
-        err = self.restart_side(side)
-        if err:
-            side.detour = before
         return err
 
     def _swap_slot(self, side):
@@ -1098,14 +1066,14 @@ class Tunnel:
         stamp. '' или ошибка; не записался конфиг или не поднялся новый процесс при
         живом старом — старый работает дальше, а метка прежняя — следующая правка
         попробует снова."""
-        before = side.source, side.detour
+        before = side.source
         err = self._place_side(side, cfg, stamp)
         if err:
             return err
         self.log(f"→ сменился конфиг «{side.title}» — перезапускаю только его процесс")
         err = self.restart_side(side)
         if err and side.alive():
-            side.source, side.detour = before
+            side.source = before
         return err
 
     def _place_side(self, side, cfg, stamp):
@@ -1131,9 +1099,7 @@ class Tunnel:
         except OSError as exc:
             return f"конфиг процесса «{side.title}» не записать: {exc}"
         # На диске уже новый: не поднимется — сторож поднимет его из этого файла.
-        # Сервер у нового свой: сперва напрямую, обход решит сторож.
         side.source = stamp
-        side.detour = None
         return ""
 
     def _peers_owned(self):
