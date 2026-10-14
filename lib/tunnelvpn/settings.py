@@ -6,12 +6,15 @@
 """
 
 import base64
+import html
 import json
 import os
 import platform
 import re
+import ssl
 import subprocess
 import urllib.request
+import xml.etree.ElementTree as ET
 
 from . import paths
 
@@ -26,6 +29,12 @@ REPO_URL = "https://github.com/enkeym/tunnel-vpn"
 # репозитории — macOS, mac-v0.1.x). Версии Windows — теги v<цифра>…, бета
 # публикуется обычным релизом (prerelease: false), но черновики пропускаем.
 RELEASES_API = "https://api.github.com/repos/enkeym/tunnel-vpn/releases?per_page=30"
+# Запасной список, когда API не ответил: без лимита API (60 запросов в час на
+# адрес — у общего выхода VPN или оператора его выбирают чужие запросы), без
+# черновиков, последние 10 релизов.
+RELEASES_FEED = f"{REPO_URL}/releases.atom"
+FEED_MAX = 2 ** 20
+_ATOM = "{http://www.w3.org/2005/Atom}"
 RELEASE_TAG = re.compile(r"^v(\d+(?:\.\d+)*)(?:-[0-9A-Za-z.]+)?$")
 # Ссылка уходит аргументом explorer.exe: кавычки, пробелы и запятые он
 # разбирает по-своему (/select,…), поэтому после адреса репозитория — только путь.
@@ -148,23 +157,78 @@ def _version_key(text):
     return tuple(int(x) for x in m.group(0).split(".")) if m else ()
 
 
+def tls_context():
+    """Корни Windows и certifi. Хранилище Windows Python берёт как есть, а
+    недостающий корень Windows докачивает только для CryptoAPI (PowerShell,
+    Explorer): на машине, где корня GitHub (Sectigo Root E46 или USERTrust ECC)
+    ещё не было, запрос падал с CERTIFICATE_VERIFY_FAILED. Хранилище Windows
+    остаётся: в нём корень антивируса или прокси, подменяющего сертификаты.
+    certifi нет (тесты в CI ставят только pytest) — одни корни Windows."""
+    ctx = ssl.create_default_context()
+    try:
+        import certifi
+        ctx.load_verify_locations(certifi.where())
+    except (ImportError, OSError, ssl.SSLError):
+        pass
+    return ctx
+
+
+def _get(url, accept):
+    req = urllib.request.Request(url, headers={
+        "User-Agent": f"TunnelVPN/{paths.version()} (+{REPO_URL})", "Accept": accept})
+    return urllib.request.urlopen(req, timeout=UPDATE_TIMEOUT, context=tls_context())
+
+
 def _fetch_releases():
-    req = urllib.request.Request(RELEASES_API, headers={
-        "User-Agent": f"TunnelVPN/{paths.version()} (+{REPO_URL})",
-        "Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=UPDATE_TIMEOUT) as resp:
-        return json.load(resp)
+    """Релизы из API, не ответил — из releases.atom. Оба не ответили —
+    OSError с причинами обоих: окно пишет её в журнал."""
+    try:
+        with _get(RELEASES_API, "application/vnd.github+json") as resp:
+            return json.load(resp)
+    except (OSError, ValueError) as exc:
+        api = exc
+    try:
+        with _get(RELEASES_FEED, "application/atom+xml") as resp:
+            return feed_releases(resp.read(FEED_MAX))
+    except (OSError, ValueError) as exc:
+        raise OSError(f"API: {api}; releases.atom: {exc}") from exc
+
+
+def feed_releases(raw):
+    """releases.atom — список как у API: tag_name — хвост <id>, body — HTML
+    из <content> разметкой, которую понимает plain_notes."""
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as exc:
+        raise ValueError(f"не разобрать: {exc}") from exc
+    out = []
+    for entry in root.iter(_ATOM + "entry"):
+        tag = (entry.findtext(_ATOM + "id") or "").rsplit("/", 1)[-1]
+        content = entry.find(_ATOM + "content")
+        body = (_html_notes(content.text or "")
+                if content is not None and content.get("type") == "html" else "")
+        out.append({"tag_name": tag, "body": body})
+    return out
+
+
+def _html_notes(text):
+    # Переводы строк между тегами — вёрстка GitHub, абзацы и пункты дают теги.
+    text = re.sub(r">\s*\n\s*<", "><", text)
+    text = re.sub(r"<li\b[^>]*>", "- ", text, flags=re.I)
+    text = re.sub(r"<br\s*/?>|</(?:li|ul|ol|div)>", "\n", text, flags=re.I)
+    text = re.sub(r"</(?:p|h[1-6]|pre)>", "\n\n", text, flags=re.I)
+    return html.unescape(re.sub(r"<[^>]*>", "", text))
 
 
 def check_update(current, fetch=_fetch_releases):
     """Сравнивает версию с релизами Windows на GitHub. Ответ:
     {state: latest|update|error, latest, url, notes}; notes — «Что нового»
-    простым текстом. Скачивает и ставит update.py; адреса и там, и здесь
-    собираются из тега, не из ответа API."""
+    простым текстом; у error — reason для журнала, не для страницы. Скачивает
+    и ставит update.py; адреса и там, и здесь собираются из тега, не из ответа API."""
     try:
         releases = fetch()
-    except (OSError, ValueError):
-        return {"state": "error"}
+    except (OSError, ValueError) as exc:
+        return {"state": "error", "reason": str(exc) or type(exc).__name__}
     best = None
     for r in releases if isinstance(releases, list) else []:
         if not isinstance(r, dict):
@@ -176,7 +240,7 @@ def check_update(current, fetch=_fetch_releases):
         if best is None or key > best[0]:
             best = (key, r["tag_name"], r.get("body"))
     if best is None:
-        return {"state": "error"}
+        return {"state": "error", "reason": f"нет релизов Windows в ответе: {str(releases)[:200]}"}
     tag = best[1]
     newer = best[0] > _version_key(current)
     return {"state": "update" if newer else "latest", "latest": tag[1:],

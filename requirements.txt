@@ -13,3 +13,7 @@ pillow==12.3.0
 pywebview==6.2.1
 # Через него pywebview говорит с WebView2.
 pythonnet==3.2.0
+
+# Корни сертификатов для запросов к GitHub вдобавок к хранилищу Windows:
+# Python не докачивает недостающий корень, как это делает CryptoAPI.
+certifi==2026.7.22

@@ -560,6 +560,9 @@ class Api:
         писать в state\\update\\ может только администратор. Иначе страница даёт
         только ссылку на релиз. downtime — сколько VPN пролежит, оценка."""
         r = settings.check_update(paths.version())
+        reason = r.pop("reason", None)
+        if reason:
+            self._log(f"проверка обновлений: {reason}")
         install = r.get("state") == "update" and _is_admin() and update.can_install()
         self._offer = r["latest"] if install else None
         return {"ok": True, **r, "install": install, "downtime": update.DOWNTIME}

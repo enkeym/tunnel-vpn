@@ -30,8 +30,10 @@ paths:
   `settings.tray_task` (XML `schtasks /Query`). `diagnostics` → `{ok, text}` (`settings.diagnostics` на
   `lib/tunnelvpn/cli.py:status_lines`, адреса скрыты); `open_logs`/`open_url` → `{ok, error?}` через explorer.exe
   (`_shell_open`), `open_url` — только `settings.repo_url`; `check_update` → `{ok, state: latest|update|error,
-  latest, url, notes, install, downtime}` (`settings.check_update`: `/releases?per_page=30`, теги `RELEASE_TAG`,
-  `notes` — `settings.plain_notes` из `body`, мок — `mock-api.js`; `install` — `_is_admin` и `update.can_install`,
+  latest, url, notes, install, downtime}` (`settings.check_update`: `/releases?per_page=30`, не ответил — `releases.atom`
+  (`settings.feed_releases`), теги `RELEASE_TAG`, `notes` — `settings.plain_notes` из `body`; `reason` ошибки
+  `Api._check_update` пишет в `window.log` и со страницы убирает; TLS — `settings.tls_context` (корни Windows и
+  certifi), его же берёт `update._open`; мок — `mock-api.js`; `install` — `_is_admin` и `update.can_install`,
   `downtime` — `update.DOWNTIME`). Обновление: `update_download` (версия — `Api._offer` из последней проверки) →
   поток `Api._download` → вызовы страницы `updateProgress({got, total})`, `updateStage('verify')`,
   `updateReady({version})`, `updateFailed({stage: download|verify|launch|cancel, text})`; `update_cancel`;

@@ -1,7 +1,9 @@
 """Вкладка «Настройки»: задача трея, обновления, диагностика и ветки моста."""
 
 import base64
+import io
 import subprocess
+import urllib.error
 
 from tunnelvpn import ipc, paths, settings, window
 
@@ -105,8 +107,64 @@ def test_нет_связи():
     def fail():
         raise OSError("timed out")
 
-    assert settings.check_update("0.3.7-beta", fail) == {"state": "error"}
-    assert settings.check_update("0.3.7-beta", lambda: {"message": "rate limit"}) == {"state": "error"}
+    assert settings.check_update("0.3.7-beta", fail) == {"state": "error", "reason": "timed out"}
+    r = settings.check_update("0.3.7-beta", lambda: {"message": "rate limit"})
+    assert r["state"] == "error" and "rate limit" in r["reason"]
+
+
+FEED = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xml:lang="en-US">
+  <entry>
+    <id>tag:github.com,2008:Repository/1416042570/v1.0.6</id>
+    <title>v1.0.6</title>
+    <content type="html">&lt;h2&gt;Что нового&lt;/h2&gt;
+&lt;ul&gt;
+&lt;li&gt;DNS &amp;amp; журнал&lt;/li&gt;
+&lt;li&gt;&lt;strong&gt;окно&lt;/strong&gt;&lt;/li&gt;
+&lt;/ul&gt;</content>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Repository/1416042570/v1.0.5</id>
+    <content>No content.</content>
+  </entry>
+</feed>""".encode()
+
+
+def _network(monkeypatch, api=None, feed=None):
+    """urlopen по адресу: исключение — бросить, байты — ответ."""
+    def urlopen(req, timeout=None, context=None):
+        got = {settings.RELEASES_API: api, settings.RELEASES_FEED: feed}[req.full_url]
+        if isinstance(got, Exception):
+            raise got
+        return io.BytesIO(got)
+
+    monkeypatch.setattr(settings.urllib.request, "urlopen", urlopen)
+
+
+def test_лимит_api_версии_из_releases_atom(monkeypatch):
+    limit = urllib.error.HTTPError(settings.RELEASES_API, 403, "rate limit exceeded", {}, None)
+    _network(monkeypatch, api=limit, feed=FEED)
+
+    r = settings.check_update("1.0.5")
+
+    assert r == {"state": "update", "latest": "1.0.6",
+                 "url": f"{settings.REPO_URL}/releases/tag/v1.0.6",
+                 "notes": "Что нового\n\n• DNS & журнал\n• окно"}
+
+
+def test_релиз_без_текста_в_releases_atom():
+    assert settings.feed_releases(FEED)[1] == {"tag_name": "v1.0.5", "body": ""}
+
+
+def test_ни_api_ни_releases_atom_причина_обоих(monkeypatch):
+    cert = urllib.error.URLError("[SSL: CERTIFICATE_VERIFY_FAILED]")
+    _network(monkeypatch, api=cert, feed=b"<html>")
+
+    r = settings.check_update("1.0.5")
+
+    assert r["state"] == "error"
+    assert "API: <urlopen error [SSL: CERTIFICATE_VERIFY_FAILED]>" in r["reason"]
+    assert "releases.atom: не разобрать" in r["reason"]
 
 
 def test_ссылки_только_на_свой_репозиторий():
@@ -232,6 +290,19 @@ def test_проверка_обновлений_идёт_ответом(monkeypat
     assert _api(monkeypatch).send("check_update") == {
         "ok": True, "state": "latest", "latest": "0.3.7-beta", "url": settings.REPO_URL,
         "install": False, "downtime": window.update.DOWNTIME}
+
+
+def test_причина_ошибки_проверки_в_журнале_а_не_на_странице(monkeypatch):
+    monkeypatch.setattr(settings, "check_update",
+                        lambda cur: {"state": "error", "reason": "HTTP Error 403"})
+    api = _api(monkeypatch)
+    logged = []
+    monkeypatch.setattr(api, "_log", logged.append)
+
+    r = api.send("check_update")
+
+    assert r["state"] == "error" and "reason" not in r
+    assert logged == ["проверка обновлений: HTTP Error 403"]
 
 
 # ------------------------------------------------------- обновление из окна

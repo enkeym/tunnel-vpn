@@ -92,7 +92,7 @@ def asset_url(version, name):
 def _open(url):
     req = urllib.request.Request(url, headers={
         "User-Agent": f"TunnelVPN/{paths.version()} (+{settings.REPO_URL})"})
-    return urllib.request.urlopen(req, timeout=TIMEOUT)
+    return urllib.request.urlopen(req, timeout=TIMEOUT, context=settings.tls_context())
 
 
 def expected_sum(text, name):

@@ -29,6 +29,9 @@ paths:
   дереве трея или под именем `tunnelvpn.exe` умрёт, кода не будет. `TRAY_IMAGE` ↔ `{#MyExe}`. Подпись setup
   сверяется с подписью работающего exe по субъекту (`check_signature`) — сменили издателя в `Sign` → обновление
   из окна откажет до ручной установки.
+- TLS запросов к GitHub (проверка обновлений и `update._open`) — `lib/tunnelvpn/settings.py:tls_context`: корни
+  Windows и `certifi.where()` ↔ `certifi` в `requirements.txt` и `cacert.pem` в сборке (хук certifi у PyInstaller).
+  Файла нет — молча остаются только корни Windows, и на машине без корня GitHub снова «нет связи с GitHub».
 - Тестовые хуки `TestHook('service'|'tunnel'|'webview2')` (`installer/tunnelvpn.iss`, только под `TESTHOOKS`) ↔
   таблица хуков в README («Сборка установщика»). Метка `TESTHOOKS` в `VersionInfoDescription` под тем же define ↔
   проверка `$Hooked` в `installer/build.ps1` и шаг «Без тестовых хуков» в `.github/workflows/build.yml`; имя
