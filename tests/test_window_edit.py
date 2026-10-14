@@ -186,7 +186,42 @@ def test_правила_уходят_текстом_поля_а_ответ_со_
     # Только присланные поля: exclude не пришёл — служба его не трогает.
     assert admin == [("set-tunnel", {"tunnel": "work", "include": "a.ru foo_bar"})]
     assert ("rulesSaved", {"include": ["a.ru"], "exclude": [], "exclude_apps": [],
-                           "rejected": {"include": ["foo_bar"]}, "mode": ""}) in shown
+                           "rejected": {"include": ["foo_bar"]}, "mode": "",
+                           "applied": ""}) in shown
+
+
+def _save_then_apply(monkeypatch, applied):
+    """Команды службе и вызовы страницы — одной лентой, по порядку."""
+    events = []
+
+    def call(op, **kw):
+        events.append(("op", op))
+        return {"ok": True, "applied": applied} if op == "apply" else {"ok": True, "status": {}}
+
+    monkeypatch.setattr(ipc, "call", call)
+    api = window.Api({})
+    monkeypatch.setattr(api, "_admin_call", lambda op, **kw: {"ok": True, "include": ["a.ru"]})
+    monkeypatch.setattr(api, "js", lambda fn, arg=None: events.append((fn, arg)))
+    api.send("save_rules", {"tunnel": "work", "include": "a.ru"})
+    return events
+
+
+def test_сохранено_только_после_ответа_apply(monkeypatch):
+    """«Сохранено» до apply обещало действие, которого ещё нет."""
+    events = _save_then_apply(monkeypatch, "sides")
+
+    saved_at = next(i for i, (fn, _) in enumerate(events) if fn == "rulesSaved")
+    assert events.index(("op", "apply")) < saved_at
+    saved = next(arg for fn, arg in events if fn == "rulesSaved")
+    assert saved["applied"] == "sides"
+
+
+def test_отложенная_правка_сохранена_до_вопроса_о_переподключении(monkeypatch):
+    events = _save_then_apply(monkeypatch, "ask")
+
+    fns = [fn for fn, _ in events if fn != "op"]
+    assert fns.index("rulesSaved") < fns.index("askFull")
+    assert next(arg for fn, arg in events if fn == "rulesSaved")["applied"] == "ask"
 
 
 def test_отказ_службы_показан_в_листе_и_ничего_не_применяется(monkeypatch):

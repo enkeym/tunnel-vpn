@@ -399,20 +399,23 @@ class Api:
         if not reply.get("ok"):
             raise RuntimeError(reply.get("error") or "служба отказала")
 
-    def _apply(self):
+    def _apply(self, saved=None):
         """Правка туннелей — на живой VPN через службу (решение #14): она
         перезапускает только процесс туннеля со сменившимся конфигом. Сменилось
         то, что держит основной процесс, — служба не перезапускает сама (ask),
         а страница спрашивает человека (askFull): сеть упадёт для всех приложений.
-        Выключенный не включает."""
+        Выключенный не включает. saved(ответ) — что сказать странице до
+        askFull: «Сохранено» листа правил — только когда правка уже на VPN или отложена."""
         try:
             try:
                 reply = ipc.call("apply", ask=True)
-                if reply.get("applied") == "ask":
-                    self.js("askFull")
-                self._guard(reply)
             except ipc.NotRunning:
-                pass
+                reply = {"ok": True, "applied": "off"}
+            if saved is not None:
+                saved(reply)
+            if reply.get("applied") == "ask":
+                self.js("askFull")
+            self._guard(reply)
         finally:
             self.refresh(full=True)
 
@@ -870,12 +873,15 @@ class Api:
             self._apply()
             return
         # mode — туннель без «пускать» мог стать основным: у листа одно поле.
-        self.js("rulesSaved", {"include": reply.get("include", []),
-                               "exclude": reply.get("exclude", []),
-                               "exclude_apps": reply.get("exclude_apps", []),
-                               "rejected": reply.get("rejected", {}),
-                               "mode": reply.get("mode", "")})
-        self._apply()
+        # После apply: «Сохранено» раньше его обещало правила, которые ещё не
+        # действовали; applied — чем кончилось (failed — списки записаны, VPN отказал).
+        lists = {"include": reply.get("include", []),
+                 "exclude": reply.get("exclude", []),
+                 "exclude_apps": reply.get("exclude_apps", []),
+                 "rejected": reply.get("rejected", {}),
+                 "mode": reply.get("mode", "")}
+        self._apply(lambda r: self.js("rulesSaved", {
+            **lists, "applied": r.get("applied", "") if r.get("ok") else "failed"}))
 
     def _validate_rules(self, arg):
         """Поля листа на лету: разбор — здесь же, тем же routelist, что у службы,

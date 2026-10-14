@@ -292,6 +292,10 @@ class Core:
         self._tests_lock = threading.Lock()
         self._trial_locks = {}
 
+    # Правка записана, а на лету не применена: человек ответил «Позже» на
+    # «Переподключить?» (applied "ask"). Снимает любая остановка: включение
+    # соберёт всё с диска. Статус — pending_apply.
+    pending_apply = False
     # Сколько ещё попыток поднять туннель после неудачного переподключения.
     # Команда человека (start/stop) их отменяет: он уже решил сам.
     _retry_left = 0
@@ -501,6 +505,7 @@ class Core:
                                       < st.get("check_seq", 0))
         checks = st.pop("checks", None) or {}
         st["last_error"] = self.last_error
+        st["pending_apply"] = self.pending_apply
         st["autostart"] = self.autostart_enabled()
         data = self._tunnels()
         # Туннели без списков правил: в них рабочая сеть, а статус читает
@@ -1010,18 +1015,21 @@ class Core:
             self.lock.release()
 
     def _apply_locked(self, ask=False):
-        """Правка конфигов на поднятый VPN (_apply); замок уже взят."""
+        """Правка конфигов на поднятый VPN (_apply); замок уже взят.
+        Ответ sides — когда sing-box уже принял rule-set (Tunnel._write_sets);
+        отказ — полный перезапуск тут же, без вопроса: правка уже наполовину на VPN."""
+        self.pending_apply = False
         if self.tunnel.uplink is None:
             return {"ok": True, "applied": "off"}
         plan = self.tunnel.live_plan()
         if plan is None and ask:
+            self.pending_apply = True
             return {"ok": True, "applied": "ask"}
         # Круг сторожа, начатый до правки, увидел бы перезапускаемый
         # процесс лежащим и перезапустил бы его сам.
         self._human += 1
-        main, proc = self.tunnel.main_id, self.tunnel.proc
-        done = (self.tunnel.reload_sides(
-            plan, lambda: self._sets_rejected(proc)) if plan else None)
+        main = self.tunnel.main_id
+        done = self.tunnel.reload_sides(plan) if plan else None
         if done is not None:
             errs = [err for _, err in done if err]
             for side, err in done:
@@ -1035,30 +1043,10 @@ class Core:
             return {"ok": not errs, "applied": "sides",
                     "restarted": [side.tid for side, _ in done],
                     **({"error": "; ".join(errs)} if errs else {})}
-        self.log("→ сменилось то, что держит основной процесс, — перезапускаю VPN")
+        self.log("→ на лету не применить (сменилось то, что держит основной процесс, "
+                 "или sing-box не принял правила) — перезапускаю VPN")
         self._stop_locked()
         return {**self._start_locked(), "applied": "full"}
-
-    def _sets_rejected(self, proc):
-        """sing-box не принял rule-set правки и держит старые правила
-        (Tunnel._watch_sets, фоновый поток) — полный перезапуск под замком, как
-        в _apply. Только пока работает тот же процесс основного proc: новый (stop и
-        start после правки) прочёл rule-set заново. По _human не сверяем: вторая
-        правка с теми же списками файл не перепишет (совпал с диском), и отказ
-        первой потерялся бы со старыми правилами в работе."""
-        if not self.lock.acquire(timeout=APPLY_WAIT):
-            self.log("!! правила туннелей не приняты, а замок для перезапуска "
-                     f"занят: {self.busy or 'операция'}")
-            return
-        try:
-            if self.tunnel.proc is not proc or self.tunnel.uplink is None:
-                return
-            self._human += 1
-            self.log("→ sing-box не принял правила на лету — перезапускаю VPN")
-            self._stop_locked()
-            self._start_locked()
-        finally:
-            self.lock.release()
 
     def _forget_side(self, side):
         """Таймауты и пауза перезапуска процесса — от старого конфига."""
@@ -1077,6 +1065,7 @@ class Core:
         """Снимает туннель; замок уже взят."""
         try:
             self._retry_left = 0
+            self.pending_apply = False
             self.busy = "выключаю"
             self._flush_paths()
             self.tunnel.stop()

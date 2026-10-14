@@ -32,6 +32,7 @@ class FakeNet:
         self.added = []
         self.gone = set()       # маршруты, которые система потеряла
         self.pids = []          # sing-box из нашей папки в списке процессов
+        self.flushed = 0        # сбросов кеша DNS Windows
 
     def tun_index(self, _ip):
         return 45 if self.singbox_running else None
@@ -50,6 +51,9 @@ class FakeNet:
 
     def add_routes(self, routes):
         self.added += routes
+
+    def flush_dns(self):
+        self.flushed += 1
 
     def routes_for(self, prefix):
         if prefix in self.gone:
@@ -993,10 +997,11 @@ def test_сменился_rule_set_пишется_на_лету(live):
     assert tun.proc is main and not main.terminated and seen["started"] == started
 
 
-def test_отвергнутый_rule_set_зовёт_on_reject(live, monkeypatch):
+def test_отвергнутый_rule_set_на_лету_не_применить(live, monkeypatch):
     """sing-box молча держит старые правила — отказ только в его журнале.
-    Журнал смотрит фоновый поток, отказ уходит службе на полный перезапуск."""
+    Правка его ждёт: «на лету» не вышло — служба перезапускает VPN в том же ответе."""
     tun, seen = live
+    monkeypatch.setattr(tunnel, "RULE_SET_WAIT", 5)
 
     def sleep(_s):
         with open(tun.log_start[0], "a", encoding="utf-8") as fh:
@@ -1004,26 +1009,41 @@ def test_отвергнутый_rule_set_зовёт_on_reject(live, monkeypatch)
 
     monkeypatch.setattr(tunnel.time, "sleep", sleep)
     seen["sets"] = {"names-work": buildconfig.rule_set({"domain_suffix": ["x.example"]})}
-    rejected = threading.Event()
+    began = time.monotonic()
 
-    assert tun.reload_sides(on_reject=rejected.set) == []
+    assert tun.reload_sides() is None
 
-    assert rejected.wait(2)
+    # Отказ виден сразу — весь срок не ждём.
+    assert time.monotonic() - began < 1
     assert any("не принял rule-set" in line for line in seen["log"])
+    assert seen["net"].flushed == 0
 
 
-def test_правка_rule_set_не_ждёт_sing_box(live, monkeypatch):
-    """Сон RULE_SET_WAIT держал каждую правку и ⏻; принятый rule-set колбэк не зовёт."""
+def test_правка_rule_set_отвечает_после_срока_перечитывания(live, monkeypatch):
+    """Успех sing-box не пишет: «Сохранено» раньше срока — правила ещё старые."""
     tun, seen = live
-    monkeypatch.setattr(tunnel, "RULE_SET_WAIT", 0.5)
+    monkeypatch.setattr(tunnel, "RULE_SET_WAIT", 0.3)
     seen["sets"] = {"rules-work": buildconfig.rule_set({"ip_cidr": ["10.30.0.0/16"]})}
-    rejected = threading.Event()
 
-    began = time.time()
-    assert tun.reload_sides(on_reject=rejected.set) == []
+    began = time.monotonic()
+    assert tun.reload_sides() == []
 
-    assert time.time() - began < 0.4
-    assert not rejected.wait(1)
+    assert time.monotonic() - began >= 0.3
+    assert seen["net"].flushed == 1
+
+
+def test_без_смены_rule_set_не_ждёт_и_кеш_не_трогает(live, monkeypatch):
+    tun, seen = live
+    monkeypatch.setattr(tunnel, "RULE_SET_WAIT", 5)
+    rs = buildconfig.rule_set({"ip_cidr": ["10.30.0.0/16"]})
+    buildconfig.write_json(buildconfig.rule_set_json("rules-work"), rs)
+    seen["sets"] = {"rules-work": rs}
+
+    began = time.monotonic()
+    assert tun.reload_sides() == []
+
+    assert time.monotonic() - began < 1
+    assert seen["net"].flushed == 0
 
 
 def test_выключенный_туннель_пустой_rule_set_потом_стоп_бокового(live, monkeypatch):
@@ -1031,8 +1051,8 @@ def test_выключенный_туннель_пустой_rule_set_потом_
     main, work = tun.proc, _side(tun, "work").proc
     alive_at_write = []
     write = tun._write_sets
-    monkeypatch.setattr(tun, "_write_sets", lambda sets, on_reject=None: (
-        alive_at_write.append(not work.terminated), write(sets, on_reject))[1])
+    monkeypatch.setattr(tun, "_write_sets", lambda sets: (
+        alive_at_write.append(not work.terminated), write(sets))[1])
     _enable("work", False)
     seen["sets"] = {"rules-work": buildconfig.rule_set(None)}
 
@@ -1052,8 +1072,8 @@ def test_включённый_туннель_сначала_боковой_по�
     tun.reload_sides()
     started_at_write = []
     write = tun._write_sets
-    monkeypatch.setattr(tun, "_write_sets", lambda sets, on_reject=None: (
-        started_at_write.append(seen["started"][-1]), write(sets, on_reject))[1])
+    monkeypatch.setattr(tun, "_write_sets", lambda sets: (
+        started_at_write.append(seen["started"][-1]), write(sets))[1])
     _enable("work", True)
     rs = buildconfig.rule_set({"ip_cidr": ["10.10.0.0/16"]})
     seen["sets"] = {"rules-work": rs}
@@ -1175,12 +1195,15 @@ def test_пир_с_маршрутом_второй_раз_не_ставится(
 
 
 class FakeClash(http.server.BaseHTTPRequestHandler):
-    """clash_api основного процесса: selector out и замер задержки."""
+    """clash_api основного процесса: selector out, замер задержки,
+    открытые соединения и кеш DNS."""
 
     secret = "s3cret"
     now = HOME_SOCKS
     delays = {HOME_SOCKS: 0, buildconfig.DIRECT_TAG: 42}
     paths_seen = []
+    conns = []
+    changes = []            # (метод, путь) DELETE и POST
 
     def _auth(self):
         if self.headers.get("Authorization") != f"Bearer {self.secret}":
@@ -1202,6 +1225,9 @@ class FakeClash(http.server.BaseHTTPRequestHandler):
         if self.path == f"/proxies/{buildconfig.OUT_TAG}":
             self._send(200, {"name": "out", "now": FakeClash.now})
             return
+        if self.path == "/connections":
+            self._send(200, {"connections": FakeClash.conns})
+            return
         tag = self.path.split("/")[2]
         ms = self.delays.get(tag)
         if ms:
@@ -1216,6 +1242,16 @@ class FakeClash(http.server.BaseHTTPRequestHandler):
         FakeClash.now = body["name"]
         self._send(204)
 
+    def do_DELETE(self):
+        if self._auth():
+            FakeClash.changes.append(("DELETE", self.path))
+            self._send(204)
+
+    def do_POST(self):
+        if self._auth():
+            FakeClash.changes.append(("POST", self.path))
+            self._send(204)
+
     def log_message(self, *_a):
         pass
 
@@ -1228,6 +1264,8 @@ def clash(env, monkeypatch):
     threading.Thread(target=server.serve_forever, daemon=True).start()
     FakeClash.now = HOME_VIA
     FakeClash.paths_seen = []
+    FakeClash.conns = []
+    FakeClash.changes = []
     with open(paths.CONFIG_JSON, encoding="utf-8") as fh:
         cfg = json.load(fh)
     cfg["experimental"] = {"clash_api": {
@@ -1275,6 +1313,41 @@ def test_системный_прокси_не_перехватывает_clash_a
     monkeypatch.setenv("NO_PROXY", "")
 
     assert tun.out_now() == HOME_VIA
+
+
+def _conn(cid, host="", ip="198.51.100.1", path=""):
+    return {"id": cid, "metadata": {"host": host, "destinationIP": ip,
+                                    "processPath": path}}
+
+
+def test_правка_правил_закрывает_соединения_по_сменившимся_записям(clash, live):
+    """Открытое до правки соединение sing-box ведёт по старым правилам до закрытия,
+    а ответ DNS в кеше — от прежнего сервера: «сохранено» без действия.
+    Закрываем только те, чьи имя, адрес или программа есть среди сменившихся
+    записей: чужие долгие соединения (SSH, звонок) правка не рвёт."""
+    tun, seen = live
+    buildconfig.write_json(buildconfig.rule_set_json("rules-work"), buildconfig.rule_set(
+        buildconfig.tunnel_rule(["10.10.0.0/16"], ["gone.example"], [], [])))
+    seen["sets"] = {
+        "rules-work": buildconfig.rule_set(buildconfig.tunnel_rule(
+            ["10.10.0.0/16", "10.20.0.0/16"], ["new.example"], [], [".skip.new.example"])),
+        buildconfig.BYPASS_TAG: buildconfig.rule_set(buildconfig.app_rule([r"C:\Apps\Zoom.exe"]))}
+    FakeClash.conns = [
+        _conn("sub", host="api.new.example"),          # поддомен нового
+        _conn("gone", host="gone.example"),            # убранный
+        _conn("net", ip="10.20.3.4"),                   # новая подсеть
+        _conn("skip", host="a.skip.new.example"),      # новое исключение
+        _conn("app", path=r"c:\apps\zoom.exe"),        # программа «мимо»
+        _conn("same", ip="10.10.1.1"),                  # подсеть не менялась
+        _conn("other", host="notnew.example"),         # не поддомен
+    ]
+
+    assert tun.reload_sides() == []
+
+    closed = sorted(p.rsplit("/", 1)[1] for m, p in FakeClash.changes if m == "DELETE")
+    assert closed == ["app", "gone", "net", "skip", "sub"]
+    assert ("POST", "/cache/dns/flush") in FakeClash.changes
+    assert seen["net"].flushed == 1
 
 
 def test_без_clash_api_выход_не_переключается(env, monkeypatch):

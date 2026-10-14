@@ -15,6 +15,9 @@ paths:
   та же `buildconfig.has_v6`, что `v6` в `assemble`) → строка IPv6 в `lib/tunnelvpn/ui/js/settings.js` и
   `lib/tunnelvpn/cli.py:_print_status`. `v6_off` (правило брандмауэра) при включённом VPN истинно всегда —
   о v6 основного не говорит; читать его как «сервер не выдаёт IPv6» — прежняя ошибка окна.
+- `pending_apply` — `lib/tunnelvpn/service.py:_status` (`Core.pending_apply`: `apply` с `ask` ответил `ask`, правка
+  на диске, VPN по старой; снимают следующий `apply` и `_stop_locked`) → заголовок «Правка ждёт переподключения» в
+  `lib/tunnelvpn/ui/js/model.js:headOf` (перед «Всё работает»). Трей и CLI его не читают.
 - `log_level` — `lib/tunnelvpn/service.py:_status` (из `tunnels.json`) → галочка «подробный журнал» в
   `lib/tunnelvpn/ui/js/settings.js` (`=== 'debug'`).
 - `kill_switch` — `lib/tunnelvpn/service.py:_status` (из `tunnels.json`) → переключатель «Kill-switch» в

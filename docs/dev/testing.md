@@ -99,7 +99,7 @@ move to `service.log.1`. Main tunnel = the one in «основной».
 
 | Change | Steps | Expect |
 | --- | --- | --- |
-| Start and ⏻ | «Выключить», «Включить»; ⏻ of a tunnel on the live VPN | «→ туннель поднят за» ≤ 2,3 с; ⏻ applies in under a second |
+| Start and ⏻ | «Выключить», «Включить»; ⏻ of a tunnel on the live VPN | «→ туннель поднят за» ≤ 2,3 с; ⏻ of a «по списку» tunnel applies in about 2 s (waits for sing-box to take the rule-set, `RULE_SET_WAIT`) |
 | Main `.conf` edited live | edit the active `.conf` of the main (e.g. `MTU`), save | «→ процесс «…» перезапущен»; no «→ выход наружу: direct», sites keep loading |
 | Kill-switch | «Настройки → Защита» on; break the main (wrong `Endpoint` or block its server) | «→ выход наружу: block», header «Интернет закрыт»; sites do not open, tunnels «по списку» and LAN do; switch off → «→ выход наружу: direct» |
 | Spare configs | main with ≥ 2 `.conf`, break the active one | «пробую запасные конфиги», «запасной X.conf отвечает — делаю его активным»; all broken → «запасные конфиги … не отвечают — выход остаётся block/direct», a new round once a minute |

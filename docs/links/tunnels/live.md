@@ -33,11 +33,15 @@ paths:
   (`buildconfig.links_of` — все слоты; одна связь вместо пары дала бы новые и полный перезапуск) и `clash_api` (`_api_link`) работающего `config.json`, `resolve=False`: совпал основной
   (`tunnel._fixed`: json round-trip, без `"log"` и `default` selector `out`) — на лету: новый в `built` —
   `_enable_side` (`_place_side`: резолв пира, host-маршрут, конфиг; старт с ожиданием socks), сменился `.conf` —
-  `_swap_side`, `"log"` — `_relog_side`; затем `_write_sets` (только изменённые файлы, не записать → `None`;
-  без ожидания: `_watch_sets` в фоне через `RULE_SET_WAIT` ищет в журнале основного `reload rule-set` с тегом →
-  `on_reject` — `Core._sets_rejected`), `_renew_nrpt`, стоп ушедших из `built`,
+  `_swap_side`, `"log"` — `_relog_side`; затем `_write_sets` (только изменённые файлы; не записать или отказ
+  sing-box → `None`, полный перезапуск в том же `Core._apply`; `_await_sets` ждёт до `RULE_SET_WAIT` строку
+  `reload rule-set` с тегом в журнале основного — успех sing-box не пишет, поэтому принятие = тишина всего срока, и
+  ответ `apply`/⏻ на это время дольше), `_renew_nrpt`, стоп ушедших из `built`,
   `_switch_main` (`set_out` + `config.json` с новым `default` — его читают `main_id`, `Prober.main_tag`),
-  `buildconfig.drop_side` у заглушек (`side_ids` без бокового в сборке). `live_plan` отдаёт `assemble`
+  `buildconfig.drop_side` у заглушек (`side_ids` без бокового в сборке), в конце `_drop_stale` (были записаны
+  rule-set): `winnet.flush_dns`, clash_api `POST /cache/dns/flush`, `DELETE /connections/<id>` у соединений, чьи
+  `metadata` `host`/`destinationIP`/`processPath` попадают в смену записей (`_set_entries` — поля
+  `tunnel._ENTRY_KEYS`; новое поле в rule-set из `buildconfig` без записи туда соединения по нему не закроет). `live_plan` отдаёт `assemble`
   ещё `dns=tunnel_dns(running)`: удалённый и вернувшийся `.conf` — на лету (заглушка, `build.md`).
   Иначе `None` и полное включение (`Core._apply`). Основной конфиг меняют: новый туннель или первый
   `.conf` туннеля, собранного без него (новый `socks-<id>`), удалённый туннель,

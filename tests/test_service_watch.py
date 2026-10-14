@@ -953,9 +953,8 @@ def _reload(monkeypatch, core, result):
     result None — live_plan тоже None: на лету не выйдет."""
     seen = []
 
-    def reload_sides(plan=None, on_reject=None):
+    def reload_sides(plan=None):
         seen.append({"busy": core.busy, "locked": core.lock.locked(), "plan": plan})
-        core.tunnel.on_reject = on_reject
         return result() if callable(result) else result
 
     monkeypatch.setattr(core.tunnel, "live_plan",
@@ -1015,39 +1014,39 @@ def test_ошибка_перезапуска_туннеля_в_ответе_и_�
     assert _said(core, "!! «Работа»: не удалось разрешить x")
 
 
-def test_отвергнутый_rule_set_перезапускает_vpn(monkeypatch):
-    """sing-box не принял правила после ответа правки — полный перезапуск под замком."""
+def test_отвергнутая_правка_на_лету_полный_перезапуск_в_том_же_ответе(monkeypatch):
+    """sing-box не принял rule-set (reload_sides → None при готовом плане): ответ
+    правки — уже после перезапуска, без фонового догона после «Сохранено»."""
     core = _core(monkeypatch)
-    core.tunnel.proc = _Proc()
-    _reload(monkeypatch, core, [])
-    assert core._apply()["applied"] == "sides"
-    first = core.tunnel.on_reject
-    core._apply()                     # вторая правка файл уже не переписала
-    locked = []
-    monkeypatch.setattr(core, "_start_locked",
-                        lambda: locked.append(core.lock.locked()) or {"ok": True})
+    _reload(monkeypatch, core, lambda: None)
+    monkeypatch.setattr(core.tunnel, "live_plan", lambda: "plan", raising=False)
 
-    first()
+    assert core._apply(ask=True) == {"ok": True, "applied": "full"}
 
-    assert locked == [True] and not core.lock.locked()
-    assert _said(core, "не принял правила на лету")
+    assert core.tunnel.starts == 1
 
 
-def test_отказ_rule_set_после_перезапуска_vpn_уже_не_нужен(monkeypatch):
-    """Человек выключил и включил: новый основной прочёл rule-set сам."""
+def test_отложенная_правка_в_статусе_до_перезапуска(monkeypatch):
+    """«Позже» в askFull: правила на диске, но не действуют — окно должно это видеть.
+    Любая остановка её снимает: следующее включение соберёт всё с диска."""
     core = _core(monkeypatch)
-    core.tunnel.proc = _Proc()
-    _reload(monkeypatch, core, [])
-    core._apply()
-    stale = core.tunnel.on_reject
-    core.tunnel.proc = _Proc()
-    starts = []
-    monkeypatch.setattr(core, "_start_locked", lambda: starts.append(1) or {"ok": True})
+    _reload(monkeypatch, core, None)
 
-    stale()
+    core._apply(ask=True)
+    assert core._status()["pending_apply"] is True
 
-    assert starts == []
-    assert not _said(core, "не принял правила на лету")
+    assert core._apply()["applied"] == "full"
+    assert core._status()["pending_apply"] is False
+
+
+def test_отложенная_правка_снимается_выключением(monkeypatch):
+    core = _core(monkeypatch)
+    _reload(monkeypatch, core, None)
+    core._apply(ask=True)
+
+    core._do_stop()
+
+    assert core._status()["pending_apply"] is False
 
 
 def test_сменился_основной_конфиг_полный_перезапуск(monkeypatch):

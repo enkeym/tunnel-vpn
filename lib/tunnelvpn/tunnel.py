@@ -16,9 +16,11 @@
 import contextlib
 import ctypes
 import datetime
+import ipaddress
 import json
 import os
 import queue
+import re
 import socket
 import subprocess
 import threading
@@ -48,9 +50,10 @@ _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 SIDE_WAIT = 15
 
 # Сколько ждём, пока sing-box перечитает rule-set: на 1.14.2 — до 1,5 с. Успех
-# он не пишет, только отказ («reload rule-set <тег>: …»), — журнал смотрим по
-# истечении всего срока, в фоне (_write_sets).
+# он не пишет, только отказ («reload rule-set <тег>: …»): отказ виден сразу,
+# принятие — тишиной всего срока (_await_sets). Журнал смотрим раз в RULE_SET_POLL.
 RULE_SET_WAIT = 2
+RULE_SET_POLL = 0.1
 
 # Журнал временного процесса проверки конфига (Tunnel.trial): trial-<id туннеля>,
 # у каждого свой — проверки разных туннелей идут разом.
@@ -900,12 +903,12 @@ class Tunnel:
             return None
         return running, data, confs, config, sides, sets, built
 
-    def reload_sides(self, plan=None, on_reject=None):
+    def reload_sides(self, plan=None):
         """Правка конфигов на поднятом VPN без падения tun. [(процесс, ошибка
         или '')] затронутых боковых или None, если без полного перезапуска не
         обойтись. plan — готовый live_plan, без него собирается здесь.
-        on_reject — что делать, если sing-box позже отвергнет новые rule-set
-        (зовётся из фонового потока, см. _write_sets).
+        Сменились rule-set — ответ после того, как sing-box их принял (_write_sets),
+        а кеш DNS и соединения по старым правилам сброшены (_drop_stale).
 
         На лету: смена .conf (перезапуск одного бокового), вкл/выкл туннеля
         «по списку», списки и смена основного — файлы rule-set, NRPT и выбор
@@ -916,8 +919,7 @@ class Tunnel:
         него (новый socks), адрес DNS туннеля, SB_TUN_MTU
         (MTU tun — постоянный TUN_MTU, не от туннелей; v6-адрес у tun тоже
         постоянный, выход без v6 — rule-set no-v6), — или rule-set не
-        записать. Отказ sing-box принять rule-set виден только через
-        RULE_SET_WAIT — его встречает on_reject.
+        записать, или sing-box их не принял.
         Сменившийся боковой перезапускается без разрыва (restart_side), основной
         тоже: выход наружу на это время напрямую не уходит.
 
@@ -957,7 +959,8 @@ class Tunnel:
             order.append(side)
         self.sides = order
         names = self._corp_domains()
-        if not self._write_sets(sets, on_reject):
+        before = self._write_sets(sets)
+        if before is None:
             return None
         self._renew_nrpt(names)
         # Выход — до остановки: прежний основной мог стать выключенным «по списку».
@@ -971,6 +974,8 @@ class Tunnel:
         for tid in buildconfig.side_ids(config):
             if tid not in sides:
                 buildconfig.drop_side(tid)
+        if before:
+            self._drop_stale(before, sets)
         return done
 
     def _enable_side(self, side, cfg, stamp):
@@ -982,17 +987,18 @@ class Tunnel:
         self.log(f"→ туннель «{side.title}» включён — запускаю его процесс")
         return self._start_side(side)
 
-    def _write_sets(self, sets, on_reject=None):
-        """Пишет сменившиеся rule-set. False — не записались.
+    def _write_sets(self, sets):
+        """Пишет сменившиеся rule-set и ждёт, примет ли их sing-box. {тег:
+        прежнее содержимое} записанных или None — не записались или отвергнуты.
 
         Отказ sing-box — только в его журнале, а процесс молча держит старые
-        правила. Журнал смотрит фоновый поток через RULE_SET_WAIT и на отказ
-        зовёт on_reject: сон здесь держал бы каждую правку и ⏻ две секунды."""
+        правила. Правка ждёт до RULE_SET_WAIT (решение 14.10.2026): фоновая
+        проверка отдавала «Сохранено», пока действовали старые правила."""
+        before = {tag: buildconfig.read_json(buildconfig.rule_set_json(tag)) for tag in sets}
         changed = [tag for tag, rs in sets.items()
-                   if json.loads(json.dumps(rs)) != buildconfig.read_json(
-                       buildconfig.rule_set_json(tag))]
+                   if json.loads(json.dumps(rs)) != before[tag]]
         if not changed:
-            return True
+            return {}
         log_path = self.log_start[0] if self.log_start else ""
         try:
             at = os.path.getsize(log_path) if log_path else 0
@@ -1003,23 +1009,51 @@ class Tunnel:
                 buildconfig.write_json(buildconfig.rule_set_json(tag), sets[tag])
         except OSError as exc:
             self.log(f"!! rule-set не записать: {exc}")
-            return False
+            return None
         self.log(f"→ правила туннелей на лету: {', '.join(changed)}")
-        threading.Thread(target=self._watch_sets,
-                         args=(log_path, at, changed, on_reject),
-                         daemon=True).start()
-        return True
-
-    def _watch_sets(self, log_path, at, changed, on_reject):
-        """Журнал основного с места at через RULE_SET_WAIT: отказ перечитать
-        changed — в журнал службы и on_reject."""
-        time.sleep(RULE_SET_WAIT)
-        bad = [line for line in _tail(log_path, at)
-               if "reload rule-set" in line and any(tag in line for tag in changed)]
+        bad = self._await_sets(log_path, at, changed)
         for line in bad:
             self.log(f"!! sing-box не принял rule-set: {line.strip()}")
-        if bad and on_reject is not None:
-            on_reject()
+        return None if bad else {tag: before[tag] for tag in changed}
+
+    @staticmethod
+    def _await_sets(log_path, at, changed):
+        """Строки отказа перечитать changed в журнале основного с места at:
+        первая — сразу, нет их — [] по истечении RULE_SET_WAIT."""
+        deadline = time.monotonic() + RULE_SET_WAIT
+        while True:
+            bad = [line for line in _tail(log_path, at)
+                   if "reload rule-set" in line and any(tag in line for tag in changed)]
+            if bad or time.monotonic() >= deadline:
+                return bad
+            time.sleep(RULE_SET_POLL)
+
+    def _drop_stale(self, before, sets):
+        """После принятых rule-set before → sets: открытое соединение sing-box ведёт
+        по старым правилам до закрытия, а ответ в кеше DNS — от прежнего сервера.
+        Кеши Windows и sing-box сбрасываем; закрываем соединения, чьи имя, адрес
+        или программа есть среди сменившихся записей (с запасом: исключение
+        тоже запись), — приложение откроет их заново уже по новым. Остальные
+        не трогаем: правка списка не должна рвать чужой SSH или звонок."""
+        winnet.flush_dns()
+        entries = set()
+        for tag, old in before.items():
+            entries |= _set_entries(old) ^ _set_entries(sets[tag])
+        try:
+            self._clash("/cache/dns/flush", "POST")
+        except (OSError, ValueError) as exc:
+            self.log(f"!! кеш DNS sing-box не сбросить: {exc}")
+        try:
+            conns = self._clash("/connections").get("connections") or []
+            stale = [c["id"] for c in conns
+                     if _conn_hit(c.get("metadata") or {}, entries)]
+            for cid in stale:
+                self._clash(f"/connections/{urllib.parse.quote(str(cid))}", "DELETE")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            self.log(f"!! соединения по старым правилам не закрыть: {exc}")
+            return
+        if stale:
+            self.log(f"→ закрыл соединений по старым правилам: {len(stale)}")
 
     def _renew_nrpt(self, before):
         """Правило NRPT — по доменам теперь, если они сменились с before."""
@@ -1382,6 +1416,53 @@ def _tail(path, at):
             return fh.read().decode("utf-8", "replace").splitlines()
     except OSError:
         return []
+
+
+# Записи rule-set, по которым открытое соединение сверяется с правкой (_drop_stale):
+# других полей buildconfig в rule-set не пишет.
+_ENTRY_KEYS = ("ip_cidr", "domain_suffix", "process_path_regex")
+
+
+def _set_entries(rs):
+    """{(поле, запись)} rule-set rs со всех правил, исключения (invert) тоже."""
+    out, rules = set(), list(rs.get("rules") or [])
+    while rules:
+        rule = rules.pop()
+        rules += rule.get("rules") or []
+        out |= {(key, v) for key in _ENTRY_KEYS for v in rule.get(key) or []}
+    return out
+
+
+def _conn_hit(meta, entries):
+    """Соединение clash_api (metadata) подпадает под одну из entries — по имени
+    (domain_suffix, как в sing-box: «x.su» — сам и поддомены, «.x.su» — только
+    поддомены), адресу назначения или пути программы. Непонятная регулярка —
+    подпадает: лишний обрыв лучше правила, которое не действует."""
+    host = (meta.get("host") or "").lower().rstrip(".")
+    path = meta.get("processPath") or ""
+    try:
+        ip = ipaddress.ip_address(meta.get("destinationIP") or "")
+    except ValueError:
+        ip = None
+    for key, value in entries:
+        if key == "domain_suffix" and host:
+            value = value.lower()
+            if host.endswith(value) if value.startswith(".") else (
+                    host == value or host.endswith("." + value)):
+                return True
+        elif key == "ip_cidr" and ip is not None:
+            try:
+                if ip in ipaddress.ip_network(value, strict=False):
+                    return True
+            except (ValueError, TypeError):
+                continue
+        elif key == "process_path_regex" and path:
+            try:
+                if re.search(value, path):
+                    return True
+            except re.error:
+                return True
+    return False
 
 
 def _api_link(main_cfg):

@@ -52,15 +52,17 @@ paths:
   `corp_probe` в нём нет.
 - `apply` (USER_OPS) ↔ `lib/tunnelvpn/window.py:_apply`, `lib/tunnelvpn/cli.py:_apply`
   → `lib/tunnelvpn/service.py:_apply`:
-  ответ `{ok, applied: off|sides|full, restarted?: [id], error?}`. Занятый `lock` ждёт до `APPLY_WAIT`, а не
+  ответ `{ok, applied: off|sides|full|ask, restarted?: [id], error?}`; `sides` — уже после того, как sing-box
+  принял rule-set (`Tunnel._write_sets`), `ask` ставит `Core.pending_apply` (статус `pending_apply`, снимает
+  следующий `apply` и `_stop_locked`). `lib/tunnelvpn/window.py:_save_rules` шлёт `rulesSaved` с `applied` (у
+  отказа — `failed`) только по ответу `apply` и до `askFull` — тост «Сохранено» в `ui/js/rules.js`. Занятый `lock` ждёт до `APPLY_WAIT`, а не
   отвечает «уже идёт»: правка уже на диске (`set-enabled` пишет без замка). Канал — поток на клиента
   (`ipc.Server._serve_one`), статус ожидание не держит. Под `lock` без `busy` — трей не сереет, а
   `_watch_once` пропускает круг по `lock.locked()`; `_human += 1` гасит начатый круг (`_mind_sides` выходит).
   `sides` — `lib/tunnelvpn/tunnel.py:reload_sides` (перезапуск боковых со сменившейся меткой `Side.source`),
   затем `_forget_side` (таймауты и пауза по туннелю); `None` от неё → `_stop_locked` + `_start_locked` под тем
   же `lock` (между ними никто не вклинится: ни вторая правка с «off», ни start с отказом). Отказ sing-box
-  перечитать rule-set виден после ответа `sides`: `_watch_sets` → `Core._sets_rejected(proc)` ждёт `lock`
-  (`APPLY_WAIT`) и перезапускает, пока работает тот же процесс основного (`Tunnel.proc`), что при правке. CLI `use`/
+  перечитать rule-set — тоже `None` от `reload_sides`, полный перезапуск без вопроса и с `ask`. CLI `use`/
   `profile` шлёт `apply` после удачного `set-active`/`set-profile` и печатает по `applied`; отказ `apply` — код 1.
   `{ask: true}` шлёт только окно (`lib/tunnelvpn/window.py:_apply`): `lib/tunnelvpn/tunnel.py:live_plan` `None` →
   ответ `applied: "ask"` без перезапуска → `js('askFull')` в `lib/tunnelvpn/ui/js/sheets.js` → «Переподключить» шлёт
