@@ -810,6 +810,48 @@ def slot_config(cfg, link):
     return {**cfg, "inbounds": [inbound]}
 
 
+# Выход бокового к своему серверу через вход процесса основного туннеля.
+DETOUR_TAG = "detour"
+
+
+def detour_json(tid, slot=0):
+    """Путь к конфигу бокового процесса, который ходит к серверу через основной
+    (detour_config). Рядом с боковым, но свой: в боковом остаётся прямой путь —
+    по нему ставятся и снимаются маршруты к пирам."""
+    return os.path.join(paths.RUN, f"detour{slot + 1 if slot else ''}-{tid}.json")
+
+
+def detour_config(cfg, link, peer):
+    """Боковой конфиг cfg с пакетами к серверу через вход link процесса
+    основного: сервер на адресе peer, '' — на прежнем.
+
+    14 октября из офисной подсети сервер wg0-korolev не ответил ни по внешнему
+    адресу, ни по внутреннему, а через socks личного рукопожатие прошло сразу.
+    Без логина и пароля вход основного отвечает «unsupported auth method: 255»."""
+    ep = cfg["endpoints"][0]
+    peers = ep["peers"]
+    if peer:
+        peers = [{**peers[0], "address": peer}, *peers[1:]]
+    return {**cfg,
+            "endpoints": [{**ep, "peers": peers, "detour": DETOUR_TAG}],
+            "outbounds": [{"type": "socks", "tag": DETOUR_TAG,
+                           "server": "127.0.0.1", "server_port": link["port"],
+                           "username": link["username"],
+                           "password": link["password"]}]}
+
+
+def peer_name(tid):
+    """Сервер туннеля tid из Endpoint его активного .conf — имя или адрес, как
+    записан там; '' — конфига нет или он не читается."""
+    try:
+        t = next((t for t in tunnels.load()["tunnels"] if t["id"] == tid), None)
+        path = tunnels.active_conf(t) if t else None
+        conf = parse_conf(path) if path else {}
+    except (OSError, ValueError, SystemExit):
+        return ""
+    return conf.get("peer", {}).get("endpoint", "").rpartition(":")[0]
+
+
 def trial_config(ep, link):
     """Конфиг проверки одного конфига вне VPN (Tunnel.trial): как у бокового,
     но вход http — проверке хватает urllib и CONNECT, socks в стандартной
@@ -1221,15 +1263,16 @@ def _slot_links(pair):
 
 def _drop_stale_sides(keep):
     """Боковые конфиги и rule-set туннелей, которых больше нет, — с диска:
-    в боковых приватные ключи. Второй слот — и у оставшихся: его конфиг
-    пишет запуск, а этот запуск — новый, все процессы на первом слоте."""
+    в боковых приватные ключи. Второй слот и обход — и у оставшихся: их конфиг
+    пишет запуск, а этот запуск — новый, все процессы на первом слоте и напрямую."""
     try:
         names = os.listdir(paths.RUN)
     except OSError:
         return
     slot2 = os.path.basename(side_json("", 1))[:-len(".json")]
+    detour = os.path.basename(detour_json("")).split("-")[0]
     for f in names:
-        if f.startswith(slot2) and f.endswith(".json"):
+        if f.startswith((slot2, detour)) and f.endswith(".json"):
             _remove(os.path.join(paths.RUN, f))
         for prefix in ("tunnel-", rules_tag(""), names_tag("")):
             if (f.startswith(prefix) and f.endswith(".json")

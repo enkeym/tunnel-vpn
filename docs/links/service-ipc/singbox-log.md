@@ -22,6 +22,17 @@ paths:
   `probe.DNS_ASK_NAME`, у DNS этого туннеля через вход его процесса — `Core._side_link`; любой ответ, и NXDOMAIN, — сервер жив, не перезапускаем).
   Строка «не перезапускаю» — раз на смену состояния: `Core._side_said` (сбрасывают `_do_start`,
   `_forget_side`, молчащий DNS). Нет DNS у туннеля — сторож перезапускает по одним таймаутам.
+- Обход через основной — `lib/tunnelvpn/service.py:_side_way` из `_mind_sides`: туннель «по списку» с таймаутами,
+  живой, `Side.started` моложе `DETOUR_WITHIN`, основной жив и выход `via-<id основного>` → `_restart_side(side, True)`
+  → `lib/tunnelvpn/tunnel.py:set_detour(side, _detour_peer(side))` (имя сервера — `buildconfig.peer_name`, адрес —
+  `probe._dns_via_proxy` через `Tunnel.link_of(основной)` к `buildconfig.PUBLIC_DNS`). `Side.detour` {`of`: (id
+  основного, его `Side.started`), `link`, `peer`} читает `tunnel._spawn`: конфиг `detour[2]-<id>.json`
+  (`buildconfig.detour_config` поверх `slot_config`), `tunnel-<id>.json` остаётся прямым — по нему маршруты к пирам.
+  `_mend_detours` каждый круг сверяет `of` с `Side.started` основного: сменился (`_swap_slot`, `_start_side`, запасной,
+  другой основной) — переподключает через новый, основного нет — напрямую; попытка одна на процесс основного
+  (`Core._mend_tried`). Запуск, не обновивший `Side.started`,
+  оставит обход на погашенном входе. Снимают обход новые `Side` при переподключении и `_place_side` (новый `.conf`;
+  `_swap_side` при неудаче возвращает прежний), не помог — `_side_way` ведёт напрямую.
 - Возврат выхода на основной (из `direct` и из `block`) — `lib/tunnelvpn/service.py:_try_back(main, out)` зовёт `lib/tunnelvpn/tunnel.py:delay`
   (`DELAY_URL` через `via-<id основного>` в clash_api основного — замер идёт через выбранный слот). Без `clash_api` в `config.json` выход
   останется на `direct` навсегда.

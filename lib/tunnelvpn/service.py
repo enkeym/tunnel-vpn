@@ -86,6 +86,14 @@ DEAD_RE = re.compile(
 DEAD_HITS = 3
 DEAD_WINDOW = 60.0
 DEAD_GAP = 60.0
+# Туннель «по списку», чей свежий процесс сразу не работает, — к серверу через
+# основной (Tunnel.set_detour): 14 октября из офисной подсети сервер wg0-korolev не
+# отвечал ни по внешнему адресу, ни по внутреннему, а через личный отвечал сразу.
+# Свежий — моложе стольких секунд с включения или прямого перезапуска: прямой
+# путь тогда уже пробовали. Давно работавший — сперва перезапуск напрямую, как
+# раньше: обход — туннель в туннеле, и в других сетях всё остаётся как было. Снимает
+# обход переподключение на новой сети, новый .conf или сторож, если не работает и он.
+DETOUR_WITHIN = 3 * DEAD_GAP
 # Пока выход идёт напрямую, личный проверяем задержкой через его socks не чаще
 # этого: проверка ждёт до 5 с, а круг сторожа — раз в FAST_EVERY.
 BACK_EVERY = 15.0
@@ -284,6 +292,9 @@ class Core:
         # Туннели, чей DNS отвечает при таймаутах: «не перезапускаю» — раз на смену
         # состояния, а не на каждую пачку таймаутов к адресу чужой сети.
         self._side_said = set()
+        # Обход туннеля → на какой процесс основного (id, started; None — напрямую)
+        # _mend_detours уже переключал его: неудача не повторяется каждый круг.
+        self._mend_tried = {}
         # Проверки конфигов (_test_conf): запись итога — по одной; временные
         # процессы — по одному на туннель (id → замок): json в run\ и журнал у
         # них по id, а разные туннели — «Проверить все» без VPN — проверяются разом.
@@ -1238,6 +1249,7 @@ class Core:
                 and (carries is False or not main.alive()) and self._fallback(main)):
             return
         self.prober.set(out=out)
+        self._mend_detours()
         for side in self.tunnel.sides:
             if self._round_human != self._human:
                 return
@@ -1278,8 +1290,53 @@ class Core:
             why = self._side_down(side, hits)
             if why:
                 self._side_after[side.tid] = now + DEAD_GAP
-                self.log(f"!! {why} — перезапускаю процесс «{side.title}»")
-                self._restart_side(side)
+                via, what = self._side_way(side, hits, out, now)
+                self.log(f"!! {why} — {what}")
+                self._restart_side(side, via)
+
+    def _side_way(self, side, hits, out, now):
+        """Куда перезапускать не работающий туннель side: (через основной —
+        True, снова напрямую — False, тем же путём — None; что писать в журнал).
+        Обход (DETOUR_WITHIN) — живому свежему процессу с таймаутами при выходе out
+        через основной: так сервер не слышен из этой сети, а через интернет слышен.
+        Не помог обход — снова напрямую: лежит, видно, сам сервер."""
+        main = self.tunnel.main
+        if side.detour is not None:
+            return False, f"через обход не работает — подключаю «{side.title}» напрямую"
+        if (hits and side.alive() and main is not None and side is not main
+                and main.alive() and out == buildconfig.via_tag(main.tid)
+                and side.started and now - side.started < DETOUR_WITHIN):
+            return True, (f"сервер «{side.title}» напрямую не отвечает — "
+                          f"подключаюсь к нему через «{main.title}»")
+        return None, f"перезапускаю процесс «{side.title}»"
+
+    def _mend_detours(self):
+        """Обход идёт через процесс основного, а тот сменился: перезапуск,
+        запасной конфиг или другой основной. Прежний процесс погашен, и
+        туннель молчал бы до таймаутов — переподключаем сразу через нынешний.
+        Основного нет — напрямую; лежит — ждём: его поднимет сторож. Попытка — одна
+        на процесс основного (_mend_tried): не вышло — обход прежний, его таймауты
+        приведут сторожа к _side_way, а тот — напрямую."""
+        main = self.tunnel.main
+        alone = main is None
+        for side in self.tunnel.sides:
+            if self._round_human != self._human:
+                return
+            if side.detour is None or (not alone and main is not side and (
+                    side.detour["of"] == (main.tid, main.started) or not main.alive())):
+                continue
+            target = None if alone or main is side else (main.tid, main.started)
+            if self._mend_tried.get(side.tid, ()) == target:
+                continue
+            self._mend_tried[side.tid] = target
+            if target is None:
+                self.log(f"→ основного туннеля для обхода нет — подключаю "
+                         f"«{side.title}» напрямую")
+                self._restart_side(side, False)
+            else:
+                self.log(f"→ процесс «{main.title}» сменился — переподключаю "
+                         f"«{side.title}» через него")
+                self._restart_side(side, True)
 
     def _side_down(self, side, hits):
         """Что с туннелем, для журнала, или '' — туннель «по списку» всё-таки
@@ -1398,9 +1455,10 @@ class Core:
         finally:
             self.lock.release()
 
-    def _restart_side(self, side):
+    def _restart_side(self, side, via=None):
         """Перезапуск процесса одного туннеля — под замком start/stop: «Выключить»
-        посреди него оставило бы процесс, который уже никто не снимет."""
+        посреди него оставило бы процесс, который уже никто не снимет. via —
+        путь к серверу (_side_way): True — через основной, False — напрямую, None — прежний."""
         if not self.lock.acquire(blocking=False):
             return
         try:
@@ -1408,7 +1466,12 @@ class Core:
                     or self._round_human != self._human):
                 return
             self.busy = f"перезапускаю туннель «{side.title}»"
-            err = self.tunnel.restart_side(side)
+            if via is None:
+                err = self.tunnel.restart_side(side)
+            elif via:
+                err = self.tunnel.set_detour(side, self._detour_peer(side))
+            else:
+                err = self.tunnel.set_detour(side)
             if side is self.tunnel.main:
                 self._main_kicked = True
             if err:
@@ -1418,6 +1481,33 @@ class Core:
         finally:
             self.busy = ""
             self.lock.release()
+
+    def _detour_peer(self, side):
+        """Адрес сервера side для обхода через основной; '' — прежний. Имя из .conf
+        спрашиваем у публичного DNS через основной: DNS офиса перехватывает даже
+        запрос на 8.8.8.8 и отдаёт внутренний адрес, до которого через интернет не дойти.
+        Уже в обходе — его адрес тот же."""
+        if side.detour is not None:
+            return side.detour["peer"]
+        main = self.tunnel.main
+        name = buildconfig.peer_name(side.tid)
+        link = self.tunnel.link_of(main) if main is not None else None
+        if not name or not link:
+            return ""
+        try:
+            ipaddress.ip_address(name)
+            return name
+        except ValueError:
+            pass
+        for server in buildconfig.PUBLIC_DNS:
+            ip = probe._dns_via_proxy(link, server, name, tries=1,
+                                      timeout=probe.CORP_DNS_TIMEOUT)
+            if ip and ip != probe.DNS_NO_ADDR:
+                self.log(f"→ сервер «{side.title}» {name} через «{main.title}»: {ip}")
+                return ip
+        self.log(f"!! сервер «{side.title}» {name} через «{main.title}» не резолвится — "
+                 f"беру прежний адрес")
+        return ""
 
     def _side_started(self, tid):
         """Когда запущен живой процесс туннеля tid (time.monotonic), 0.0 — не

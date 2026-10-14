@@ -52,4 +52,5 @@ paths:
   и отвечает `{ok: True, cancelled: True}` без `last_error` и повторов. `ok` у отмены — чтобы
   `lib/tunnelvpn/tray.py:_do`, `window.py:_guard` и `cli.py:main` не показывали её ошибкой; `tray.py:_quit_work`
   повторяет `stop`, пока `busy`, — теперь первый же `stop` дожидается отмены. Сторож (`_reconnect`,
-  `_restart_side`) берёт `lock` без ожидания.
+  `_restart_side`) берёт `lock` без ожидания. `_restart_side` с обходом под замком ещё резолвит сервер
+  (`_detour_peer`: до двух `probe.CORP_DNS_TIMEOUT`) — укладывается в `APPLY_WAIT` команды.
