@@ -634,6 +634,7 @@ def test_check_plan_по_tunnels_json_и_собранному_конфигу(mon
                             {"tag": "dns-home", "server": "9.9.9.9"}]}}),
         encoding="utf-8")
     monkeypatch.setattr(probe.paths, "CONFIG_JSON", str(cfg))
+    monkeypatch.setattr(probe.tunnels, "active_conf", lambda t: f"{t['id']}.conf")
 
     plan = probe.Prober.check_plan()
 
@@ -642,6 +643,22 @@ def test_check_plan_по_tunnels_json_и_собранному_конфигу(mon
         _p_work(id="work-2", host="other.example", dns="", running=False),
         _p_home(),
     ]
+
+
+def test_check_plan_туннель_без_conf_не_работает(monkeypatch, tmp_path):
+    """Удалённый на ходу .conf оставляет туннель в собранном конфиге
+    заглушкой без процесса: сторож и пробер его не спрашивают."""
+    _tunnels(monkeypatch, _work(), _home())
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"outbounds": [{"type": "socks", "tag": "socks-work"},
+                                             {"type": "socks", "tag": "socks-home"}]}),
+                   encoding="utf-8")
+    monkeypatch.setattr(probe.paths, "CONFIG_JSON", str(cfg))
+    monkeypatch.setattr(probe.tunnels, "active_conf",
+                        lambda t: None if t["id"] == "work" else "home.conf")
+
+    assert [(p["id"], p["running"]) for p in probe.Prober.check_plan()] == [
+        ("work", False), ("home", True)]
 
 
 def test_check_plan_испорченный_tunnels_json_пусто(monkeypatch):

@@ -14,6 +14,7 @@
 
 import http.server
 import json
+import os
 import threading
 import time
 import urllib.request
@@ -848,10 +849,11 @@ def live(env, monkeypatch):
     running = buildconfig.read_json(paths.CONFIG_JSON)
     seen.update(asked=[], main_cfg=running, sets={}, peer="203.0.113.30")
 
-    def assemble(data, confs, log, links, api, resolve):
-        seen["asked"].append({"links": links, "resolve": resolve})
-        sides = {tid: _side_cfg(f"{tid}.example") for tid in confs}
-        built = [(t["id"], t["name"]) for t in data["tunnels"] if t["enabled"]]
+    def assemble(data, confs, log, links, api, resolve, dns):
+        seen["asked"].append({"links": links, "resolve": resolve, "dns": dns})
+        sides = {tid: _side_cfg(f"{tid}.example") for tid, path in confs.items() if path}
+        built = [(t["id"], t["name"]) for t in data["tunnels"]
+                 if t["enabled"] and confs.get(t["id"])]
         return seen["main_cfg"], sides, seen["sets"], built, []
 
     def peer_host(host, _tag, _log):
@@ -906,6 +908,24 @@ def test_сборка_берёт_связи_работающего_запуск�
     assert {tid: [link["port"] for link in pair]
             for tid, pair in asked["links"].items()} == {
         "work": [1080, 1082], "home": [1081, 1083]}
+
+
+def test_удалённый_conf_гасит_только_его_процесс_и_ключи(live):
+    """Туннель без .conf остаётся в основном заглушкой: VPN не перезапускается,
+    его боковые с ключом удалённого конфига — с диска."""
+    tun, seen = live
+    main, work, home = tun.proc, _side(tun, "work").proc, tun.main.proc
+    os.remove(tunnels.active_conf(tunnels.find(tunnels.load(), "work")))
+    _use("work", "")
+
+    done = tun.reload_sides()
+
+    assert [(side.tid, err) for side, err in done] == [("work", "")]
+    assert work.terminated and not home.terminated and tun.proc is main
+    assert [s.tid for s in tun.sides] == ["home"]
+    assert not os.path.exists(buildconfig.side_json("work"))
+    assert os.path.exists(buildconfig.side_json("home"))
+    assert seen["asked"][0]["dns"] == buildconfig.tunnel_dns(seen["main_cfg"])
 
 
 def test_переписанный_файл_того_же_конфига_тоже_смена(live):

@@ -6,6 +6,7 @@
 """
 
 import json
+import os
 import socket
 import threading
 import time
@@ -961,8 +962,61 @@ def _again(main, tmp_path, texts, items=THREE):
     confs = {tid: _write(tmp_path, f"{tid}-2.conf", text) for tid, text in texts.items()}
     config, sides, sets, _, _ = buildconfig.assemble(
         data, confs, lambda line: None, buildconfig.links_of(main),
-        tunnel._api_link(main), resolve=False)
+        tunnel._api_link(main), resolve=False, dns=buildconfig.tunnel_dns(main))
     return json.loads(json.dumps(config)), sides, sets
+
+
+def test_удалённый_conf_на_ходу_оставляет_заглушку(build, tmp_path):
+    """Правка конфига туннеля «по списку» через удаление и возврат .conf не
+    роняет tun с основным: 14 октября так рвался личный. Socks и DNS туннеля
+    остаются, rule-set пустые, бокового и процесса нет."""
+    main, _ = build(THREE)
+    data = tunnels.validate({"tunnels": THREE})
+    confs = {tid: _write(tmp_path, f"{tid}-2.conf", CONFS[tid]) for tid in ("lab", "home")}
+
+    config, sides, sets, built, _ = buildconfig.assemble(
+        data, confs, lambda line: None, buildconfig.links_of(main),
+        tunnel._api_link(main), resolve=False, dns=buildconfig.tunnel_dns(main))
+
+    assert json.loads(json.dumps(config)) == main
+    assert list(sides) == ["lab", "home"]
+    assert built == [("lab", "Lab"), ("home", "Home")]
+    assert sets["rules-work"] == sets["names-work"] == {"version": 3, "rules": []}
+    # Вернули .conf — тот же основной: связи заглушки прежние.
+    again, _, _ = _again(json.loads(json.dumps(config)), tmp_path, CONFS)
+    assert again == main
+
+
+def test_смена_dns_вернувшегося_conf_меняет_основной(build, tmp_path):
+    main, _ = build(THREE)
+    texts = dict(CONFS, work=CORP.replace("DNS = 10.0.0.53", "DNS = 10.0.0.54"))
+
+    again, _, _ = _again(main, tmp_path, texts)
+
+    assert again != main
+
+
+def test_без_работающего_запуска_заглушки_нет(build, tmp_path):
+    """Полная сборка (без links) туннель без .conf пропускает целиком."""
+    data = tunnels.validate({"tunnels": THREE})
+    confs = {"home": _write(tmp_path, "home.conf", PERSONAL_AWG)}
+
+    config, *_ = buildconfig.assemble(data, confs, lambda line: None)
+
+    assert buildconfig.side_ids(config) == ["home"]
+
+
+def test_drop_side_убирает_конфиги_туннеля_всех_слотов(build, tmp_path):
+    build(THREE)
+    for path in (buildconfig.side_json("work", 1), buildconfig.detour_json("work"),
+                 buildconfig.detour_json("work", 1)):
+        _write(tmp_path, os.path.basename(path), "{}")
+
+    buildconfig.drop_side("work")
+
+    left = sorted(os.listdir(tmp_path))
+    assert not [f for f in left if f.endswith("-work.json") and not f.startswith(("rules", "names"))]
+    assert "tunnel-lab.json" in left
 
 
 def test_другой_конфиг_основного_туннеля_основной_процесс_не_меняет(build, tmp_path):

@@ -920,7 +920,8 @@ class Tunnel:
             # Имена пиров не резолвим: в основном конфиге адресов пиров нет,
             # а резолвить всех заново незачем — только сменившихся, ниже.
             config, sides, sets, built, _ = buildconfig.assemble(
-                data, confs, self.log, links, _api_link(running), resolve=False)
+                data, confs, self.log, links, _api_link(running), resolve=False,
+                dns=buildconfig.tunnel_dns(running))
         except SystemExit:
             return None
         if _fixed(config) != _fixed(running):
@@ -936,8 +937,11 @@ class Tunnel:
 
         На лету: смена .conf (перезапуск одного бокового), вкл/выкл туннеля
         «по списку», списки и смена основного — файлы rule-set, NRPT и выбор
-        selector out. Полный нужен, когда новая сборка меняет сам основной
-        конфиг: новый туннель (новый socks), адрес DNS туннеля, SB_TUN_MTU
+        selector out. Удалённый и вернувшийся .conf — тоже: туннель
+        без конфига остаётся в основном заглушкой (assemble, dns).
+        Полный нужен, когда новая сборка меняет сам основной
+        конфиг: новый туннель или первый .conf туннеля, собранного без
+        него (новый socks), адрес DNS туннеля, SB_TUN_MTU
         (MTU tun — постоянный TUN_MTU, не от туннелей; v6-адрес у tun тоже
         постоянный, выход без v6 — rule-set no-v6), — или rule-set не
         записать. Отказ sing-box принять rule-set виден только через
@@ -990,6 +994,11 @@ class Tunnel:
             self._stop_side(side)
             self.log(f"→ туннель «{side.title}» выключен — его процесс остановлен")
             done.append((side, ""))
+        # Туннель без .conf остался в основном заглушкой (assemble): в его
+        # боковых — ключ удалённого конфига, а side_ids их ещё отдаёт.
+        for tid in buildconfig.side_ids(config):
+            if tid not in sides:
+                buildconfig.drop_side(tid)
         return done
 
     def _enable_side(self, side, cfg, stamp):

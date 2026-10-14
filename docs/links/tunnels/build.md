@@ -12,7 +12,12 @@ paths:
   выключенный основной остаётся основным, всё остальное идёт напрямую): `sources` даёт его `active_conf` (неоднозначный → None, не `sys.exit`), `assemble`
   собирает socks, DNS, правило и боковой конфиг (пир не резолвит, испорченный конфиг — пропуск), но rule-set
   пустые и в возвращаемом `built` его нет — процесс не запускается; `tunnel._stamps` не метит, `Core._promote`
-  не повышает; пробер и сторож не видят — процесса нет (`check_plan` `running` = `enabled` и `side_ids`). `site.env` сборка больше не читает, окружение для неё
+  не повышает; пробер и сторож не видят — процесса нет (`check_plan` `running` = `enabled`, `side_ids` и
+  `probe._has_conf`). Туннель без `.conf`: полная сборка пропускает целиком; сборка на ходу (`links` с его id)
+  оставляет **заглушку** `(t, None, None)` на его месте в `data["tunnels"]` — socks из `links`, DNS из `dns`
+  (`tunnel_dns` работающего), пустые `rules-<id>`/`names-<id>`, без бокового и без `built`; его `tunnel-<id>.json`,
+  `tunnel2-`, `detour*-` убирает `buildconfig.drop_side` из `tunnel.reload_sides`. Читатели бокового по
+  `side_ids` (`service._howto`, `probe.peer_addrs`, `tunnel._peer_ips`) без файла получают `{}`. `site.env` сборка больше не читает, окружение для неё
   `tunnel.start` не готовит; `SB_CORP_*`, `SB_STACK` — по-прежнему переменные окружения службы.
 - `log_level` из `tunnels.json` → `"log"` конфига sing-box. Уровень выше `info` глушит строки, которые
   читает `lib/tunnelvpn/service.py:_read_log` (`DEAD_RE`, статистика адресов).

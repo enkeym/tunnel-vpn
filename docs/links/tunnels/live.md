@@ -35,8 +35,11 @@ paths:
   `_swap_side`, `"log"` — `_relog_side`; затем `_write_sets` (только изменённые файлы, не записать → `None`;
   без ожидания: `_watch_sets` в фоне через `RULE_SET_WAIT` ищет в журнале основного `reload rule-set` с тегом →
   `on_reject` — `Core._sets_rejected`), `_renew_nrpt`, стоп ушедших из `built`,
-  `_switch_main` (`set_out` + `config.json` с новым `default` — его читают `main_id`, `Prober.main_tag`).
-  Иначе `None` и полное включение (`Core._apply`). Основной конфиг меняют: новый туннель (новый `socks-<id>`),
+  `_switch_main` (`set_out` + `config.json` с новым `default` — его читают `main_id`, `Prober.main_tag`),
+  `buildconfig.drop_side` у заглушек (`side_ids` без бокового в сборке). `live_plan` отдаёт `assemble`
+  ещё `dns=tunnel_dns(running)`: удалённый и вернувшийся `.conf` — на лету (заглушка, `build.md`).
+  Иначе `None` и полное включение (`Core._apply`). Основной конфиг меняют: новый туннель или первый
+  `.conf` туннеля, собранного без него (новый `socks-<id>`), удалённый туннель,
   адрес DNS туннеля, `SB_TUN_MTU` (MTU tun — `buildconfig.TUN_MTU`, от MTU туннелей не зависит: правка MTU в
   `.conf` — перезапуск одного бокового) — тогда tun и маршруты пересоздаются, сеть падает. v6-адрес у tun
   постоянный (`tun_address`): v6 основного (вкл/выкл, смена основного, запасной или выбранный конфиг без v6) —

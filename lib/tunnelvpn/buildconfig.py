@@ -1039,23 +1039,35 @@ def build(data, confs, out_path, side_path=None, log=print, set_path=None):
     return built
 
 
-def assemble(data, confs, log=print, links=None, api=None, resolve=True):
+def assemble(data, confs, log=print, links=None, api=None, resolve=True,
+             dns=None):
     """(основной конфиг, {id: боковой конфиг}, {тег: rule-set}, [(id, имя)],
     строки сводки) без записи на диск.
 
     links — {id: [связи socks слотов]} (links_of) и api — clash_api работающего запуска: с ними
     основной конфиг выходит тем же, если туннели не менялись. resolve=False —
-    имена пиров в боковых не резолвятся.
+    имена пиров в боковых не резолвятся. dns — {id: адрес DNS} работающего
+    (tunnel_dns): туннель без конфига, который в работающем запуске есть
+    (id в links), остаётся в основном заглушкой — socks, DNS и правило с
+    пустыми rule-set, без бокового. Иначе удаление .conf и его возврат меняли
+    бы основной конфиг и роняли tun со всеми туннелями (Tunnel.live_plan).
     """
-    links, level = links or {}, data["log_level"]
+    links, level, dns = links or {}, data["log_level"], dns or {}
     # (туннель, разобранный .conf, endpoint). Выключенный тоже: в основном
     # конфиге у него socks, DNS и правило с пустым rule-set — включение и
     # выключение меняют файл rule-set и боковой процесс, а не основной конфиг.
+    # Заглушка — (туннель, None, None) на своём месте: порядок туннелей задаёт
+    # порядок socks, правил и DNS в основном конфиге.
     built = []
     for t in data["tunnels"]:
         path = confs.get(t["id"])
         if not path:
-            log(f"  [{t['id']}] «{t['name']}»: конфига нет, туннель пропускаю")
+            if t["id"] in links:
+                log(f"  [{t['id']}] «{t['name']}»: конфига нет — процесс не "
+                    f"запускаю, правила пустые")
+                built.append((t, None, None))
+            else:
+                log(f"  [{t['id']}] «{t['name']}»: конфига нет, туннель пропускаю")
             continue
         if t["enabled"]:
             conf = parse_conf(path)
@@ -1076,17 +1088,20 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True):
             except SystemExit as exc:
                 log(f"  [{t['id']}] «{t['name']}»: выключен, конфиг не собрать "
                     f"({exc}) — туннель пропускаю")
+                if t["id"] in links:
+                    built.append((t, None, None))
                 continue
             log(f"  [{t['id']}] «{t['name']}»: выключен — процесс не запускаю, "
                 f"правила пустые")
         built.append((t, conf, ep))
-    if not any(t["enabled"] for t, _, _ in built):
-        if built or any(not t["enabled"] for t in data["tunnels"]):
+    if not any(t["enabled"] and conf for t, conf, _ in built):
+        if any(conf for _, conf, _ in built) or any(not t["enabled"] for t in data["tunnels"]):
             sys.exit("включённого туннеля с конфигом нет — включите туннель или добавьте .conf")
         sys.exit("ни у одного туннеля нет конфига — добавьте .conf")
     # Работающий основной. Выключенный собран, как выключенный «по списку»:
     # без процесса, остальное — напрямую, как без основного.
-    main = next((b for b in built if b[0]["mode"] == "all" and b[0]["enabled"]), None)
+    main = next((b for b in built
+                 if b[0]["mode"] == "all" and b[0]["enabled"] and b[1]), None)
 
     # IPv6 выхода — ТОЛЬКО если сервер включённого основного выдал v6-адрес.
     #
@@ -1110,6 +1125,15 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True):
 
     rules, dns_tunnels, report, sets = [], [], [], {}
     for t, conf, ep in built:
+        if conf is None:
+            sets[rules_tag(t["id"])] = rule_set(None)
+            rules.append({"rule_set": [rules_tag(t["id"])],
+                          "outbound": via_tag(t["id"])})
+            if dns.get(t["id"]):
+                dns_tunnels.append((t["id"], dns[t["id"]], []))
+                sets[names_tag(t["id"])] = rule_set(None)
+            report.append(f"  [{t['id']}] {t['name']}: конфига нет, процесс не запущен")
+            continue
         # Какой трафик пустить в туннель, решает основной процесс. С AllowedIPs
         # из файла endpoint отбрасывал бы домены и адреса из «пускать»,
         # которых в AllowedIPs нет.
@@ -1249,9 +1273,11 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True):
         {"type": "local", "tag": tag, "format": "source",
          "path": rule_set_json(tag)} for tag in sets]
 
-    sides = {t["id"]: side_config(ep, links[t["id"]][0], level) for t, _, ep in built}
+    sides = {t["id"]: side_config(ep, links[t["id"]][0], level)
+             for t, _, ep in built if ep}
     return (config, sides, sets,
-            [(t["id"], t["name"]) for t, _, _ in built if t["enabled"]], report)
+            [(t["id"], t["name"]) for t, conf, _ in built if t["enabled"] and conf],
+            report)
 
 
 def _slot_links(pair):
@@ -1278,6 +1304,14 @@ def _drop_stale_sides(keep):
             if (f.startswith(prefix) and f.endswith(".json")
                     and f[len(prefix):-len(".json")] not in keep):
                 _remove(os.path.join(paths.RUN, f))
+
+
+def drop_side(tid):
+    """Боковые конфиги одного туннеля всех слотов, обход тоже, — с диска:
+    у заглушки (туннель без .conf, assemble) в них ключ удалённого конфига."""
+    for slot in range(SLOTS):
+        _remove(side_json(tid, slot))
+        _remove(detour_json(tid, slot))
 
 
 def drop_legacy():

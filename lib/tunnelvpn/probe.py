@@ -73,6 +73,15 @@ def _probe_host(tunnel):
                  if "/" not in e and not e.startswith("*.")), "")
 
 
+def _has_conf(tunnel):
+    """У туннеля есть .conf для сборки: без него на ходу он остаётся в
+    собранном конфиге заглушкой без процесса (buildconfig.assemble)."""
+    try:
+        return tunnels.active_conf(tunnel) is not None
+    except ValueError:
+        return False
+
+
 def _list_part(p):
     """Чем проверять туннель «по списку» p: 'dns' — его DNS (домен проверки
     или, без него, DNS_ASK_NAME), 'http' — HTTPS к домену, когда DNS у туннеля
@@ -366,7 +375,8 @@ class Prober:
         """Что проверять у каждого туннеля, по порядку tunnels.json:
         [{id, name, mode, host, dns, running}]. host — домен проверки «по
         списку», dns — DNS туннеля из собранного конфига, running — туннель
-        включён и есть в собранном конфиге (без конфига сборка его пропускает,
+        включён, есть в собранном конфиге и у него есть .conf (без конфига
+        сборка его пропускает или оставляет на ходу заглушкой без процесса,
         выключенный собирается без процесса). dns — только «по списку»: у
         основного DNS в собранном конфиге есть ради смены на лету, но
         проверяется он выходом, а не DNS."""
@@ -380,7 +390,7 @@ class Prober:
         return [{"id": t["id"], "name": t["name"], "mode": t["mode"],
                  "host": _probe_host(t) if t["mode"] == "list" else "",
                  "dns": dns.get(t["id"], "") if t["mode"] == "list" else "",
-                 "running": t["enabled"] and t["id"] in running}
+                 "running": t["enabled"] and t["id"] in running and _has_conf(t)}
                 for t in items]
 
     @staticmethod
