@@ -55,6 +55,7 @@ def _core():
     core = Core.__new__(Core)
     core.logged = []
     core.log = core.logged.append
+    core.prober = probe.Prober()
     return core
 
 
@@ -1209,6 +1210,24 @@ def test_удаление_туннеля_убирает_его_конфиги(co
     assert r["ok"]
     assert [t["id"] for t in tunnels.load()["tunnels"]] == ["home"]
     assert not os.path.exists(tunnels.conf_dir("work"))
+
+
+@pytest.mark.parametrize("remove", [
+    lambda core, tid: core._remove_tunnel(tid),
+    lambda core, tid: core._remove_config("lab", tunnel=tid, drop_tunnel=True),
+])
+def test_новый_туннель_с_id_удалённого_не_берёт_его_итог_проверки(core, remove):
+    lab = core._add_tunnel("Лаб", "list")["id"]
+    _put(lab, "lab.conf")
+    core.prober.set(checks={lab: {"result": "up", "answer": "10.1.1.5", "seq": 3},
+                            "home": {"result": "up", "answer": "", "seq": 3}})
+
+    assert remove(core, lab)["ok"]
+    again = core._add_tunnel("Дача", "list")["id"]
+
+    # _new_tid отдаёт освободившийся id: «работает» удалённого — уже не его.
+    assert again == lab
+    assert set(core.prober.snapshot()["checks"]) == {"home"}
 
 
 def test_уровень_журнала(core):

@@ -800,6 +800,15 @@ class Prober:
             self.st["checks"] = {tid: {**c, "result": "", "answer": ""}
                                  for tid, c in (self.st.get("checks") or {}).items()}
 
+    def forget_check(self, tid):
+        """Туннель tid удалён — его итог прочь: service._new_tid отдаёт
+        освободившийся id новому туннелю, и тот до первой проверки нёс бы
+        «работает» удалённого."""
+        with self.lock:
+            checks = self.st.get("checks") or {}
+            if tid in checks:
+                self.st["checks"] = {k: c for k, c in checks.items() if k != tid}
+
     def _take_slow(self):
         """Занимает сетевую проверку. False — она уже идёт."""
         with self._slow_gate:

@@ -45,6 +45,9 @@ FOCUS_ABOUT = ":about"
 # (installer/dev/cdp-window.ps1). WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS порт не
 # открывает: pywebview задаёт свои AdditionalBrowserArguments.
 DEVTOOLS_PORT_ENV = "TUNNELVPN_DEVTOOLS_PORT"
+# Журнал окна (paths.WINDOW_LOG) больше этого уходит в window.log.1: его никто не
+# чистит, а окно живёт неделями.
+WINDOW_LOG_MAX = 1 << 20
 
 # Фильтр для create_file_dialog. pywebview проверяет каждую строку регуляркой
 # вида ^([\w ]+)\(\*\.\w+...\)$ : в описании допустимы только буквы и пробелы,
@@ -945,11 +948,17 @@ class Api:
             fh.write("\n")
 
     def _log(self, line):
+        """Строка в paths.WINDOW_LOG. Раньше журнал шёл в state\\logs, куда у
+        пользователя нет записи, и OSError гасил его целиком."""
         try:
-            paths.ensure_dirs()
-            with open(os.path.join(paths.LOGS, "window.log"), "a",
-                      encoding="utf-8") as fh:
-                fh.write(f"{time.strftime('%H:%M:%S')} {line}\n")
+            os.makedirs(os.path.dirname(paths.WINDOW_LOG), exist_ok=True)
+            try:
+                if os.path.getsize(paths.WINDOW_LOG) > WINDOW_LOG_MAX:
+                    os.replace(paths.WINDOW_LOG, paths.WINDOW_LOG + ".1")
+            except OSError:
+                pass                       # журнала ещё нет
+            with open(paths.WINDOW_LOG, "a", encoding="utf-8") as fh:
+                fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}\n")
         except OSError:
             pass
 
@@ -1171,9 +1180,7 @@ def _storage_path():
     WebView2 открыть не может: инициализация кончается IsSuccess=False,
     pywebview это лишь пишет в лог, и окно остаётся серым и пустым.
     """
-    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    return os.path.join(base, "TunnelVPN",
-                        "WebView2-" + ("admin" if _is_admin() else "user"))
+    return os.path.join(paths.LOCAL, "WebView2-" + ("admin" if _is_admin() else "user"))
 
 
 def _hide_on_close(window, api):

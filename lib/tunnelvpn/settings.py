@@ -36,6 +36,10 @@ RELEASES_FEED = f"{REPO_URL}/releases.atom"
 FEED_MAX = 2 ** 20
 _ATOM = "{http://www.w3.org/2005/Atom}"
 RELEASE_TAG = re.compile(r"^v(\d+(?:\.\d+)*)(?:-[0-9A-Za-z.]+)?$")
+# Хвост журнала окна в «Скопировать диагностику»: строк и сколько читать с конца.
+WINDOW_TAIL = 30
+WINDOW_TAIL_BYTES = 16384
+_IPV4 = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
 # Ссылка уходит аргументом explorer.exe: кавычки, пробелы и запятые он
 # разбирает по-своему (/select,…), поэтому после адреса репозитория — только путь.
 REPO_PAGE = re.compile(re.escape(REPO_URL) + r"(?:/[A-Za-z0-9._/-]*)?")
@@ -361,8 +365,9 @@ def repo_url(url):
 # ------------------------------------------------------------- диагностика
 
 def diagnostics(st, info):
-    """Текст для багрепорта: вывод `tunnelvpn status` и версии. Адреса выхода
-    и утечки IPv6 скрыты — отчёт обычно уходит в публичный issue."""
+    """Текст для багрепорта: вывод `tunnelvpn status`, версии и хвост журнала
+    окна (_window_tail). Адреса выхода и утечки IPv6 скрыты — отчёт обычно
+    уходит в публичный issue."""
     from . import cli
 
     if st:
@@ -388,4 +393,24 @@ def diagnostics(st, info):
     ]
     if tray is not None:
         lines.append(f"трей при входе: {'да' if tray else 'нет'}")
+    tail = _window_tail()
+    if tail:
+        lines += ["", "window.log, последние строки:"] + tail
     return "\n".join(lines)
+
+
+def _window_tail():
+    """Последние WINDOW_TAIL строк журнала окна без IPv4-адресов: там
+    причины сбоев окна, которых статус службы не знает. Читаем только
+    конец файла — журнал до мегабайта (window.WINDOW_LOG_MAX)."""
+    try:
+        with open(paths.WINDOW_LOG, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            start = max(0, fh.tell() - WINDOW_TAIL_BYTES)
+            fh.seek(start)
+            lines = fh.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return []
+    if start:
+        lines = lines[1:]                  # первая — обрезанная
+    return [_IPV4.sub("x.x.x.x", line) for line in lines[-WINDOW_TAIL:]]

@@ -17,7 +17,7 @@ paths:
 - «Служба не отвечает» (не портативная): `lib/tunnelvpn/ui/js/topbar.js:reviveService` (`#btn-revive`,
   `REVIVING` из `model.js` — он же заголовок «Перезапускаю службу…») → `request('restart_service')` →
   `lib/tunnelvpn/window.py:_restart_service` → `lib/tunnelvpn/settings.py:restart_service`, как самолечение
-  трея; ответ `{ok}` — после свежего `render`, причина сбоя — в `window.log`. Мок — `restart_service` в
+  трея; ответ `{ok}` — после свежего `render`, причина сбоя — в `window.log` (`paths.WINDOW_LOG`, `%LOCALAPPDATA%\TunnelVPN`). Мок — `restart_service` в
   `lib/tunnelvpn/ui/dev/mock-api.js` (`&revive=error`). Без ветки в `_dispatch` кнопка отвечает тостом «нет ответа».
 - Заголовок и проблемы: `lib/tunnelvpn/ui/js/model.js:headOf` — порядок веток как у
   `lib/tunnelvpn/tray.py:_tray_state`; `problemsOf` → пилюля и панель в `lib/tunnelvpn/ui/js/topbar.js`

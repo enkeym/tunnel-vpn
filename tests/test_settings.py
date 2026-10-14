@@ -297,6 +297,48 @@ def test_диагностика_без_службы():
     assert "служба не отвечает" in text and "(портативная)" in text and "трей при входе" not in text
 
 
+def test_журнал_окна_в_профиле_пользователя(monkeypatch, tmp_path):
+    log = tmp_path / "TunnelVPN" / "window.log"
+    monkeypatch.setattr(paths, "WINDOW_LOG", str(log))
+
+    window.Api({})._log("служба молчит")
+
+    # В state\logs у пользователя записи нет: журнала окна не было вовсе.
+    assert log.read_text(encoding="utf-8").rstrip().endswith("служба молчит")
+
+
+def test_журнал_окна_больше_предела_уходит_в_копию(monkeypatch, tmp_path):
+    log = tmp_path / "window.log"
+    monkeypatch.setattr(paths, "WINDOW_LOG", str(log))
+    monkeypatch.setattr(window, "WINDOW_LOG_MAX", 10)
+    log.write_text("старое старое\n", encoding="utf-8")
+
+    window.Api({})._log("новое")
+
+    assert "новое" in log.read_text(encoding="utf-8")
+    assert (tmp_path / "window.log.1").read_text(encoding="utf-8") == "старое старое\n"
+
+
+def test_диагностика_несёт_хвост_журнала_окна_без_адресов(monkeypatch, tmp_path):
+    log = tmp_path / "window.log"
+    monkeypatch.setattr(paths, "WINDOW_LOG", str(log))
+    log.write_text("".join(f"строка {n}\n" for n in range(100))
+                   + "js: нет ответа от 185.12.4.9\n", encoding="utf-8")
+
+    text = settings.diagnostics({}, {"service": None})
+
+    assert "строка 99" in text and "строка 0\n" not in text
+    assert "185.12.4.9" not in text and "нет ответа от" in text
+
+
+def test_диагностика_без_журнала_окна(monkeypatch, tmp_path):
+    monkeypatch.setattr(paths, "WINDOW_LOG", str(tmp_path / "window.log"))
+
+    text = settings.diagnostics({}, {"service": None})
+
+    assert "window.log" not in text
+
+
 # ---------------------------------------------------------------- мост
 
 def _api(monkeypatch):

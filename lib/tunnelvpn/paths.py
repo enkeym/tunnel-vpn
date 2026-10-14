@@ -13,6 +13,9 @@
 приватные ключи), state\\ доступен пользователям на чтение — оттуда трей берёт
 status.json и логи. Кроме state\\run\\: собранные конфиги sing-box несут те же
 ключи, он закрыт, как conf\\.
+
+Писать в state\\ пользователю нельзя, поэтому своё окно кладёт в профиль
+пользователя (LOCAL): журнал окна, папку WebView2.
 """
 
 import os
@@ -55,6 +58,10 @@ RUN = os.path.join(STATE, "run")
 LOGS = os.path.join(STATE, "logs")
 # Журналы процессов — <префикс>-<дата>.log, дата в таком виде.
 LOG_STAMP = "%Y-%m-%d_%H%M%S"
+
+# Профиль пользователя: окно пишет от его имени, а в state\\ у него записи нет.
+LOCAL = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "TunnelVPN")
+WINDOW_LOG = os.path.join(LOCAL, "window.log")
 
 # Бинарники. У установленной версии build.ps1 кладёт их рядом с exe (BASE),
 # а BUNDLE у onedir-сборки PyInstaller 6 — это _internal\: искали там и

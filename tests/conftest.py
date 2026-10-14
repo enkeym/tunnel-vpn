@@ -22,6 +22,8 @@ _DATA = tempfile.mkdtemp(prefix="tunnelvpn-tests-")
 # Каталог свой на каждый прогон, иначе %TEMP% зарастает сотнями tunnelvpn-tests-*.
 atexit.register(shutil.rmtree, _DATA, ignore_errors=True)
 os.environ["TUNNELVPN_DATA"] = _DATA
+# Туда же профиль пользователя: paths.LOCAL (журнал окна, WebView2).
+os.environ["LOCALAPPDATA"] = os.path.join(_DATA, "local")
 for _sub in ("conf", "state", os.path.join("state", "logs")):
     os.makedirs(os.path.join(_DATA, _sub), exist_ok=True)
 

@@ -56,6 +56,10 @@ paths:
   `lib/tunnelvpn/ipc.py:check_by_side` (ждёт id из `st["tunnels"]` по `seq`), `lib/tunnelvpn/tray.py:_conf_colors`
   (биты lParam — `_side_bits`/`_sides_of` по id на открытие меню), `lib/tunnelvpn/cli.py:_check_text`,
   `lib/tunnelvpn/window.py:_check` (`checkSides` с id ждущих → `CHECK_LEFT` в `lib/tunnelvpn/ui/js/model.js`).
+  Запись туннеля, который не поднят, — с пустым `result` и свежим `seq`: по нему `check_by_side` перестаёт его
+  ждать, не убирать. Удалённый туннель (`lib/tunnelvpn/service.py:_drop_tunnel` из `_remove_tunnel`,
+  `_remove_config`/`_move_config` с `drop_tunnel`) снимает свою запись `Prober.forget_check`: `_new_tid` отдаёт его
+  id новому туннелю, и тот показывал бы чужой итог.
   Старые `corp_seq`/`personal_seq` (`probe.LEGACY_SIDES`) → `checking_corp`/`checking_personal` читателей
   больше нет — уйдут в шаге 6.
 - `busy === 'переподключаю'` — `lib/tunnelvpn/service.py:_start_locked` (reconnect из

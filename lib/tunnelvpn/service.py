@@ -1845,7 +1845,7 @@ class Core:
                 return {"ok": False, "error": f"конфиг удалён, но туннель остался: {exc}"}
             self.log(f"→ удалён туннель {t['id']}")
             self._log_promoted(up)
-            self._drop_conf_dir(t["id"])
+            self._drop_tunnel(t["id"])
         elif t["active"] == name:
             # Активный указывал бы на удалённый файл, и следующее «Включить»
             # падало бы с «нет конфига». Берём другой, а без него — пусто:
@@ -1924,7 +1924,7 @@ class Core:
         if drop:
             self.log(f"→ удалён туннель {src['id']}")
             self._log_promoted(up)
-            self._drop_conf_dir(src["id"])
+            self._drop_tunnel(src["id"])
         return {"ok": True, "tunnel": dst["id"], "name": name}
 
     def _set_active(self, name, tunnel="", kind=""):
@@ -2259,13 +2259,15 @@ class Core:
         r = self._save_tunnels(data, f"удалён туннель {t['id']}")
         if r["ok"]:
             self._log_promoted(up)
-            self._drop_conf_dir(t["id"])
+            self._drop_tunnel(t["id"])
         return r
 
-    def _drop_conf_dir(self, tid):
-        """Папка конфигов удалённого туннеля — после записи tunnels.json: сбой
-        оставит папку без туннеля, а не туннель без конфигов. Такую папку
-        _new_tid обходит."""
+    def _drop_tunnel(self, tid):
+        """Что осталось от удалённого туннеля, — после записи tunnels.json:
+        итог проверки (Prober.forget_check) и папка конфигов. Сбой оставит
+        папку без туннеля, а не туннель без конфигов. Такую папку _new_tid
+        обходит."""
+        self.prober.forget_check(tid)
         try:
             shutil.rmtree(tunnels.conf_dir(tid))
         except FileNotFoundError:

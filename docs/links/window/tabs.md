@@ -28,7 +28,10 @@ paths:
   `_run_elevated`) меняет только триггер входа задачи `settings.TRAY_TASK` (её же `/Run` у ярлыка), без задачи —
   ставит её как `RegisterTrayTask` в `installer/tunnelvpn.iss` (правишь одну — правь другую); итог —
   `settings.tray_task` (XML `schtasks /Query`). `diagnostics` → `{ok, text}` (`settings.diagnostics` на
-  `lib/tunnelvpn/cli.py:status_lines`, адреса скрыты); `open_logs`/`open_url` → `{ok, error?}` через explorer.exe
+  `lib/tunnelvpn/cli.py:status_lines`, адреса скрыты; хвост `window.log` — `settings._window_tail`: `WINDOW_TAIL`
+  строк из `paths.WINDOW_LOG` без IPv4, пишет его `lib/tunnelvpn/window.py:Api._log` в `%LOCALAPPDATA%\TunnelVPN`,
+  не в `state\logs`: туда у пользователя нет записи, и `OSError` гасил журнал целиком; `open_logs` его не
+  показывает); `open_logs`/`open_url` → `{ok, error?}` через explorer.exe
   (`_shell_open`), `open_url` — только `settings.repo_url`; `check_update` → `{ok, state: latest|update|error,
   latest, url, notes, install, downtime}` (`settings.check_update`: `/releases?per_page=30`, не ответил — `releases.atom`
   (`settings.feed_releases`), теги `RELEASE_TAG`, `notes` — `settings.plain_notes` из `body`, а `body` — сообщение коммита тега (шаг «Текст релиза»
