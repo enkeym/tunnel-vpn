@@ -26,6 +26,10 @@ POLL_EVERY = 2.0
 PROGRESS_EVERY = 0.2
 # Тост при сбое скачивания: причина (тайм-аут, DNS, обрыв) — в журнал.
 DOWNLOAD_FAILED = "Не удалось скачать обновление → проверьте интернет и повторите"
+# «Перезапустить службу»: диспетчер служб считает её работающей раньше, чем
+# она открывает канал (Core.start → _migrate) — столько ждём первый ответ.
+SERVICE_PIPE_WAIT = 15.0
+RESTART_FAILED = "Службу не удалось перезапустить → перезагрузите компьютер"
 # Сколько ждём отчёта страницы о готовности. Не дождались — WebView2 не
 # поднялся, и окно так и висело бы серым: выходим с READY_LOST, трей
 # перезапустит окно.
@@ -310,6 +314,9 @@ class Api:
                 self.js("killSwitchDone")
         elif name == "logs":
             self._push_logs()
+        elif name == "restart_service":
+            # Ответ — возвратом send (request): кнопка крутится до итога.
+            return self._restart_service()
         # Вкладка «Настройки»: ответы — возвратом send (request).
         elif name == "settings_info":
             return self._settings_info()
@@ -535,6 +542,46 @@ class Api:
         except ipc.NotRunning:
             reply = {}
         return reply.get("howto") or {"endpoints": []}
+
+    def _restart_service(self):
+        """«Перезапустить службу» при «Служба не отвечает»: та же
+        settings.restart_service, что у самолечения трея. Ответила, пока жали
+        кнопку (трей успел сам), — не трогаем. Причина сбоя — в window.log,
+        странице — человеческая фраза."""
+        if portable.is_portable():
+            return {"ok": False, "error": "У портативной версии нет службы → "
+                                         "закройте окно и запустите TunnelVPN-Portable.exe заново"}
+        try:
+            ipc.call("status")
+        except ipc.NotRunning as exc:
+            code = getattr(exc.__cause__, "winerror", None)
+            why = f"{exc}, код {code}" if code is not None else str(exc)
+            try:
+                self._log(f"служба молчит ({why}) → перезапуск из окна: "
+                          + settings.restart_service())
+            except Exception as err:                   # noqa: BLE001
+                self._log(f"!! перезапуск службы из окна не вышел: {err}")
+                self.refresh()
+                return {"ok": False, "error": RESTART_FAILED}
+            if not self._wait_pipe():
+                self._log(f"!! служба запущена, но канал молчит {SERVICE_PIPE_WAIT:.0f} с")
+                self.refresh()
+                return {"ok": False, "error": RESTART_FAILED}
+        self.refresh(full=True)
+        return {"ok": True}
+
+    @staticmethod
+    def _wait_pipe():
+        """Канал ответил за SERVICE_PIPE_WAIT."""
+        until = time.monotonic() + SERVICE_PIPE_WAIT
+        while True:
+            try:
+                ipc.call("status")
+                return True
+            except ipc.NotRunning:
+                if time.monotonic() >= until:
+                    return False
+                time.sleep(0.5)
 
     def _push_logs(self):
         self.js("renderLogs", ipc.call("log", lines=400).get("lines", []))

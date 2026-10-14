@@ -100,6 +100,63 @@ def test_портативная_без_канала_не_просит_стави
     assert shown == [("render", {"up": False, "no_service": True, "portable": True})]
 
 
+def _revive(monkeypatch, answers, restart=lambda: "служба перезапущена"):
+    """«Перезапустить службу»: answers — ответит ли канал на каждый опрос."""
+    left, restarts, logged = list(answers), [], []
+
+    def call(op, **_kw):
+        if not (left.pop(0) if left else True):
+            raise ipc.NotRunning("служба не отвечает")
+        return {"ok": True, "status": {"up": True}}
+
+    def run():
+        restarts.append(1)
+        return restart()
+
+    monkeypatch.setattr(ipc, "call", call)
+    monkeypatch.setattr(window.settings, "restart_service", run)
+    monkeypatch.setattr(window.portable, "is_portable", lambda: False)
+    monkeypatch.setattr(window, "_service_installed", lambda: True)
+    monkeypatch.setattr(window.time, "sleep", lambda _s: None)
+    api = window.Api({})
+    monkeypatch.setattr(api, "js", lambda fn, arg=None: None)
+    monkeypatch.setattr(api, "_log", logged.append)
+    return api, restarts, logged
+
+
+def test_молчащая_служба_перезапускается_из_окна(monkeypatch):
+    api, restarts, logged = _revive(monkeypatch, [False, False, True])
+
+    assert api.send("restart_service") == {"ok": True}
+    assert restarts == [1]
+    assert "перезапуск из окна: служба перезапущена" in logged[0]
+
+
+def test_ответившую_службу_окно_не_перезапускает(monkeypatch):
+    api, restarts, _ = _revive(monkeypatch, [True])
+
+    assert api.send("restart_service") == {"ok": True}
+    assert restarts == []
+
+
+def test_сбой_перезапуска_человеческой_фразой_причина_в_журнал(monkeypatch):
+    def fail():
+        raise OSError("отказано в доступе")
+
+    api, _, logged = _revive(monkeypatch, [False, False], restart=fail)
+
+    assert api.send("restart_service") == {"ok": False, "error": window.RESTART_FAILED}
+    assert "отказано в доступе" in logged[-1]
+
+
+def test_запущенная_но_молчащая_служба_это_сбой(monkeypatch):
+    monkeypatch.setattr(window, "SERVICE_PIPE_WAIT", 0.0)
+    api, restarts, logged = _revive(monkeypatch, [False] * 10)
+
+    assert api.send("restart_service") == {"ok": False, "error": window.RESTART_FAILED}
+    assert restarts == [1] and "канал молчит" in logged[-1]
+
+
 def _save_rules(monkeypatch, up, reply=None):
     """Сохранить правила туннеля; вернуть команды службе и вызовы страницы."""
     ops, admin, shown = [], [], []
