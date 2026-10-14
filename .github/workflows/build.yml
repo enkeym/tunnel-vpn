@@ -151,10 +151,20 @@ jobs:
           name: TunnelVPN-dist
           path: dist/TunnelVPN/
 
+      # Текст релиза — сообщение коммита тега: его показывает «Что нового» в
+      # окне. С пустым телом API отдаёт пустую заметку, а releases.atom —
+      # сообщение коммита с заголовком, разрезанным «…». bash, а не pwsh:
+      # пишет байты UTF-8 как есть, кириллица не портится.
+      - name: Текст релиза
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: git log -1 --format=%B > release-notes.md
+
       - name: Приложить к релизу
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
+          body_path: release-notes.md
           files: |
             dist/TunnelVPN-Portable.exe
             installer/Output/*.exe

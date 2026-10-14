@@ -156,6 +156,25 @@ def test_релиз_без_текста_в_releases_atom():
     assert settings.feed_releases(FEED)[1] == {"tag_name": "v1.0.5", "body": ""}
 
 
+def test_заголовок_коммита_из_releases_atom_целиком():
+    # Тело релиза пустое — лента берёт сообщение коммита тега, длинный
+    # заголовок GitHub режет на «…» и переносит хвост в следующий абзац.
+    feed = """<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+    <id>tag:github.com,2008:Repository/1416042570/v1.0.6</id>
+    <content type="html">&lt;p&gt;Релиз 1.0.6: журнал и окно с нов…&lt;/p&gt;
+
+&lt;p&gt;…ым именем туннеля, а не …&lt;/p&gt;
+
+&lt;p&gt;…прежним&lt;/p&gt;
+
+&lt;p&gt;- VERSION 1.0.6&lt;/p&gt;</content>
+  </entry></feed>""".encode()
+
+    body = settings.feed_releases(feed)[0]["body"]
+
+    assert body == "Релиз 1.0.6: журнал и окно с новым именем туннеля, а не прежним\n\n- VERSION 1.0.6\n\n"
+
+
 def test_ни_api_ни_releases_atom_причина_обоих(monkeypatch):
     cert = urllib.error.URLError("[SSL: CERTIFICATE_VERIFY_FAILED]")
     _network(monkeypatch, api=cert, feed=b"<html>")
