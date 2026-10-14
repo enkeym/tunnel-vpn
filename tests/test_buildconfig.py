@@ -443,7 +443,38 @@ def test_dns_туннеля_по_tcp_через_его_via():
                           "server": "10.0.0.53", "detour": "via-work"}
     assert servers[1] == {"type": "udp", "tag": "dns", "server": "8.8.8.8",
                           "detour": "out"}
-    assert rules == [{"rule_set": ["names-work"], "server": "dns-work"}]
+    assert rules[0] == {"rule_set": ["names-work"], "server": "dns-work"}
+
+
+def test_имена_мимо_vpn_спрашивает_dns_сети_после_туннелей():
+    """Сайт офиса публичный DNS отдаёт внешним адресом, а изнутри офиса тот
+    отказывает; DNS сети (dhcp) отдаёт внутренний. Правило — после туннелей
+    «по списку»: их домены забирают их DNS, как и маршрут."""
+    servers, rules = buildconfig.dns_section(
+        [("work", "10.0.0.53", ["corp.example"])], "out")
+
+    assert servers[-1] == {"type": "dhcp", "tag": "uplink"}
+    assert rules == [{"rule_set": ["names-work"], "server": "dns-work"},
+                     {"rule_set": ["bypass-names"], "server": "uplink"}]
+
+
+def test_dns_сети_не_считается_dns_туннеля(build):
+    """tunnel_dns и NRPT берут серверы по префиксу dns-."""
+    main, _ = build(THREE)
+
+    assert buildconfig.tunnel_dns(main) == {"work": "10.0.0.53"}
+    assert buildconfig.tunnel_domains(main) == ["corp.example", ".intra.example"]
+
+
+def test_домены_мимо_vpn_основного_в_rule_set_dns_сети(build, tmp_path):
+    """Только домены: rule-set с ip_cidr в правиле DNS sing-box не перечитывает."""
+    items = [*THREE[:2], dict(THREE[2], exclude=["198.51.100.7/32", "git.example",
+                                                  "*.dev.example"])]
+
+    build(items)
+
+    assert _load(tmp_path / "bypass-names.json") == {"version": 3, "rules": [
+        {"domain_suffix": ["git.example", ".dev.example"]}]}
 
 
 def test_без_доменов_rule_set_dns_пустой(build, tmp_path):
@@ -458,7 +489,7 @@ def test_без_доменов_rule_set_dns_пустой(build, tmp_path):
 def test_без_основного_туннеля_публичный_dns_напрямую():
     """detour на пустой direct sing-box отвергает."""
     servers, _ = buildconfig.dns_section([], None)
-    assert servers == [{"type": "udp", "tag": "dns", "server": "8.8.8.8"}]
+    assert servers[0] == {"type": "udp", "tag": "dns", "server": "8.8.8.8"}
 
 
 # ----------------------------------------------------- сборка целиком
@@ -599,7 +630,7 @@ def test_что_забирает_туннель_лежит_в_его_rule_set(bu
         {"type": "local", "tag": tag, "format": "source",
          "path": str(tmp_path / f"{tag}.json")}
         for tag in ("rules-work", "names-work", "rules-lab", "rules-home", "bypass",
-                    "no-v6")]
+                    "bypass-names", "no-v6")]
     assert _load(tmp_path / "rules-home.json") == {"version": 3, "rules": []}
     assert _load(tmp_path / "rules-work.json") == {"version": 3, "rules": [
         {"type": "logical", "mode": "and", "rules": [
@@ -648,8 +679,10 @@ def test_dns_только_у_туннелей_по_списку_с_dns_в_conf(b
         {"type": "tcp", "tag": "dns-work", "server": "10.0.0.53",
          "detour": "via-work"},
         {"type": "udp", "tag": "dns", "server": "8.8.8.8", "detour": "out"},
+        {"type": "dhcp", "tag": "uplink"},
     ]
-    assert main["dns"]["rules"] == [{"rule_set": ["names-work"], "server": "dns-work"}]
+    assert main["dns"]["rules"] == [{"rule_set": ["names-work"], "server": "dns-work"},
+                                    {"rule_set": ["bypass-names"], "server": "uplink"}]
     assert main["dns"]["final"] == "dns"
     assert main["route"]["default_domain_resolver"] == "dns"
 
@@ -666,6 +699,7 @@ def test_без_основного_туннеля_остальное_напря�
     assert _by_tag(main["dns"]["servers"], "dns")["detour"] == "out"
     assert main["inbounds"][0]["mtu"] == 1280
     assert _load(tmp_path / "bypass.json") == {"version": 3, "rules": []}
+    assert _load(tmp_path / "bypass-names.json") == {"version": 3, "rules": []}
 
 
 def test_уровень_журнала_во_всех_конфигах(build):
@@ -754,6 +788,7 @@ def test_вкл_выкл_основного_меняет_только_rule_set_�
     assert tunnel._fixed(again) == tunnel._fixed(main)
     assert buildconfig.main_id(again) is None
     assert sets["bypass"] == {"version": 3, "rules": []}
+    assert sets["bypass-names"] == {"version": 3, "rules": []}
 
 
 APP = "C:\\Program Files\\App (x86)\\a.exe"
@@ -1095,7 +1130,8 @@ def test_лишние_боковые_конфиги_удаляются(state):
     buildconfig.main(log=lambda line: None)
 
     assert sorted(p.name for p in state.iterdir()) == [
-        "bypass.json", "config.json", "names-work.json", "no-v6.json", "rules-home.json",
+        "bypass-names.json", "bypass.json", "config.json", "names-work.json", "no-v6.json",
+        "rules-home.json",
         "rules-work.json", "tunnel-home.json", "tunnel-work.json"]
 
 
@@ -1124,7 +1160,7 @@ def test_сборка_в_сторону_rule_set_рядом_а_не_в_run(state
     assert {rs["path"] for rs in main["route"]["rule_set"]} == {
         str(tmp_path / "test.rules-work.json"), str(tmp_path / "test.names-work.json"),
         str(tmp_path / "test.rules-home.json"), str(tmp_path / "test.bypass.json"),
-        str(tmp_path / "test.no-v6.json")}
+        str(tmp_path / "test.bypass-names.json"), str(tmp_path / "test.no-v6.json")}
     assert buildconfig.tunnel_domains(main) == ["corp.example"]
 
 

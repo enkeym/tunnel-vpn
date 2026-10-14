@@ -611,7 +611,8 @@ def corp_diagnostics(ep):
 
 
 def dns_section(by_tunnel, public_detour):
-    """Серверы и правила DNS: домены туннеля — в его DNS, остальное — 8.8.8.8.
+    """Серверы и правила DNS: домены туннеля — в его DNS, «не пускать»
+    основного — в DNS сети, остальное — 8.8.8.8.
 
     by_tunnel — [(id, адрес DNS, домены)] туннелей «по списку» с DNS в .conf.
     Домены — в rule-set names-<id>: их, как и правила маршрута, sing-box
@@ -635,6 +636,14 @@ def dns_section(by_tunnel, public_detour):
     if public_detour:
         public["detour"] = public_detour
     servers.append(public)
+    # Имена «не пускать» основного спрашиваем у DNS сети, напрямую: трафик к
+    # ним идёт мимо туннеля, и адрес нужен тот, что видит эта сеть. Сайт
+    # офиса публичный DNS отдаёт внешним адресом, а изнутри офиса тот
+    # отказывает в соединении; DNS офиса отдаёт внутренний. Сервер dhcp сам
+    # берёт DNS аплинка и следует за сменой сети — основной конфиг от сети не
+    # зависит. Сеть без DHCP (статический адрес) ему DNS не отдаст.
+    servers.append({"type": "dhcp", "tag": UPLINK_DNS_TAG})
+    rules.append({"rule_set": [BYPASS_NAMES_TAG], "server": UPLINK_DNS_TAG})
     return servers, rules
 
 
@@ -688,6 +697,9 @@ def names_tag(tid):
 
 # «Не пускать» основного — напрямую, мимо out.
 BYPASS_TAG = "bypass"
+# Его домены — для DNS сети (UPLINK_DNS_TAG). Отдельный и только с доменами,
+# как names-<id>: rule-set с ip_cidr в правиле DNS sing-box не перечитывает.
+BYPASS_NAMES_TAG = "bypass-names"
 # IPv6 при выходе без v6 — отказ до соединения.
 NO_V6_TAG = "no-v6"
 
@@ -706,6 +718,9 @@ BLOCK_TAG = "block"
 # Выходы «мимо основного»: сторож из них пробует вернуть out на основной.
 AWAY_TAGS = (DIRECT_TAG, BLOCK_TAG)
 PUBLIC_DNS_TAG = "dns"
+# DNS сети аплинка. Без префикса dns-: tunnel_dns и NRPT приняли бы его за
+# DNS туннеля.
+UPLINK_DNS_TAG = "uplink"
 
 
 def _free_port():
@@ -1096,10 +1111,13 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True):
     # не трогают основной конфиг.
     # Программы «мимо» — там же, вторым правилом: их трафик к туннелям
     # «по списку» и локальной сети забирают правила выше, как у сайтов.
-    bypass = (_match(*split_entries(main[0]["exclude"], v6)),
+    ex_nets, ex_domains = split_entries(main[0]["exclude"], v6) if main else ([], [])
+    bypass = (_match(ex_nets, ex_domains),
               app_rule(main[0]["exclude_apps"])) if main else ()
     sets[BYPASS_TAG] = rule_set(*bypass)
     rules.append({"rule_set": [BYPASS_TAG], "outbound": DIRECT_TAG})
+    sets[BYPASS_NAMES_TAG] = rule_set(
+        {"domain_suffix": ex_domains} if ex_domains else None)
     sets[NO_V6_TAG] = rule_set(None if v6 else {"ip_cidr": ["::/0"]})
 
     # Связи всех слотов: прежние — если у работающего запуска они все есть.
