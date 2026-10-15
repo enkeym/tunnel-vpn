@@ -4,6 +4,20 @@ Check in the fastest layer that can show the behaviour. No Windows Sandbox, VM o
 after a session lost to reboots and crashes without one scenario run. Something no layer below reaches →
 say so in one line and ask, do not build an environment. Running commands from WSL: [run.md](run.md).
 
+## Agent network
+
+`ip netns identify $$` → `awg-term`: the shell and every MCP server Claude starts live in a network namespace whose
+traffic goes through `amnezia`, not TunnelVPN.
+
+- `127.0.0.1` there is the namespace's own: Windows ports (CDP `9222`, windows-mcp `8790`) answer ECONNREFUSED to
+  `curl`, `playwright-cdp` and `windows-mcp` while they listen on Windows. Check a Windows port from Windows:
+  `powershell.exe -NoProfile -Command 'Get-NetTCPConnection -State Listen -LocalPort 9222'`.
+- `powershell.exe`, `python.exe` and `wsl.exe` run outside it and reach Windows loopback.
+- The agent's link does not ride the tunnel: ⏻ of the main tunnel and «Выключить» keep it.
+- The mock page (`http.server` + `playwright`) lives inside the namespace and works as is.
+- Empty `ip netns identify` → the old setup: WSL loopback is Windows loopback (`networkingMode=mirrored`), the MCP
+  servers connect directly, and the agent's link rides the tunnel.
+
 ## Layers
 
 | What changed | How to check |
@@ -34,10 +48,18 @@ change the fixture in the same commit. A changed user-facing string → `grep -r
 1. `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(wslpath -w installer/dev/cdp-window.ps1)"` —
    asks UAC, opens the window from source against the live service with DevTools on `127.0.0.1:9222`.
    The installed tray and window stay untouched.
-2. `curl -s http://127.0.0.1:9222/json/list` from WSL lists the `TunnelVPN` page (`networkingMode=mirrored`).
-3. Drive it with the `playwright-cdp` MCP server tools: it attaches on the first call, so window first.
+2. Wait for the port: `Get-NetTCPConnection -State Listen -LocalPort 9222` from `powershell.exe` (a few seconds
+   after the script returns).
+3. Drive it:
+   - In `awg-term` — `installer/dev/cdp.ps1` from Windows:
+     `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(wslpath -w installer/dev/cdp.ps1)" -EvalFile "$(wslpath -w /tmp/cdp/x.js)" -Shot "$(wslpath -w /tmp/cdp)\\s1.png"`.
+     JS with quotes goes in a file (`-EvalFile`, written with `Write`), an async IIFE returning what to check;
+     click by selector (`button.power[aria-label*="…"]`, `[data-tab="log"]`), read the PNG with `Read`. Hidden rows
+     keep their `textContent`: filter on `hidden` and `.closest('[hidden]')`, not on `innerText`.
+   - Outside it — the `playwright-cdp` MCP server tools: it attaches on the first call, so window first.
    Screenshots and console — as in the mock page.
-4. Done → close the window: without `--resident` the cross ends the process.
+4. Done → close the window: `cdp.ps1 -Close` (asks UAC); by hand the cross ends the process (no `--resident`).
+   Do not leave it open: its WebView2 dies later and shows as a black frame.
 
 The port comes from `TUNNELVPN_DEVTOOLS_PORT`, read only when running from source (`window._devtools_port`):
 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` does not open it, pywebview sets its own `AdditionalBrowserArguments`.
@@ -52,6 +74,10 @@ No `playwright-cdp` in `claude mcp list` (new machine):
 **Start the server first, then use the tools.** `windows-mcp` is not started by Claude Code: with no server on
 `127.0.0.1:8790` the session reports `CONNECT_TIMEOUT` and no `windows-mcp` tools exist. Run step 1 below, check
 the `401`, then `/mcp` → reconnect `windows-mcp` (step 2).
+
+In `awg-term` (Agent network) the server is unreachable even when it runs: the `401` check gives `000`, reconnect
+gives ECONNREFUSED. Do not start it there. Window states go through `cdp.ps1`; for the wizard, the tray menu and
+toasts, say in one line that windows-mcp is out of reach and ask.
 
 UI Automation over real windows: Inno wizard, uninstaller, tray menu, toasts. The wizard, the tray and the
 window run elevated, and UIPI keeps an unelevated process from driving them, so the server runs elevated over
@@ -73,9 +99,10 @@ into `%USERPROFILE%\.windows-mcp\config.toml`; then
 
 ## Scenarios that drop the tunnel
 
-The agent's link runs through the tunnel. Install, uninstall and update scenarios that drop it are checked by
-the user by hand; the agent hands over a list of steps. When such a run is still needed with an agent attached
-(the user drives, the agent watches), two scripts keep the link alive. Both are UTF-8 with BOM, like `build.ps1`.
+Install, uninstall and update scenarios that drop the tunnel are checked by the user by hand; the agent hands over
+a list of steps. When such a run is still needed with an agent attached (the user drives, the agent watches), two
+scripts help. Both are UTF-8 with BOM, like `build.ps1`. In `awg-term` the agent's link does not ride the tunnel:
+`wait-link.ps1` is not needed, `guard.ps1` still returns the user's tunnel.
 
 `installer/dev/guard.ps1` — returns the tunnel while the wizard waits for a click without it (error pages,
 ⚠ on «Готово», the gap between uninstall and a new install).
