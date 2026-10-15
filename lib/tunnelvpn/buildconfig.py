@@ -322,6 +322,9 @@ def resolve_peer(name, tag, log=print, net_dns=None):
     if net_dns:
         ip = winnet.resolve4_via(name, "127.0.0.1", SYSTEM_DNS_WAIT, port=net_dns)
         if ip:
+            # Удачный ответ — тоже в журнал: какой адрес и от кого получил
+            # пир, — первое, что нужно, когда сервер «не отвечает».
+            log(f"  [{tag}] {name} → {ip} (DNS сети, VPN поднят)")
             _remember_peer_ip(name, ip)
             return ip
         if known:
@@ -346,6 +349,8 @@ def resolve_peer(name, tag, log=print, net_dns=None):
             log(f"  [{tag}] {name}: ни один DNS не ответил ({exc}), "
                 f"беру прошлый адрес {ip}")
             return ip
+    else:
+        log(f"  [{tag}] {name} → {ip} (системный DNS)")
     _remember_peer_ip(name, ip)
     return ip
 
@@ -392,7 +397,7 @@ def endpoint(conf, tag, default_mtu, log=print, resolve=True, net_dns=None):
         peer["address"] = peer_host(peer["address"], tag, log, net_dns)
 
     if any(ep.get(k) for k in AWG_JUNK) and ep["mtu"] > AWG_MTU_MAX:
-        print(f"  [{tag}] MTU {ep['mtu']} -> {AWG_MTU_MAX}: AWG с junk-параметрами")
+        log(f"  [{tag}] MTU {ep['mtu']} -> {AWG_MTU_MAX}: AWG с junk-параметрами")
         ep["mtu"] = AWG_MTU_MAX
     return ep
 
@@ -981,20 +986,35 @@ def _unique(items):
     return list(dict.fromkeys(items))
 
 
-def _summary(t, ep, nets, domains, dns):
+# Сколько записей списка показывает сводка сборки: длинный «пускать» иначе
+# забивал бы журнал окна одной строкой на каждом включении.
+SUMMARY_ITEMS = 20
+
+
+def _few(items):
+    shown = ", ".join(items[:SUMMARY_ITEMS])
+    more = len(items) - SUMMARY_ITEMS
+    return shown + (f" … и ещё {more}" if more > 0 else "")
+
+
+def _summary(t, ep, nets, domains, dns, conf_name=""):
+    """Строки сводки сборки по туннелю — в журнал службы: какой .conf, адрес
+    интерфейса, пир, что пускаем и чей DNS."""
     peer = ep["peers"][0]
     awg = "да" if any(k in ep for k in AWG_INT) else "нет"
-    lines = [f"  [{t['id']}] {t['name']}: "
+    lines = [f"  [{t['id']}] «{t['name']}»: "
              f"{'весь остальной трафик' if t['mode'] == 'all' else 'по списку'}, "
-             f"{'' if t['enabled'] else 'выключен, '}{peer['address']}:{peer['port']}  mtu {ep['mtu']}  awg={awg}"]
+             f"{'' if t['enabled'] else 'выключен, '}{conf_name or 'конфиг'}, "
+             f"адрес {', '.join(ep['address']) or '—'}, пир {peer['address']}:{peer['port']}, "
+             f"mtu {ep['mtu']}, awg={awg}"]
     if nets or domains:
-        lines.append(f"      пускаю: {', '.join(nets + domains)}")
+        lines.append(f"      пускаю: {_few(nets + domains)}")
     if t["exclude"]:
-        lines.append(f"      мимо  : {', '.join(t['exclude'])}")
+        lines.append(f"      мимо  : {_few(t['exclude'])}")
     if t["mode"] == "all" and t["exclude_apps"]:
-        lines.append(f"      программы мимо: {', '.join(t['exclude_apps'])}")
+        lines.append(f"      программы мимо: {_few(t['exclude_apps'])}")
     if dns:
-        lines.append(f"      DNS   : {dns[1]} для {', '.join(dns[2]) or '(доменов нет)'}")
+        lines.append(f"      DNS   : {dns[1]} для {_few(dns[2]) or '(доменов нет)'}")
     return lines
 
 
@@ -1030,9 +1050,11 @@ def build(data, confs, out_path, side_path=None, log=print, set_path=None,
             if tid not in sides:
                 drop_side(tid)
 
-    print(f"собрано: {out_path}")
+    # Сводка — в журнал службы: по ней видно, с каким конфигом, адресом и DNS
+    # поднят каждый туннель. Через print она уходила в никуда.
+    log(f"собрано: {out_path}")
     for line in report:
-        print(line)
+        log(line)
     return built
 
 
@@ -1175,7 +1197,8 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
             dns_tunnels.append(dns)
             sets[names_tag(t["id"])] = rule_set(
                 {"domain_suffix": dns[2]} if dns[2] and t["enabled"] else None)
-        report += _summary(t, ep, nets, domains, dns if listed else None)
+        report += _summary(t, ep, nets, domains, dns if listed else None,
+                           os.path.basename(confs[t["id"]]))
 
     # Локальная сеть — напрямую, не в туннель. Без этого запросы к соседним
     # устройствам (NAS, принтер, роутер) уходили в личный туннель и висли там

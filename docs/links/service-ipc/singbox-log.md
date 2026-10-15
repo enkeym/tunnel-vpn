@@ -32,12 +32,20 @@ paths:
   `_take_spare`: `_set_active` + `_apply_locked` (тело `_apply` под тем же замком, взятым без ожидания) + `_try_back`
   без паузы. Круг — не чаще `DEAD_GAP` (`_fallback_at`); ни один — выход остаётся `away()`. Итоги проверок — в
   `tests[имя]` плиток (`_note_test`), `active` в `tunnels.json` меняет служба, не окно.
-- Команда `log` — `lib/tunnelvpn/service.py:_tail_log` сводит `vpn-*` и `tunnel-<id>-*` по `STAMP_RE`
-  (штамп строки sing-box и заголовка `open_log`), строки туннелей с меткой `[имя туннеля] `. Туннели — из
-  `Tunnel.sides`, до первого включения — из `tunnels.json`. Файлы — `lib/tunnelvpn/paths.py:log_files`
+- Команда `log` — `lib/tunnelvpn/service.py:_tail_log` сводит `vpn-*`, `tunnel-<id>-*` и журналы проверок
+  `trial-<id>-*` (`tunnel.TRIAL_PREFIX`) по `STAMP_RE` (штамп строки sing-box и заголовка `open_log`), строки
+  туннелей с меткой `[имя туннеля] `. Туннели — из `Tunnel.sides`, до первого включения — из `tunnels.json`;
+  проверки — по всем из `tunnels.json`. Файлы — `lib/tunnelvpn/paths.py:log_files`
   (шаблон даты `LOG_STAMP`: иначе `work` подхватил бы `work-2`); тот же шаблон у `tunnel.open_log`.
   `lib/tunnelvpn/ui/js/log.js:logItem` снимает метку `LOG_MARK`, уровень — из `LOG_LINE` (без штампа — `ERROR`/`WARN`
   словом в строке).
+- Строки службы в команде `log` — `lib/tunnelvpn/service.py:_service_lines`: хвост `SERVICE_LOG` (`SERVICE_TAIL` строк
+  сверх sing-box) по `SERVICE_LINE_RE` ↔ штамп `Core.log` (`%Y-%m-%d %H:%M:%S.mmm`; строки без даты пропускаются),
+  в виде строки sing-box с id `[служба]`, `!!` в начале → `WARN`, строка с отступом — продолжение предыдущей.
+  Метка туннеля — `_line_mark` по тексту: `«имя»`, id словом или `wg-/tunnel-/trial-<id>`. Новая строка службы о
+  туннеле, где нет ни того, ни другого, — уйдёт в «Общее»; предупреждение без `!!` не попадёт в «Предупреждения».
+  Сводка сборки `lib/tunnelvpn/buildconfig.py:_summary` идёт через `log` сборки (`build`, `resolve_peer`): `print` там
+  в журнал не попадёт.
 - Куда что ходит — `lib/tunnelvpn/service.py:CONN_RE`, `PREMATCH_RE`, `DNS_RE` разбирают info-строки
   `endpoint/wireguard[<тег>]: outbound connection to <IP:порт>`, `pre-match: … to <IP> via outbound/…[<тег>]`
   и `dns: exchanged A <имя>. … IN A <IP>` (имя — первое по номеру запроса) → `_count_paths` → `state\paths.json`.

@@ -112,6 +112,12 @@ DNS_RE = re.compile(r"\[(\d+) [^\]]*\] dns: \w+ \w+ (\S+?)\.? \d+ IN (\w+) (\S+?
 # Штамп строки sing-box и заголовка запуска из open_log: по нему команда log сводит
 # журналы трёх процессов в один.
 STAMP_RE = re.compile(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)")
+# Строка журнала службы (Core.log): «2026-10-15 14:32:39.223 → …». Строки без
+# даты (до 1.0.12) в окно не идут: их не поставить рядом со строками sing-box.
+SERVICE_LINE_RE = re.compile(r"(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\.\d{3} (.*)")
+# Сколько строк журнала службы окно получает сверх строк sing-box: тех под
+# трафиком сотни в минуту, и решения службы иначе сразу уходили бы из окна.
+SERVICE_TAIL = 200
 
 
 def _read_conf(tid, name):
@@ -334,8 +340,9 @@ class Core:
     def log(self, line):
         paths.ensure_dirs()
         # С миллисекундами: по разнице штампов соседних строк видно, какой
-        # шаг включения ест время, — секунд для этого мало.
-        stamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        # шаг включения ест время, — секунд для этого мало. С датой: по ней
+        # окно ставит строку рядом со строками sing-box (_tail_log).
+        stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         try:
             with _LOG_LOCK:
                 with open(SERVICE_LOG, "a", encoding="utf-8") as fh:
@@ -713,7 +720,9 @@ class Core:
             result, answer = "error", "проверка упала"
         rec = {"result": result, "answer": answer, "at": time.time()}
         self._note_test(key, stamp=stamp, checking=False, **rec)
-        self.log(f"→ проверка {name}.conf («{t['name']}»): {result or 'нет итога'}"
+        # Не ответил — предупреждение: окно покажет его в фильтре «Предупреждения».
+        sign = "→" if result in ("up", "none") else "!!"
+        self.log(f"{sign} проверка {name}.conf («{t['name']}»): {result or 'нет итога'}"
                  + (f", {answer}" if answer else ""))
         return {**rec, "checking": False}
 
@@ -750,13 +759,21 @@ class Core:
             return "error", "конфиг не читается"
         twin = (None if alone else
                 self.tunnel.side_with_key(conf["interface"].get("privatekey")))
+        what = f"→ проверка {name}.conf («{t['name']}»): "
         if twin:
+            self.log(what + f"тот же ключ у работающего процесса {twin} — спрашиваю его")
             return self.prober.check_one(twin, self.tunnel.delay)
         full = t["mode"] == "all" or buildconfig.is_full(conf)
         host = probe._probe_host(t) if t["mode"] == "list" else ""
         dns = next(iter(buildconfig.conf_dns(conf)), "")
         if not (full or dns or host):
             return "none", ""
+        # Что именно спрашиваем (probe.trial_check): без этого «сервер не отвечает»
+        # не отличить мёртвый сервер от молчащего DNS или сайта.
+        self.log(what + "временный sing-box, " + (
+            "HTTP 204 через туннель" if full
+            else f"DNS туннеля {dns} — имя {host or probe.DNS_ASK_NAME}" if dns
+            else f"HTTPS к {host}"))
         with self.tunnel.trial(t["id"], conf) as (link, err):
             if err:
                 return "error", err
@@ -2262,37 +2279,77 @@ class Core:
         return reply
 
     def _tail_log(self, lines):
-        """Последние строки журналов sing-box — основного и туннелей, по
-        времени. Их показывает окно; строки туннеля помечены его именем.
-        Туннели — те, что подняли при включении, а до него — из tunnels.json."""
-        sides = [(s.log_prefix, f"[{s.title}] ") for s in self.tunnel.sides]
-        if not sides:
-            sides = [(tunnel.log_prefix(t["id"]), f"[{t['name']}] ")
-                     for t in self._tunnels()["tunnels"]]
+        """Последние строки журналов по времени: sing-box — основного,
+        туннелей и их проверок (trial), — и службы. Их показывает окно;
+        строки туннеля помечены его именем. Туннели — те, что подняли при
+        включении, а до него — из tunnels.json.
+
+        sing-box — последние lines, служба — свои SERVICE_TAIL сверх них, в виде
+        строки sing-box: уровень WARN у «!!», id «[служба]», метка — туннель,
+        о котором строка (_line_mark). Иначе фильтры окна по туннелю и уровню
+        видели бы одни соединения, а не то, что решила служба."""
+        names = {t["id"]: t["name"] for t in self._tunnels()["tunnels"]}
+        sides = {s.tid: s.title for s in self.tunnel.sides} or names
+        names = {**names, **sides}
         out = []
-        for prefix, mark in (("vpn", ""), *sides):
+        for prefix, mark in (("vpn", ""),
+                             *((tunnel.log_prefix(tid), f"[{name}] ")
+                               for tid, name in sides.items()),
+                             *((f"{tunnel.TRIAL_PREFIX}-{tid}", f"[{name}] ")
+                               for tid, name in names.items())):
             stamp = ""
-            for line in _tail_file(prefix):
+            files = paths.log_files(prefix)
+            for line in _tail_file(files[-1]) if files else ():
                 m = STAMP_RE.search(line[:40])
                 # Строка без штампа (трассировка, обрывок) — за предыдущей своего журнала.
                 stamp = m.group(1) if m else stamp
                 out.append((stamp, mark + line))
         out.sort(key=lambda item: item[0])        # устойчиво: порядок журнала цел
-        return [line for _, line in out[-lines:]]
+        out = out[-lines:] + _service_lines(names)
+        out.sort(key=lambda item: item[0])
+        return [line for _, line in out]
 
 
-def _tail_file(prefix):
-    """Хвост свежего журнала <prefix>-*.log строками.
+def _service_lines(names):
+    """[(штамп, строка)] — хвост журнала службы в виде строк sing-box для окна.
+    Строка с отступом — продолжение предыдущей («   вручную: …», сводка сборки):
+    её уровень, а метка — своя или предыдущей."""
+    tz = datetime.datetime.now().astimezone().strftime("%z")
+    out, level, mark = [], "INFO", ""
+    for line in _tail_file(SERVICE_LOG)[-SERVICE_TAIL:]:
+        m = SERVICE_LINE_RE.fullmatch(line)
+        if not m or not m.group(2).strip():
+            continue
+        stamp, text = m.groups()
+        if text[0].isspace():
+            mark = _line_mark(text, names) or mark
+        else:
+            level = "WARN" if text.startswith("!!") else "INFO"
+            mark = _line_mark(text, names)
+        body = text.strip().removeprefix("→ ").removeprefix("!! ")
+        out.append((stamp, f"{mark}{tz} {stamp} {level} [служба] {body}"))
+    return out
+
+
+def _line_mark(text, names):
+    """Метка «[имя] » туннеля, о котором строка службы: его «имя», id словом
+    или в теге (wg-<id>, tunnel-<id>). Названы два туннеля или ни одного —
+    строка общая, без метки. names — {id: имя}."""
+    hit = {tid for tid, name in names.items()
+           if f"«{name}»" in text
+           or re.search(rf"(?<![\w.-])(?:wg-|tunnel-|trial-)?{re.escape(tid)}(?![\w-])", text)}
+    return f"[{names[hit.pop()]}] " if len(hit) == 1 else ""
+
+
+def _tail_file(path):
+    """Хвост файла path строками.
 
     Читаем только хвост файла: за долгую сессию журнал вырастает
     до мегабайт, а окно спрашивает его раз в две секунды — целиком это
     было бы чтение и разбор всего файла на каждый опрос.
     """
-    files = paths.log_files(prefix)
-    if not files:
-        return []
     try:
-        with open(files[-1], "rb") as fh:
+        with open(path, "rb") as fh:
             size = fh.seek(0, os.SEEK_END)
             fh.seek(max(0, size - LOG_TAIL_BYTES))
             data = fh.read()

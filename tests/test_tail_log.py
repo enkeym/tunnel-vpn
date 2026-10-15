@@ -4,6 +4,7 @@
 вернулось, но и сколько прочитано с диска.
 """
 
+import datetime
 import os
 import types
 
@@ -14,11 +15,13 @@ from tunnelvpn.service import Core
 
 
 @pytest.fixture
-def core(monkeypatch):
-    """Core без службы и без туннелей: читается только журнал vpn."""
+def core(monkeypatch, tmp_path):
+    """Core без службы и без туннелей: читается только журнал vpn, журнала
+    службы нет."""
     core = Core.__new__(Core)
     core.tunnel = types.SimpleNamespace(sides=[])
     monkeypatch.setattr(Core, "_tunnels", staticmethod(tunnels.empty))
+    monkeypatch.setattr(service, "SERVICE_LOG", str(tmp_path / "service.log"))
     return core
 
 
@@ -113,3 +116,50 @@ def test_до_первого_включения_туннели_берутся_и
                 in core._tail_log(10))
     finally:
         os.remove(path)
+
+
+def test_журнал_проверки_конфига_идёт_с_меткой_туннеля(core, monkeypatch):
+    """«Сервер не отвечает» в проверке — причина в журнале временного sing-box."""
+    data = tunnels.validate({"tunnels": [
+        {"id": "work", "name": "Работа", "mode": "list"}]})
+    monkeypatch.setattr(Core, "_tunnels", staticmethod(lambda: data))
+    path = _log("trial-work-2099-12-31_235959.log",
+                ["+0300 2026-10-04 12:00:00 ERROR handshake"])
+    try:
+        assert ("[Работа] +0300 2026-10-04 12:00:00 ERROR handshake"
+                in core._tail_log(10))
+    finally:
+        os.remove(path)
+
+
+def test_строки_службы_идут_в_окно_с_меткой_и_уровнем(core, monkeypatch, tmp_path):
+    """Без них фильтры окна по туннелю и «Предупреждения» видели один sing-box:
+    какой конфиг, адрес пира и итог проверки лежали только в service.log."""
+    data = tunnels.validate({"tunnels": [
+        {"id": "t1", "name": "Офис", "mode": "list"},
+        {"id": "t2", "name": "Дом", "mode": "all"}]})
+    monkeypatch.setattr(Core, "_tunnels", staticmethod(lambda: data))
+    monkeypatch.setattr(paths, "LOGS", str(tmp_path))
+    (tmp_path / "service.log").write_text("\n".join([
+        "14:00:00.000 → строка старого вида, без даты",
+        "2026-10-04 12:00:01.000 → проверка a.conf («Офис»): up",
+        "2026-10-04 12:00:02.000 !! маршрут к пиру 10.0.0.1 пропал",
+        "2026-10-04 12:00:02.001    вручную: Remove-NetRoute",
+        "2026-10-04 12:00:03.000 → собираю конфиг",
+        "2026-10-04 12:00:03.001   [wg-t1] vpn.example → 10.0.0.1 (системный DNS)",
+        "2026-10-04 12:00:04.000 → процессы «Дом» и «Офис»",
+    ]) + "\n", encoding="utf-8")
+    _log("vpn-2099-12-31_235959.log", ["+0300 2026-10-04 12:00:02 INFO sing-box"])
+
+    lines = core._tail_log(10)
+
+    tz = datetime.datetime.now().astimezone().strftime("%z")
+    assert lines == [
+        f"[Офис] {tz} 2026-10-04 12:00:01 INFO [служба] проверка a.conf («Офис»): up",
+        "+0300 2026-10-04 12:00:02 INFO sing-box",
+        f"{tz} 2026-10-04 12:00:02 WARN [служба] маршрут к пиру 10.0.0.1 пропал",
+        f"{tz} 2026-10-04 12:00:02 WARN [служба] вручную: Remove-NetRoute",
+        f"{tz} 2026-10-04 12:00:03 INFO [служба] собираю конфиг",
+        f"[Офис] {tz} 2026-10-04 12:00:03 INFO [служба] [wg-t1] vpn.example → 10.0.0.1 (системный DNS)",
+        f"{tz} 2026-10-04 12:00:04 INFO [служба] процессы «Дом» и «Офис»",
+    ]

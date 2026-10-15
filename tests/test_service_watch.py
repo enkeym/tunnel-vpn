@@ -1418,6 +1418,7 @@ def test_команда_log_сводит_журналы_по_времени(monk
     """Строки туннелей помечены именами тех, что подняли при включении."""
     core = _core(monkeypatch)
     monkeypatch.setattr(service.paths, "LOGS", str(tmp_path))
+    monkeypatch.setattr(service, "SERVICE_LOG", str(tmp_path / "service.log"))
     (tmp_path / "vpn-2026-10-06_090000.log").write_text(
         "+0300 2026-10-06 09:00:01 INFO a\n+0300 2026-10-06 09:00:05 INFO c\n",
         encoding="utf-8")

@@ -101,8 +101,8 @@ route and a non-403 answer from `api.anthropic.com`. Exit 1 — the link did not
 ## Service by hand
 
 What pytest cannot reach and what drops the link: the user runs it, the agent hands over these steps. The
-journal is `%ProgramData%\TunnelVPN\state\logs\service.log` (window → «Журнал»); past 4 MB the older lines
-move to `service.log.1`. Main tunnel = the one in «основной».
+journal is `%ProgramData%\TunnelVPN\state\logs\service.log` (lines `YYYY-MM-DD HH:MM:SS.mmm …`; window →
+«Журнал», as `[служба]`, `!!` lines under «Предупреждения»); past 4 MB the older lines move to `service.log.1`. Main tunnel = the one in «основной».
 
 | Change | Steps | Expect |
 | --- | --- | --- |

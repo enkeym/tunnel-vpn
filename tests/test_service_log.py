@@ -7,13 +7,14 @@ from tunnelvpn import service
 from tunnelvpn.service import Core
 
 
-def test_штамп_с_миллисекундами(monkeypatch, tmp_path):
+def test_штамп_с_датой_и_миллисекундами(monkeypatch, tmp_path):
+    """Дата — чтобы окно свело строку со строками sing-box (_tail_log)."""
     log = tmp_path / "service.log"
     monkeypatch.setattr(service, "SERVICE_LOG", str(log))
 
     Core.log(None, "→ собираю конфиг")
 
-    assert re.fullmatch(r"\d\d:\d\d:\d\d\.\d{3} → собираю конфиг\n",
+    assert re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d{3} → собираю конфиг\n",
                         log.read_text(encoding="utf-8"))
 
 
@@ -37,7 +38,7 @@ def test_строки_из_разных_потоков_не_затирают_д�
 
     lines = log.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 8 * 200
-    assert all(re.fullmatch(r"\S+ → поток \d строка \d+ x{80}", s) for s in lines)
+    assert all(re.fullmatch(r"\S+ \S+ → поток \d строка \d+ x{80}", s) for s in lines)
 
 
 def test_переросший_журнал_уходит_в_точку_один(monkeypatch, tmp_path):
@@ -52,7 +53,7 @@ def test_переросший_журнал_уходит_в_точку_один(m
 
     assert "первая" in (tmp_path / "service.log.1").read_text(encoding="utf-8")
     assert "вторая" in (tmp_path / "service.log.1").read_text(encoding="utf-8")
-    assert re.fullmatch(r"\S+ третья\n", log.read_text(encoding="utf-8"))
+    assert re.fullmatch(r"\S+ \S+ третья\n", log.read_text(encoding="utf-8"))
 
 
 def test_старый_точка_один_затирается_а_не_копится(monkeypatch, tmp_path):
