@@ -1,15 +1,12 @@
 """Класс службы: win32serviceutil должен найти его по строке модуля.
 
 С Python 3.14 pickle.whichmodule проверяет, что класс лежит в модуле под своим
-именем; без этого падают все команды tunnelvpn service. pywin32 есть только на
-Windows — на остальных тест пропускается.
+именем; без этого падают все команды tunnelvpn service.
 """
 
-import pytest
+import win32serviceutil
 
-win32serviceutil = pytest.importorskip("win32serviceutil")
-
-from tunnelvpn import service  # noqa: E402
+from tunnelvpn import service
 
 
 def test_класс_службы_находится_по_строке_модуля():

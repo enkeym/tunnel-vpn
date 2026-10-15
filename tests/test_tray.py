@@ -198,7 +198,6 @@ def test_второй_запуск_при_входе_окно_не_открыв�
     assert sent == []
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Toolhelp32 есть только в Windows")
 def test_окно_ищется_и_у_дочернего_процесса():
     """onefile-exe портативной версии: окно у Python-ребёнка загрузчика."""
     import os
@@ -419,8 +418,6 @@ def test_опрос_начинается_только_после_показа_з
 
 
 def test_левый_клик_по_значку_не_включает_vpn():
-    pytest.importorskip("pystray")
-
     menu = tray.Tray()._menu()
 
     assert not any(item.default for item in menu.items)
@@ -529,11 +526,9 @@ def test_запасной_выход_меняет_значок_при_опрос
     assert t.state == "fallback"
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="HICON — только Windows")
 @pytest.mark.parametrize("size", [16, 20, 24])
 def test_значок_трея_грузится_в_своём_размере(size):
     """20 точек при 125 % не переделывается ни в 16, ни в 32."""
-    pytest.importorskip("pystray")
     import win32gui
 
     from tunnelvpn import icon
@@ -645,7 +640,6 @@ def test_службу_которую_не_поднять_трей_не_трог�
 
 
 def test_пока_ставится_обновление_включить_и_перезапустить_недоступны(monkeypatch, mark):
-    pytest.importorskip("pystray")
     monkeypatch.setattr(ipc, "call", lambda _op, **_kw: {"ok": True, "status": {"up": True}})
     t = tray.Tray()
     menu = t._menu()
@@ -657,7 +651,6 @@ def test_пока_ставится_обновление_включить_и_пе
 
 def _offered(monkeypatch):
     """Трей с найденной 0.3.8 и его меню после опроса и перестройки."""
-    pytest.importorskip("pystray")
     monkeypatch.setattr(ipc, "call", lambda _op, **_kw: {"ok": True, "status": {}})
     t = tray.Tray()
     menu = t._menu()

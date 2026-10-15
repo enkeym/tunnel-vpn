@@ -5,12 +5,9 @@ import os
 import re
 
 import pytest
+from PIL import Image
 
-pytest.importorskip("PIL")
-
-from PIL import Image  # noqa: E402
-
-from tunnelvpn import icon  # noqa: E402
+from tunnelvpn import icon
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TRAY_SIZES = (16, 20, 24, 32)

@@ -4,16 +4,10 @@
 настоящие Local\\TunnelVPN-*, и тест не должен ни найти его, ни помешать ему.
 """
 
-import sys
 import threading
 import uuid
 
-import pytest
-
 from tunnelvpn import instance
-
-pytestmark = pytest.mark.skipif(sys.platform != "win32",
-                                reason="именованные объекты ядра есть только в Windows")
 
 
 def _name(what):
