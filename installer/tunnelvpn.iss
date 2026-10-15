@@ -1192,7 +1192,9 @@ begin
   ParamsLink.Caption := '<a href="tasks">Изменить параметры</a>';
   ParamsLink.UseVisualStyle := HighContrastActive;
   ParamsLink.OnLinkClick := @ChangeTasksClick;
-  ParamsLink.Top := ActionPage.SurfaceHeight - ParamsLink.Height;
+  // Высота до AdjustHeight — заготовочная, ниже неё текст ссылки обрезался.
+  ParamsLink.AdjustHeight;
+  ParamsLink.Top := ActionPage.SurfaceHeight - ParamsLink.Height - ScaleY(2);
 end;
 
 // «Далее» под самую длинную подпись: «Переустановить» в стандартную ширину
