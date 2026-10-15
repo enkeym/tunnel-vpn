@@ -684,25 +684,24 @@ def test_проверка_ставит_и_снимает_пункт_а_сбой_
 
 
 def _start(monkeypatch, background):
-    """_start_window: что открылось сразу и что отложено таймером."""
-    opened, timers = [], []
+    """_start_window: какое окно открылось сразу и какое прогрето."""
+    opened, warmed = [], []
     monkeypatch.setattr(tray.instance, "listen", lambda *_a, **_kw: None)
-    monkeypatch.setattr(threading, "Timer", lambda _delay, fn: types.SimpleNamespace(
-        start=lambda: timers.append(fn)))
     t = tray.Tray()
     monkeypatch.setattr(t, "on_window", lambda focus=None: opened.append(focus))
+    monkeypatch.setattr(t, "_warm", lambda: warmed.append(True))
 
     t._start_window(background)
-    return t, opened, timers
+    return t, opened, warmed
 
 
-def test_при_входе_окно_только_прогревается(monkeypatch):
-    t, opened, timers = _start(monkeypatch, background=True)
+def test_при_входе_окно_сразу_прогревается_спрятанным(monkeypatch):
+    _t, opened, warmed = _start(monkeypatch, background=True)
 
-    assert opened == [] and timers == [t._warm]
+    assert opened == [] and warmed == [True]
 
 
 def test_после_обновления_трей_сразу_открывает_окно_с_итогом(monkeypatch, mark):
-    _t, opened, timers = _start(monkeypatch, background=True)
+    _t, opened, warmed = _start(monkeypatch, background=True)
 
-    assert opened == [None] and timers == []
+    assert opened == [None] and warmed == []
