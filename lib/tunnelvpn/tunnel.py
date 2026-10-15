@@ -743,7 +743,8 @@ class Tunnel:
         """
         tag = buildconfig.ep_tag(tid)
         try:
-            ep = buildconfig.endpoint(conf, tag, 1280, self.log)
+            ep = buildconfig.endpoint(conf, tag, 1280, self.log,
+                                      net_dns=self._net_dns())
         except SystemExit as exc:
             self.log(f"!! проверка [{tag}]: {exc}")
             yield None, "конфиг не собирается"
@@ -1120,9 +1121,9 @@ class Tunnel:
         стоит, метка stamp записана. '' или ошибка."""
         peer = cfg["endpoints"][0]["peers"][0]
         try:
-            # Резолвим, как на включении: системный DNS вместе с публичными. Он
-            # сейчас туннельный, но новому пиру другого пути нет.
-            peer["address"] = buildconfig.peer_host(peer["address"], side.tag, self.log)
+            # Через DNS сети, как на включении: системный сейчас туннельный.
+            peer["address"] = buildconfig.peer_host(peer["address"], side.tag,
+                                                    self.log, self._net_dns())
         except SystemExit as exc:
             return f"«{side.title}»: {exc}"
         up_idx, gw = self.uplink
@@ -1140,6 +1141,13 @@ class Tunnel:
         # На диске уже новый: не поднимется — сторож поднимет его из этого файла.
         side.source = stamp
         return ""
+
+    def _net_dns(self):
+        """Порт DNS-входа работающего основного процесса (buildconfig.PEER_DNS_IN),
+        иначе None: VPN не поднят, и системный DNS — сам DNS сети."""
+        if self.uplink is None or self.proc is None or self.proc.poll() is not None:
+            return None
+        return buildconfig.peer_dns_port(buildconfig.read_json(paths.CONFIG_JSON))
 
     def _peers_owned(self):
         """Адреса пиров, host-маршруты к которым мы уже ставили."""
@@ -1473,7 +1481,9 @@ def _api_link(main_cfg):
         return None
     addr, secret = api
     port = addr.rpartition(":")[2]
-    return {"port": int(port), "secret": secret} if port.isdigit() else None
+    return ({"port": int(port), "secret": secret,
+             "dns": buildconfig.peer_dns_port(main_cfg)}
+            if port.isdigit() else None)
 
 
 def _port_open(port):

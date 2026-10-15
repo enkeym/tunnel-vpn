@@ -833,7 +833,8 @@ def live(env, monkeypatch):
                  if t["enabled"] and confs.get(t["id"])]
         return seen["main_cfg"], sides, seen["sets"], built, []
 
-    def peer_host(host, _tag, _log):
+    def peer_host(host, _tag, _log, net_dns=None):
+        seen["net_dns"] = net_dns
         if not seen["peer"]:
             raise SystemExit(f"не удалось разрешить {host}")
         return seen["peer"]
@@ -1183,12 +1184,18 @@ def test_пир_с_маршрутом_второй_раз_не_ставится(
     """Новый конфиг на тот же сервер, что у соседа: маршрут к нему уже наш."""
     tun, seen = live
     seen["peer"] = "203.0.113.20"
+    seen["main_cfg"].setdefault("inbounds", []).append(
+        {"type": "direct", "tag": buildconfig.PEER_DNS_IN, "listen_port": 5353})
+    buildconfig.write_json(paths.CONFIG_JSON, seen["main_cfg"])
     before = list(seen["net"].added)
     _use("home", "nl-2")
 
     tun.reload_sides()
 
     assert seen["net"].added == before
+    # Имя пира — у DNS сети через DNS-вход основного, не у системного:
+    # тот при поднятом VPN смотрит в основной туннель.
+    assert seen["net_dns"] == 5353
 
 
 # ------------------------------------------------------------ выход наружу

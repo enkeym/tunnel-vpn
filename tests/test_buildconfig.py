@@ -310,7 +310,7 @@ def peer(tmp_path, monkeypatch):
     monkeypatch.setattr(buildconfig, "SYSTEM_DNS_WAIT", 0.2)
     asked = []
 
-    def via(name, server, timeout=4.0):
+    def via(name, server, timeout=4.0, port=53):
         asked.append(server)
         return ""
     monkeypatch.setattr(buildconfig.winnet, "resolve4_via", via)
@@ -343,6 +343,36 @@ def test_системный_dns_главный_и_адрес_запоминае�
 
     assert ep["peers"][0]["address"] == "10.20.0.1"
     assert _known(tmp_path) == {"vpn.example.com": "10.20.0.1"}
+
+
+def test_при_поднятом_vpn_имя_пира_у_dns_сети(peer, monkeypatch, tmp_path):
+    """Системный DNS при поднятом VPN — основной туннель: оттуда имя сервера
+    офиса — публичный адрес, на который офисная сеть не отвечает. Туннель
+    работал, только если включён раньше основного."""
+    conf, asked = peer
+    _system_dns(monkeypatch, "203.0.113.9")
+    monkeypatch.setattr(buildconfig.winnet, "resolve4_via",
+                        lambda name, server, timeout=4.0, port=53:
+                        asked.append((server, port)) or "10.20.0.1")
+
+    ep = buildconfig.endpoint(conf, "wg-corp", 1280, net_dns=5353)
+
+    assert ep["peers"][0]["address"] == "10.20.0.1"
+    assert asked == [("127.0.0.1", 5353)]
+    assert _known(tmp_path) == {"vpn.example.com": "10.20.0.1"}
+
+
+def test_dns_сети_молчит_берётся_прошлый_адрес(peer, monkeypatch, tmp_path):
+    conf, _ = peer
+    (tmp_path / "peer-ips.json").write_text(
+        json.dumps({"vpn.example.com": "10.20.0.1"}), encoding="utf-8")
+    _system_dns(monkeypatch, "203.0.113.9")
+    lines = []
+
+    ep = buildconfig.endpoint(conf, "wg-corp", 1280, lines.append, net_dns=5353)
+
+    assert ep["peers"][0]["address"] == "10.20.0.1"
+    assert "прошлый адрес 10.20.0.1" in lines[0]
 
 
 def test_без_системного_dns_адрес_через_публичный(peer, monkeypatch, tmp_path):
@@ -605,6 +635,8 @@ def test_порядок_правил_списки_локальная_сеть_м
     main, _ = build(THREE)
 
     assert main["route"]["rules"] == [
+        # DNS-вход службы для имён пиров — в DNS сети, раньше всех правил.
+        {"inbound": ["peer-dns-in"], "action": "hijack-dns"},
         # До sniff — pre-match: RST до соединения; DNS на v6 — мимо отказа.
         {"type": "logical", "mode": "and",
          "rules": [{"rule_set": ["no-v6"]}, {"port": [53], "invert": True}],
@@ -682,7 +714,9 @@ def test_dns_только_у_туннелей_по_списку_с_dns_в_conf(b
         {"type": "udp", "tag": "dns", "server": "8.8.8.8", "detour": "out"},
         {"type": "dhcp", "tag": "uplink"},
     ]
-    assert main["dns"]["rules"] == [{"rule_set": ["names-work"], "server": "dns-work"},
+    assert main["dns"]["rules"] == [{"inbound": ["peer-dns-in"], "server": "uplink",
+                                     "disable_cache": True},
+                                    {"rule_set": ["names-work"], "server": "dns-work"},
                                     {"rule_set": ["bypass-names"], "server": "uplink"}]
     assert main["dns"]["final"] == "dns"
     assert main["route"]["default_domain_resolver"] == "dns"
@@ -816,8 +850,10 @@ def test_выключенный_туннель_собирается_с_пуст�
 
     assert list(sides) == ["lab", "home"]
     assert buildconfig.side_ids(main) == ["work", "lab", "home"]
-    assert ({**main, "outbounds": None, "experimental": None}
-            == {**on, "outbounds": None, "experimental": None})
+    # Порты socks, clash_api и DNS-входа у каждой полной сборки новые.
+    assert ({**main, "outbounds": None, "experimental": None, "inbounds": None}
+            == {**on, "outbounds": None, "experimental": None, "inbounds": None})
+    assert main["inbounds"][0] == on["inbounds"][0]
     assert _load(tmp_path / "rules-work.json") == {"version": 3, "rules": []}
     assert _load(tmp_path / "names-work.json") == {"version": 3, "rules": []}
 
@@ -962,6 +998,19 @@ def _again(main, tmp_path, texts, items=THREE):
         data, confs, lambda line: None, buildconfig.links_of(main),
         tunnel._api_link(main), resolve=False, dns=buildconfig.tunnel_dns(main))
     return json.loads(json.dumps(config)), sides, sets
+
+
+def test_dns_вход_для_пиров_на_лету_тот_же(build, tmp_path):
+    """Порт DNS-входа — из работающего конфига: новый менял бы основной, и
+    любая правка роняла бы tun."""
+    main, _ = build(THREE)
+    again, _, _ = _again(main, tmp_path, CONFS)
+
+    port = buildconfig.peer_dns_port(main)
+    assert port and buildconfig.peer_dns_port(again) == port
+    assert _by_tag(main["inbounds"], "peer-dns-in") == {
+        "type": "direct", "tag": "peer-dns-in", "network": "udp",
+        "listen": "127.0.0.1", "listen_port": port}
 
 
 def test_удалённый_conf_на_ходу_оставляет_заглушку(build, tmp_path):

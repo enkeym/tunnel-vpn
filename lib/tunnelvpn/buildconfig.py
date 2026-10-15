@@ -306,13 +306,29 @@ def _remember_peer_ip(name, ip):
         pass
 
 
-def resolve_peer(name, tag, log=print):
+def resolve_peer(name, tag, log=print, net_dns=None):
     """Адрес пира: системный DNS, затем публичный, затем прошлый удачный.
 
     Без запасных путей переподключение зависело от DNS роутера: тот молчал,
     и туннель не поднимался, хотя адрес сервера не менялся месяцами.
+
+    net_dns — порт DNS-входа работающего основного процесса (peer_dns_port):
+    пока VPN поднят, системный DNS смотрит в основной туннель, и имя сервера
+    в офисе резолвилось публичным адресом, на который сеть не отвечает, —
+    туннель работал, только если включён раньше основного. Пакеты к пиру
+    идут мимо туннеля, через аплинк, поэтому и имя спрашиваем у DNS сети.
     """
     known = _known_peer_ips().get(name)
+    if net_dns:
+        ip = winnet.resolve4_via(name, "127.0.0.1", SYSTEM_DNS_WAIT, port=net_dns)
+        if ip:
+            _remember_peer_ip(name, ip)
+            return ip
+        if known:
+            log(f"  [{tag}] {name}: DNS сети не ответил, беру прошлый адрес {known}")
+            return known
+        log(f"  [{tag}] {name}: DNS сети не ответил, прошлого адреса нет — "
+            f"спрашиваю системный")
     ip, publics = _ask_dns(name, SYSTEM_DNS_WAIT)
     if not isinstance(ip, str):
         exc = ip or TimeoutError(f"системный DNS молчит {SYSTEM_DNS_WAIT:g} с")
@@ -334,11 +350,12 @@ def resolve_peer(name, tag, log=print):
     return ip
 
 
-def peer_host(host, tag, log=print):
-    """Адрес пира для конфига: IP как есть, имя — резолвим."""
+def peer_host(host, tag, log=print, net_dns=None):
+    """Адрес пира для конфига: IP как есть, имя — резолвим (net_dns — в
+    resolve_peer)."""
     if not re.match(r"^[\d.]+$", host) and ":" not in host:
         name = host
-        host = resolve_peer(name, tag, log)
+        host = resolve_peer(name, tag, log, net_dns)
 
         # НЕ подменять частный адрес публичным. Корп-сервер доступен по
         # внутреннему адресу (имя из конфига -> адрес внутри сети), и именно на
@@ -358,10 +375,10 @@ def peer_host(host, tag, log=print):
     return host
 
 
-def endpoint(conf, tag, default_mtu, log=print, resolve=True):
+def endpoint(conf, tag, default_mtu, log=print, resolve=True, net_dns=None):
     """Строит sing-box endpoint из разобранного .conf. resolve=False — имя
-    пира остаётся именем: основному конфигу адрес пира не нужен. Ошибка в
-    конфиге — выход сборки с причиной."""
+    пира остаётся именем: основному конфигу адрес пира не нужен. net_dns — в
+    resolve_peer. Ошибка в конфиге — выход сборки с причиной."""
     try:
         ep = _endpoint(conf, tag, default_mtu)
     except ValueError as exc:
@@ -372,7 +389,7 @@ def endpoint(conf, tag, default_mtu, log=print, resolve=True):
     # момент не поднят, и упадёт с "context deadline exceeded".
     if resolve:
         peer = ep["peers"][0]
-        peer["address"] = peer_host(peer["address"], tag, log)
+        peer["address"] = peer_host(peer["address"], tag, log, net_dns)
 
     if any(ep.get(k) for k in AWG_JUNK) and ep["mtu"] > AWG_MTU_MAX:
         print(f"  [{tag}] MTU {ep['mtu']} -> {AWG_MTU_MAX}: AWG с junk-параметрами")
@@ -721,12 +738,16 @@ PUBLIC_DNS_TAG = "dns"
 # DNS сети аплинка. Без префикса dns-: tunnel_dns и NRPT приняли бы его за
 # DNS туннеля.
 UPLINK_DNS_TAG = "uplink"
+# DNS-вход основного процесса на loopback: его запросы — только в DNS сети
+# (UPLINK_DNS_TAG). Им служба резолвит имена пиров при поднятом VPN
+# (resolve_peer, net_dns): системный DNS тогда смотрит в основной туннель.
+PEER_DNS_IN = "peer-dns-in"
 
 
-def _free_port():
+def _free_port(kind=socket.SOCK_STREAM):
     """Свободный порт на loopback. Его могут занять между проверкой и
     стартом sing-box — тогда старт упадёт с понятной ошибкой в журнале."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    with socket.socket(socket.AF_INET, kind) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
 
@@ -743,8 +764,9 @@ def new_link():
 
 
 def new_api():
-    """Адрес и секрет clash_api основного процесса."""
-    return {"port": _free_port(), "secret": secrets.token_urlsafe(24)}
+    """Адрес и секрет clash_api основного процесса и порт его PEER_DNS_IN."""
+    return {"port": _free_port(), "secret": secrets.token_urlsafe(24),
+            "dns": _free_port(socket.SOCK_DGRAM)}
 
 
 def write_json(path, data):
@@ -909,6 +931,14 @@ def tunnel_nets(main_cfg, tid):
         match = rule["rules"][0] if rule.get("type") == "logical" else rule
         return match.get("ip_cidr", [])
     return []
+
+
+def peer_dns_port(main_cfg):
+    """Порт PEER_DNS_IN основного конфига, иначе None."""
+    for ib in main_cfg.get("inbounds", []):
+        if ib.get("tag") == PEER_DNS_IN and ib.get("listen_port"):
+            return ib["listen_port"]
+    return None
 
 
 def api_of(main_cfg):
@@ -1168,6 +1198,9 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
     # Связи всех слотов: прежние — если у работающего запуска они все есть.
     links = {t["id"]: _slot_links(links.get(t["id"])) for t, _, _ in built}
     api = api or new_api()
+    # Порт DNS-входа — прежний, если он был: иначе основной конфиг менялся бы
+    # на каждой сборке на лету.
+    peer_dns = api.get("dns") or _free_port(socket.SOCK_DGRAM)
     outbounds = [{"type": "direct", "tag": DIRECT_TAG},
                  {"type": "block", "tag": BLOCK_TAG}]
     for tid, pair in links.items():
@@ -1195,7 +1228,10 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
         "log": {"level": level, "timestamp": True},
         "dns": {
             "servers": dns_servers,
-            "rules": dns_rules,
+            # Имена пиров — только DNS сети и без кэша: кэш общий, и адрес,
+            # полученный через основной туннель, вернулся бы и отсюда.
+            "rules": [{"inbound": [PEER_DNS_IN], "server": UPLINK_DNS_TAG,
+                       "disable_cache": True}, *dns_rules],
             "final": PUBLIC_DNS_TAG,
             "strategy": "ipv4_only",
         },
@@ -1210,6 +1246,9 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
             # адаптерах правилами брандмауэра. Выключить: SB_STRICT_ROUTE=0.
             "strict_route": os.environ.get("SB_STRICT_ROUTE") != "0",
             "stack": stack,
+        }, {
+            "type": "direct", "tag": PEER_DNS_IN, "network": "udp",
+            "listen": "127.0.0.1", "listen_port": peer_dns,
         }],
         "outbounds": outbounds,
         "experimental": {"clash_api": {
@@ -1218,6 +1257,7 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
         }},
         "route": {
             "rules": [
+                {"inbound": [PEER_DNS_IN], "action": "hijack-dns"},
                 # До sniff: на нём pre-match TCP останавливается, и отказ
                 # пришёл бы закрытием уже открытого соединения, а не RST.
                 # DNS на v6-адрес tun — мимо отказа, его перехватывает

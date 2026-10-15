@@ -324,12 +324,12 @@ def resolve4(name):
         return ""
 
 
-def resolve4_via(name, server, timeout=4.0):
+def resolve4_via(name, server, timeout=4.0, port=53):
     """То же, но у конкретного DNS-сервера, в обход системного."""
-    return dns_ask_via(name, server, timeout)[1]
+    return dns_ask_via(name, server, timeout, port)[1]
 
 
-def dns_ask_via(name, server, timeout=4.0):
+def dns_ask_via(name, server, timeout=4.0, port=53):
     """(ответил, адрес) DNS-сервера server на A-запрос name.
 
     Ответил — пришёл ответ на наш запрос, хоть NXDOMAIN: сервер жив, даже если
@@ -350,7 +350,7 @@ def dns_ask_via(name, server, timeout=4.0):
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.settimeout(timeout)
-            sock.sendto(packet, (server, 53))
+            sock.sendto(packet, (server, port))
             data, _ = sock.recvfrom(4096)
     except OSError:
         return False, ""
