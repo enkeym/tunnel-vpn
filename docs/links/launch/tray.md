@@ -26,7 +26,10 @@ paths:
   один раз перезапускает окно, у которого не поднялся WebView2.
 - Холодное окно создаётся спрятанным и показывается на `send('ready')` из `lib/tunnelvpn/ui/js/main.js` →
   `lib/tunnelvpn/window.py:_dispatch` → `Api.reveal`, запасной таймер `COLD_SHOW_WAIT` в `open_window`;
-  `_show` (сигнал `WINDOW_SHOW` от `lib/tunnelvpn/tray.py:_open_window`) показывает сразу. `ready` шлётся в конце
+  `_show` (сигнал `WINDOW_SHOW` от `lib/tunnelvpn/tray.py:_open_window`) показывает сразу, если страница уже
+  прислала `ready`, иначе делает окно холодным и ждёт того же `ready` (свой таймер `COLD_SHOW_WAIT`) — показ
+  в первые секунды после старта трея давал чёрную рамку до отрисовки. `COLD_SHOW_WAIT` меньше
+  `lib/tunnelvpn/tray.py:WINDOW_SHOW_WAIT`: иначе трей снимает так и не показавшееся окно. `ready` шлётся в конце
   скрипта страницы. Убрали `ready` или таймер — окно появляется пустым, с опозданием или не появляется.
 - Спрятанное окно pywebview создаёт через `Opacity=0, Show, Hide` (`<site-packages>/webview/platforms/winforms.py:create_window`);
   этот показ уводит за край экрана `lib/tunnelvpn/window.py:_park` в `before_show` (синхронно, до `Show`), на

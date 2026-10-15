@@ -1298,6 +1298,17 @@ def _show(window, api):
     """
     on_screen = not api.hidden and not api.cold
     api.hidden = False
+    # Трей только что запущен, страница прогретого окна ещё грузится: форма на
+    # виду стояла бы чёрной до отрисовки. Ждём ready, как холодное окно, — его
+    # reveal и покажет; не ответила за COLD_SHOW_WAIT — показ как есть (раньше
+    # tray.WINDOW_SHOW_WAIT: не показавшееся за него окно трей снимает).
+    if not on_screen and not api.ready.is_set():
+        api.cold = True
+        if not api.ready.is_set():
+            timer = threading.Timer(COLD_SHOW_WAIT, api.reveal)
+            timer.daemon = True
+            timer.start()
+            return
     api.cold = False
     _unpark(window, api)
     window.show()

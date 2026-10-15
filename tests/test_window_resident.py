@@ -20,9 +20,21 @@ class _SyncThread:
         self.target(*self.args)
 
 
+class _Timer:
+    """Запасной таймер, который не срабатывает: _SyncThread вместо Thread
+    ломает настоящий threading.Timer."""
+
+    def __init__(self, delay, fn):
+        self.daemon = False
+
+    def start(self):
+        pass
+
+
 def _api(monkeypatch, reply=None):
     calls, shown = [], []
     monkeypatch.setattr(window.threading, "Thread", _SyncThread)
+    monkeypatch.setattr(window.threading, "Timer", _Timer)
 
     def call(op, **kw):
         calls.append((op, kw))
@@ -215,6 +227,29 @@ def test_спрятанное_окно_по_сигналу_обновляетс�
     assert "render" in shown and "check" in [op for op, _ in calls]
 
 
+def test_прогретое_окно_по_сигналу_до_ready_ждёт_отрисовки(monkeypatch):
+    """Трей только что запущен: сигнал показа обогнал загрузку страницы.
+    Форма на виду стояла бы чёрной — показывает её ready, уже отрисованной."""
+    api, calls, shown = _api(monkeypatch)
+    timers = []
+    monkeypatch.setattr(window.threading, "Timer",
+                        lambda delay, fn: types.SimpleNamespace(
+                            start=lambda: timers.append((delay, fn)), daemon=False))
+    win = _Window(shown)
+    api.holder["window"] = win
+    api.hidden = True
+
+    window._show(win, api)
+    assert "show" not in shown
+    assert timers == [(window.COLD_SHOW_WAIT, api.reveal)]
+
+    api.send("ready")
+    assert shown.index("render") < shown.index("show")
+    assert "check" in [op for op, _ in calls]
+    timers[0][1]()                  # запасной таймер после ready — уже ничего
+    assert shown.count("show") == 1
+
+
 class _Form:
     Location = (52, 52)
     Width, Height = 1040, 720
@@ -248,6 +283,7 @@ def test_место_возвращается_только_при_первом_п
     api, _, shown = _api(monkeypatch)
     win = _parked(monkeypatch, shown)
     api._home = (440, 180)
+    api.ready.set()
 
     window._show(win, api)
     win.native.Location = (900, 300)          # пользователь передвинул окно
@@ -340,6 +376,7 @@ def test_прогретое_окно_по_сигналу_встаёт_в_цен�
     win = _parked(monkeypatch, shown)
     _forms(monkeypatch)
     api.hidden = True
+    api.ready.set()
 
     window._park(win, api)
     assert win.native.Location == (-32000, -32000)
@@ -350,16 +387,20 @@ def test_прогретое_окно_по_сигналу_встаёт_в_цен�
 def test_показ_раньше_before_show_не_оставляет_окно_за_краем(monkeypatch):
     """9 октября двойной клик сразу после входа пришёл раньше before_show:
     _unpark было нечего вернуть, _park увёл форму за край, и окно в панели
-    задач есть, а на экране нет."""
+    задач есть, а на экране нет. Теперь такой показ ждёт ready страницы, и
+    его reveal возвращает форму на место из _park."""
     api, _, shown = _api(monkeypatch)
     win = _parked(monkeypatch, shown)
     _forms(monkeypatch)
+    api.holder["window"] = win
     api.hidden = True
 
     window._show(win, api)
     window._park(win, api)
+    api.send("ready")
 
-    assert win.native.Location == (52, 52)
+    assert win.native.Location == (760, 340)
+    assert shown.count("show") == 1
 
 
 def test_место_окна_мосту_pywebview_не_видно():
