@@ -35,6 +35,14 @@ RESTART_FAILED = "Службу не удалось перезапустить �
 # перезапустит окно.
 READY_WAIT = 20.0
 READY_LOST = 3
+# WebView2 умер, когда страница уже работала (CoreWebView2.ProcessFailed):
+# рисовать больше нечему, и окно стояло бы чёрной рамкой. Выходим, трей
+# запускает новое — спрятанным или на виду, каким было это.
+WEBVIEW_DIED = 4
+WEBVIEW_DIED_SHOWN = 5
+# Сбои, после которых страницы нет. Процессы GPU и утилит WebView2 поднимает
+# сам, а «не отвечает» бывает и временным.
+_FATAL_FAILURES = ("BrowserProcessExited", "RenderProcessExited")
 # Сколько холодное окно ждёт готовую страницу, прежде чем показаться как
 # есть: дольше без окна кажется, что ярлык не сработал.
 COLD_SHOW_WAIT = 4.0
@@ -1228,6 +1236,43 @@ def _hide_on_close(window, api):
     window.native.FormClosing += closing
 
 
+def _failure_exit(kind, api):
+    """Код выхода на сбой WebView2 вида kind; None — окно живёт дальше.
+
+    До ready это тот же не поднявшийся WebView2, что ловит poll по
+    READY_WAIT, — только узнали раньше.
+    """
+    if str(kind) not in _FATAL_FAILURES:
+        return None
+    if not api.ready.is_set():
+        return READY_LOST
+    return WEBVIEW_DIED if api.hidden else WEBVIEW_DIED_SHOWN
+
+
+def _watch_webview(window, api):
+    """Умерший WebView2 — выход окна, а не чёрная рамка.
+
+    pywebview на ProcessFailed не подписан. CoreWebView2 появляется только
+    после инициализации, поэтому подписка — из её события. Зовётся в потоке
+    окна (before_show): форма и её WebView2 уже созданы.
+    """
+    def failed(_sender, args):
+        kind = args.ProcessFailedKind
+        code = _failure_exit(kind, api)
+        api._log(f"WebView2: {kind}" + (f", окно выходит с кодом {code}" if code else ""))
+        if code is not None:
+            os._exit(code)
+
+    def initialized(sender, args):
+        if args.IsSuccess:
+            sender.CoreWebView2.ProcessFailed += failed
+
+    try:
+        window.native.webview.CoreWebView2InitializationCompleted += initialized
+    except Exception as exc:                               # noqa: BLE001
+        api._log(f"не слежу за WebView2: {exc}")
+
+
 def _listen_drop(window, api):
     """Перетаскивание .conf на окно. Подписка — из Python: только его
     обработчик получает полный путь файла. Оверлей и dragover страница
@@ -1375,6 +1420,7 @@ def open_window(resident=False, hidden=False, tray_pid=None):
         background_color="#101012")
     holder["window"].events.shown += lambda: _dark_title(holder.get("window"))
     holder["window"].events.before_show += lambda window: _park(window, api)
+    holder["window"].events.before_show += lambda window: _watch_webview(window, api)
     holder["window"].events.loaded += lambda window: _listen_drop(window, api)
     if resident:
         holder["window"].events.before_show += lambda window: _hide_on_close(window, api)

@@ -35,13 +35,17 @@ def _live(**kw):
     return types.SimpleNamespace(pid=42, poll=lambda: None, **kw)
 
 
-def _launches(monkeypatch, code=0):
-    """Подменённый Popen: команды запусков; процесс сразу выходит с code."""
+def _launches(monkeypatch, code=0, once=False):
+    """Подменённый Popen: команды запусков; процесс сразу выходит с code.
+
+    once — с code выходит только первый, остальные с 0.
+    """
     launched = []
 
     def popen(cmd, **_kw):
         launched.append(cmd)
-        return types.SimpleNamespace(pid=7, poll=lambda: code, wait=lambda: code)
+        rc = code if not once or len(launched) == 1 else 0
+        return types.SimpleNamespace(pid=7, poll=lambda: rc, wait=lambda: rc)
     monkeypatch.setattr(subprocess, "Popen", popen)
     return launched
 
@@ -141,6 +145,32 @@ def test_окно_без_webview2_перезапускается_один_раз
 
 def test_прогретое_окно_без_webview2_не_перезапускается(monkeypatch):
     launched = _launches(monkeypatch, code=tray.window.READY_LOST)
+
+    tray.Tray()._warm()
+    assert _settle(launched, 1) == 1
+
+
+def test_прогретое_окно_с_умершим_webview2_прогревается_снова(monkeypatch):
+    monkeypatch.setattr(tray, "WEBVIEW_DIED_GAP", 0)
+    launched = _launches(monkeypatch, code=tray.window.WEBVIEW_DIED, once=True)
+
+    tray.Tray()._warm()
+    assert _settle(launched, 2) == 2
+    assert all("--hidden" in cmd for cmd in launched)
+
+
+def test_показанное_окно_с_умершим_webview2_открывается_снова(monkeypatch):
+    monkeypatch.setattr(tray, "WEBVIEW_DIED_GAP", 0)
+    launched = _launches(monkeypatch, code=tray.window.WEBVIEW_DIED_SHOWN, once=True)
+
+    tray.Tray()._open_window()
+    assert _settle(launched, 2) == 2
+    assert not any("--hidden" in cmd for cmd in launched)
+
+
+def test_окно_умершее_сразу_после_старта_не_перезапускается(monkeypatch):
+    """WebView2, падающий на каждом старте, не крутит перезапуски."""
+    launched = _launches(monkeypatch, code=tray.window.WEBVIEW_DIED)
 
     tray.Tray()._warm()
     assert _settle(launched, 1) == 1

@@ -528,3 +528,48 @@ def test_окно_узнаёт_о_выходе_трея():
     after = threading.Event()
     instance.on_exit(proc.pid, after.set)
     assert after.wait(5)
+
+
+def test_код_выхода_на_сбой_webview2_по_виду_и_состоянию_окна():
+    api = window.Api({})
+    # Страница ещё не готова — тот же «не поднялся», что и по READY_WAIT.
+    assert window._failure_exit("RenderProcessExited", api) == window.READY_LOST
+    api.ready.set()
+    assert window._failure_exit("BrowserProcessExited", api) == window.WEBVIEW_DIED_SHOWN
+    api.hidden = True
+    assert window._failure_exit("RenderProcessExited", api) == window.WEBVIEW_DIED
+    # GPU и утилиты WebView2 поднимает сам, «не отвечает» бывает временным.
+    for kind in ("GpuProcessExited", "UtilityProcessExited", "RenderProcessUnresponsive",
+                 "FrameRenderProcessExited"):
+        assert window._failure_exit(kind, api) is None
+
+
+class _NetEvent:
+    """Событие .NET: `+=` добавляет обработчик."""
+
+    def __init__(self):
+        self.handlers = []
+
+    def __iadd__(self, handler):
+        self.handlers.append(handler)
+        return self
+
+
+def test_умерший_webview2_завершает_окно_кодом_для_трея(monkeypatch):
+    """Без выхода окно с мёртвым WebView2 стояло чёрной рамкой."""
+    exits = []
+    monkeypatch.setattr(window.os, "_exit", exits.append)
+    api = window.Api({})
+    monkeypatch.setattr(api, "_log", lambda _msg: None)
+    api.ready.set()
+    control = types.SimpleNamespace(CoreWebView2InitializationCompleted=_NetEvent())
+    window._watch_webview(types.SimpleNamespace(native=types.SimpleNamespace(webview=control)), api)
+
+    core = types.SimpleNamespace(ProcessFailed=_NetEvent())
+    sender = types.SimpleNamespace(CoreWebView2=core)
+    for init in control.CoreWebView2InitializationCompleted.handlers:
+        init(sender, types.SimpleNamespace(IsSuccess=True))
+    for failed in core.ProcessFailed.handlers:
+        failed(core, types.SimpleNamespace(ProcessFailedKind="GpuProcessExited"))
+        failed(core, types.SimpleNamespace(ProcessFailedKind="RenderProcessExited"))
+    assert exits == [window.WEBVIEW_DIED_SHOWN]

@@ -43,6 +43,9 @@ TRAY_LOG_BYTES = 256 * 1024
 # Сколько живое окно имеет на то, чтобы принять сигнал и стать видимым.
 # Не стало — процесс завис, его снимаем и запускаем новое окно.
 WINDOW_SHOW_WAIT = 5.0
+# Окно, чей WebView2 умер (window.WEBVIEW_DIED*), заменяем, только если оно прожило
+# столько: WebView2, падающий сразу после старта, иначе крутил бы перезапуски.
+WEBVIEW_DIED_GAP = 60.0
 # Сколько второй запуск ждёт, пока первый трей начнёт слушать «покажи окно».
 OPEN_SIGNAL_WAIT = 2.0
 # Сколько ярлык ждёт трей, запущенный задачей автозапуска (settings.TRAY_TASK):
@@ -742,12 +745,23 @@ class Tray:
         Показываемое запускаем ещё раз — один раз: сбой бывает разовым, а
         повторяющийся перезапуском не лечится. Прогретое не трогаем: новое
         окно запустит первый же показ.
+
+        Окно, чей WebView2 умер после готовности страницы (window.WEBVIEW_DIED*),
+        заменяем таким же: спрятанное — новым прогревом, иначе первый показ
+        снова был бы холодным. Не чаще WEBVIEW_DIED_GAP.
         """
-        if proc.wait() != window.READY_LOST or hidden or not retry:
+        started = time.monotonic()
+        code = proc.wait()
+        if code == window.READY_LOST and not hidden and retry:
+            hidden, retry = False, False
+        elif (code in (window.WEBVIEW_DIED, window.WEBVIEW_DIED_SHOWN)
+              and time.monotonic() - started >= WEBVIEW_DIED_GAP):
+            hidden, retry = code == window.WEBVIEW_DIED, True
+        else:
             return
         with self._window_lock:
             if self._window_proc is proc and not self.stop_event.is_set():
-                self._launch_window(hidden=False, retry=False)
+                self._launch_window(hidden=hidden, retry=retry)
 
     def on_quit(self):
         """Выключает VPN и закрывает значок — в обеих версиях.
