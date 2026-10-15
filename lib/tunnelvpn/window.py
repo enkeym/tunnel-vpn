@@ -38,6 +38,11 @@ READY_LOST = 3
 # Сколько холодное окно ждёт готовую страницу, прежде чем показаться как
 # есть: дольше без окна кажется, что ярлык не сработал.
 COLD_SHOW_WAIT = 4.0
+# Сколько холодное окно, уже показанное за краем экрана, ждёт от страницы отчёт
+# о первой отрисовке, прежде чем встать на место: скрытый WebView2 кадра не
+# рисует, и показ сразу на ready давал тёмный фон. Вместе с COLD_SHOW_WAIT
+# меньше tray.WINDOW_SHOW_WAIT.
+PAINT_WAIT = 0.5
 # В paths.FOCUS_FILE вместо id туннеля: пункт трея «Доступно обновление» —
 # открыть «Настройки → О программе». Двоеточия в id не бывает (tunnels.check_id).
 FOCUS_ABOUT = ":about"
@@ -137,6 +142,8 @@ class Api:
         # Холодное окно: создано спрятанным и покажется на ready, уже
         # отрисованным, — без него виден весь старт WebView2 с рывками.
         self.cold = False
+        # Страница отрисовала первый кадр (send('painted') из main.js).
+        self.painted = threading.Event()
         # Где окну встать при первом показе; до него оно за краем экрана.
         # С подчёркиванием: публичные атрибуты js_api pywebview обходит, и .NET
         # Point уводил его в рекурсию home.Empty.Empty… на каждой загрузке.
@@ -180,7 +187,9 @@ class Api:
         return None
 
     def _dispatch(self, name, arg):
-        if name == "ready":
+        if name == "painted":
+            self.painted.set()
+        elif name == "ready":
             self.ready.set()
             # Перезагруженная страница считает нажатия заново.
             with self._flip_lock:
@@ -365,8 +374,11 @@ class Api:
         self.cold = False
         w = self.holder.get("window")
         if w is not None:
-            _unpark(w, self)
+            # Форма ещё за краем экрана (_park): сначала показ там, чтобы
+            # WebView2 отрисовал кадр, потом на место.
             w.show()
+            self.painted.wait(PAINT_WAIT)
+            _unpark(w, self)
             _to_front(w)
 
     def _focus(self):

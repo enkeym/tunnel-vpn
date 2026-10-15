@@ -35,6 +35,7 @@ def _api(monkeypatch, reply=None):
     calls, shown = [], []
     monkeypatch.setattr(window.threading, "Thread", _SyncThread)
     monkeypatch.setattr(window.threading, "Timer", _Timer)
+    monkeypatch.setattr(window, "PAINT_WAIT", 0)
 
     def call(op, **kw):
         calls.append((op, kw))
@@ -268,15 +269,28 @@ def _parked(monkeypatch, shown):
     return win
 
 
-def test_холодное_окно_встаёт_на_место_до_показа(monkeypatch):
+def test_холодное_окно_показывается_за_краем_и_встаёт_на_место_после_отрисовки(monkeypatch):
+    """Скрытый WebView2 кадр не рисует: окно показывают, пока оно за краем\n    экрана, ждут painted от страницы и только потом ставят на место."""
     api, _, shown = _api(monkeypatch)
     win = _parked(monkeypatch, shown)
     api.holder["window"] = win
     api.cold, api._home = True, (440, 180)
     win.show = lambda: shown.append(("show", win.native.Location))
+    waited = []
+    monkeypatch.setattr(api.painted, "wait",
+                        lambda t=None: waited.append((t, win.native.Location)))
 
     api.reveal()
-    assert shown == [("show", (440, 180))]
+    assert shown == [("show", (52, 52))]           # (52, 52) — «за краем» в заглушке
+    assert waited == [(window.PAINT_WAIT, (52, 52))]
+    assert win.native.Location == (440, 180)
+
+
+def test_painted_отмечает_первый_кадр_страницы(monkeypatch):
+    api, _, _ = _api(monkeypatch)
+
+    api.send("painted")
+    assert api.painted.is_set()
 
 
 def test_место_возвращается_только_при_первом_показе(monkeypatch):
