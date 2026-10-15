@@ -260,10 +260,9 @@ class _Form:
         action()
 
 
-def _parked(monkeypatch, shown):
-    # Заглушка .NET: в CI тесты идут на Linux, где pythonnet нет.
-    monkeypatch.setitem(sys.modules, "System",
-                        types.SimpleNamespace(Action=lambda f: f))
+def _parked(shown):
+    # Форма не настоящая: Invoke зовёт делегат System.Action сразу.
+    import clr  # noqa: F401  — без него нет модуля System
     win = _Window(shown)
     win.native = _Form()
     return win
@@ -272,7 +271,7 @@ def _parked(monkeypatch, shown):
 def test_холодное_окно_показывается_за_краем_и_встаёт_на_место_после_отрисовки(monkeypatch):
     """Скрытый WebView2 кадр не рисует: окно показывают, пока оно за краем\n    экрана, ждут painted от страницы и только потом ставят на место."""
     api, _, shown = _api(monkeypatch)
-    win = _parked(monkeypatch, shown)
+    win = _parked(shown)
     api.holder["window"] = win
     api.cold, api._home = True, (440, 180)
     win.show = lambda: shown.append(("show", win.native.Location))
@@ -290,7 +289,7 @@ def test_прогретое_окно_при_первом_показе_ждёт_�
     """15 октября: первый клик по значку после прогрева давал чёрную рамку —
     WebView2 спрятанного окна кадра ещё не рисовал. Кадр просят после Show."""
     api, _, shown = _api(monkeypatch)
-    win = _parked(monkeypatch, shown)
+    win = _parked(shown)
     api.holder["window"] = win
     api._home, api.hidden = (440, 180), True
     api.ready.set()
@@ -320,7 +319,7 @@ def test_painted_отмечает_первый_кадр_страницы(monkeyp
 
 def test_место_возвращается_только_при_первом_показе(monkeypatch):
     api, _, shown = _api(monkeypatch)
-    win = _parked(monkeypatch, shown)
+    win = _parked(shown)
     api._home = (440, 180)
     api.ready.set()
 
@@ -400,7 +399,8 @@ def test_окно_уже_впереди_не_трогается():
 
 
 def _forms(monkeypatch):
-    """Заглушки WinForms для _park: рабочий стол 2560×1400."""
+    """WinForms для _park подменён: рабочий стол 2560×1400, а не экран машины,
+    и места — кортежи, с которыми сравнивает тест."""
     monkeypatch.setitem(sys.modules, "System.Drawing",
                         types.SimpleNamespace(Point=lambda x, y: (x, y)))
     area = types.SimpleNamespace(X=0, Y=0, Width=2560, Height=1400)
@@ -412,7 +412,7 @@ def _forms(monkeypatch):
 
 def test_прогретое_окно_по_сигналу_встаёт_в_центр(monkeypatch):
     api, _, shown = _api(monkeypatch)
-    win = _parked(monkeypatch, shown)
+    win = _parked(shown)
     _forms(monkeypatch)
     api.hidden = True
     api.ready.set()
@@ -429,7 +429,7 @@ def test_показ_раньше_before_show_не_оставляет_окно_з
     задач есть, а на экране нет. Теперь такой показ ждёт ready страницы, и
     его reveal возвращает форму на место из _park."""
     api, _, shown = _api(monkeypatch)
-    win = _parked(monkeypatch, shown)
+    win = _parked(shown)
     _forms(monkeypatch)
     api.holder["window"] = win
     api.hidden = True

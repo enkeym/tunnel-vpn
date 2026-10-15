@@ -1,9 +1,6 @@
 """Окно: конфиги и правила по id туннеля — вопрос о месте конфига, удаление
 последнего, списки правил из файла."""
 
-import sys
-import types
-
 from tunnelvpn import ipc, window
 
 WG = "[Interface]\nAddress = 10.53.0.4/32\n[Peer]\nAllowedIPs = 10.53.0.0/16\n"
@@ -351,10 +348,6 @@ def test_экспорт_правил_читается_обратно_загру�
             return (str(out),)
     api, _, shown = _api(monkeypatch, [])
     api.holder["window"] = Win()
-    # pywebview в CI нет: диалог подменён, от модуля нужен только FileDialog.
-    monkeypatch.setitem(sys.modules, "webview",
-                        types.SimpleNamespace(FileDialog=types.SimpleNamespace(SAVE=30)))
-
     api.send("export_rules", {"name": "Работа", "include": ["corp.example"],
                               "exclude": ["198.51.100.7/32"]})
 

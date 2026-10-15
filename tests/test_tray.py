@@ -255,7 +255,7 @@ def test_ярлык_без_прав_без_трея_и_задачи_переза
 def test_ярлык_без_трея_поднимает_его_задачей_без_uac(monkeypatch):
     sent, elevated = _no_tray_yet(monkeypatch, task=True)
     # Трей задачи ответил — ярлык поднимает туннель сам; без подмены это
-    # живая служба (на Windows) или pywintypes, которого нет в CI.
+    # живая служба на машине.
     calls = []
     monkeypatch.setattr(ipc, "call", lambda op, **kw: calls.append(op) or {"status": {}})
 
@@ -436,9 +436,9 @@ class _Uxtheme:
 def _fake_windows(monkeypatch, build):
     uxtheme = _Uxtheme()
     monkeypatch.setattr(ctypes, "windll",
-                        types.SimpleNamespace(uxtheme=uxtheme), raising=False)
+                        types.SimpleNamespace(uxtheme=uxtheme))
     monkeypatch.setattr(sys, "getwindowsversion",
-                        lambda: types.SimpleNamespace(build=build), raising=False)
+                        lambda: types.SimpleNamespace(build=build))
     return uxtheme.calls
 
 
@@ -458,10 +458,13 @@ def test_на_сборке_до_1903_ordinal_135_не_зовётся(monkeypatch
     assert calls == []
 
 
-def test_без_windll_тёмное_меню_ничего_не_делает(monkeypatch):
-    monkeypatch.delattr(ctypes, "windll", raising=False)
+def test_без_ordinal_в_uxtheme_меню_остаётся_светлым_без_ошибки(monkeypatch):
+    class Missing:
+        def __getitem__(self, ordinal):
+            raise AttributeError(f"function ordinal {ordinal} not found")
+    monkeypatch.setattr(ctypes, "windll", types.SimpleNamespace(uxtheme=Missing()))
     monkeypatch.setattr(sys, "getwindowsversion",
-                        lambda: types.SimpleNamespace(build=26300), raising=False)
+                        lambda: types.SimpleNamespace(build=26300))
 
     tray._dark_menus()
 

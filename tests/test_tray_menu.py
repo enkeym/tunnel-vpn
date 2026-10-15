@@ -1,10 +1,9 @@
 """Пункты туннелей в меню трея: подписи и цвета кружков из статуса службы,
 клик — окно у карточки туннеля."""
 
-import sys
-import types
-
+import pystray
 import pytest
+from pystray._util import win32
 
 from tunnelvpn import tray
 
@@ -118,15 +117,8 @@ def test_имя_конфига_туннеля(t, name):
     assert tray._conf_name(t) == name
 
 
-def _hooked(calls, monkeypatch):
-    # Заглушка вместо pystray: в CI тесты идут на Linux, где его нет.
-    win32 = types.SimpleNamespace(WM_NOTIFY=0x401, WM_LBUTTONUP=0x0202,
-                                  WM_RBUTTONUP=0x0205)
-    util = types.SimpleNamespace(win32=win32)
-    monkeypatch.setitem(sys.modules, "pystray", types.SimpleNamespace(_util=util))
-    monkeypatch.setitem(sys.modules, "pystray._util", util)
-    monkeypatch.setitem(sys.modules, "pystray._util.win32", win32)
-
+def _hooked(calls):
+    # Значок не настоящий: обработчики сообщений без окна в трее.
     class Icon:
         _message_handlers = {win32.WM_NOTIFY: lambda w, l: calls.append(("orig", l))}
 
@@ -134,21 +126,21 @@ def _hooked(calls, monkeypatch):
     app.icon = Icon()
     app.on_window = lambda: calls.append(("window", None))
     app._hook_menu()
-    return app.icon._message_handlers[win32.WM_NOTIFY], win32
+    return app.icon._message_handlers[win32.WM_NOTIFY]
 
 
-def test_одиночный_левый_клик_открывает_окно(monkeypatch):
+def test_одиночный_левый_клик_открывает_окно():
     calls = []
-    notify, win32 = _hooked(calls, monkeypatch)
+    notify = _hooked(calls)
 
     notify(0, win32.WM_LBUTTONUP)
 
     assert calls == [("window", None)]
 
 
-def test_двойной_левый_клик_сам_окно_не_открывает(monkeypatch):
+def test_двойной_левый_клик_сам_окно_не_открывает():
     calls = []
-    notify, _ = _hooked(calls, monkeypatch)
+    notify = _hooked(calls)
 
     notify(0, tray.WM_LBUTTONDBLCLK)
 
@@ -186,24 +178,6 @@ def test_длинное_имя_туннеля_обрезается():
     assert label == "x" * (tray.NAME_MAX - 1) + "… · нет конфига"
 
 
-class _Item:
-    """Пункт pystray без pystray: подпись и действие как есть."""
-
-    def __init__(self, text, action, enabled=None, checked=None):
-        self.text, self.action, self.enabled, self.checked = text, action, enabled, checked
-
-
-class _Menu:
-    """Меню pystray без pystray: пункты как есть, у главного — функция."""
-    SEPARATOR = object()
-
-    def __init__(self, *items):
-        self.items = items
-
-
-STUB = types.SimpleNamespace(MenuItem=_Item, Menu=_Menu)
-
-
 def _menu_app(st):
     app = tray.Tray()
     app.status = st
@@ -216,39 +190,37 @@ def _menu_app(st):
 def test_клик_по_туннелю_открывает_окно_у_его_карточки():
     app = _menu_app(_up(_work(), _home(confs=["nl-1"])))
 
-    work, home = app._tunnel_entries(STUB)
-    work.action()
-    home.action()
+    work, home = app._tunnel_entries(pystray)
+    work(None)
+    home(None)
 
-    assert work.text(work) == "Работа · нет конфига"
-    assert home.text(home) == "Личный · работает"
+    assert work.text == "Работа · нет конфига"
+    assert home.text == "Личный · работает"
     assert app.opened == ["work", "home"]
 
 
 def test_пункты_туннелей_те_же_объекты_а_удалённый_забыт():
     app = _menu_app(_up(_work(), _work(id="lab", name="Лаб"), _home()))
-    work, lab, home = app._tunnel_entries(STUB)
+    work, lab, home = app._tunnel_entries(pystray)
 
     app.status = _up(_home(), _work())
     app._menu_ids = ("home", "work")
-    again = app._tunnel_entries(STUB)
+    again = app._tunnel_entries(pystray)
 
     assert again == (home, work)
     assert set(app._tunnel_items) == {"home", "work"}
 
 
-def test_в_меню_только_статус_туннелей_без_конфигов_и_галочек(monkeypatch):
+def test_в_меню_только_статус_туннелей_без_конфигов_и_галочек():
     """Добавление конфига и вкл/выкл туннеля — только в окне: ни подменю,
     ни «Добавить конфиг…», ни «Включён» даже у туннеля «по списку» с конфигом."""
-    monkeypatch.setitem(sys.modules, "pystray", STUB)
     app = _menu_app(_up(_work(confs=["office"], enabled=False), _home()))
 
-    items = [i for i in app._menu().items[0]() if i is not _Menu.SEPARATOR]
-    texts = [i.text(i) if callable(i.text) else i.text for i in items]
+    items = [i for i in app._menu().items if i is not pystray.Menu.SEPARATOR]
 
-    assert texts == ["Выключить", "Перезапустить", "Работа · выключен",
-                     "Личный · нет конфига", "Закрыть"]
-    assert not [i for i in items if isinstance(i.action, _Menu)]
+    assert [i.text for i in items] == ["Выключить", "Перезапустить", "Работа · выключен",
+                                       "Личный · нет конфига", "Закрыть"]
+    assert not [i for i in items if i.submenu or i.checked]
 
 
 def test_выключенный_серый_и_на_живом_и_на_выключенном_vpn():

@@ -4,7 +4,6 @@
 служба сама отдала в статусе.
 """
 
-import ntpath
 import os
 
 from tunnelvpn import ipc, paths, window
@@ -42,8 +41,7 @@ def test_конфиг_открывается_в_блокноте_с_правам
     api.send("edit_config", {"tunnel": "home", "name": "nl-1"})
 
     exe, args, show = runs[0]
-    # Путь Windows: на Linux-раннере os.path его не разберёт.
-    assert ntpath.isabs(exe) and ntpath.normpath(exe).lower().endswith("system32\\notepad.exe")
+    assert os.path.isabs(exe) and os.path.normpath(exe).lower().endswith("system32\\notepad.exe")
     assert args == [os.path.join(paths.CONF_TUNNELS, "home", "nl-1.conf")] and show
 
 

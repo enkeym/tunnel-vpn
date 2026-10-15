@@ -1,7 +1,7 @@
 """Окно: заголовок тёмный независимо от темы Windows.
 
-dwmapi здесь не настоящий: ctypes.windll подменяем, чтобы тест шёл и на
-Linux в CI, где windll нет вовсе.
+dwmapi здесь не настоящий: ctypes.windll подменяем, чтобы записать
+вызов, а не слать его выдуманному окну.
 """
 
 import ctypes
@@ -19,7 +19,7 @@ def _fake_dwm(monkeypatch):
 
     dwmapi = types.SimpleNamespace(DwmSetWindowAttribute=set_attr)
     monkeypatch.setattr(ctypes, "windll",
-                        types.SimpleNamespace(dwmapi=dwmapi), raising=False)
+                        types.SimpleNamespace(dwmapi=dwmapi))
     return calls
 
 
