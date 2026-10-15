@@ -23,6 +23,9 @@ say so in one line and ask, do not build an environment. Running commands from W
    Scenarios, `tab`, `open`, `tick`, `upd`, `outcome` — header of `lib/tunnelvpn/ui/dev/mock-api.js`.
 3. Screenshots into `.playwright-mcp/<topic>-*.png`; console must show nothing but the `favicon.ico` 404.
 
+No `playwright` in `claude mcp list` (new machine):
+`claude mcp add -s local playwright -- "$(command -v playwright-mcp)" --headless --browser chromium --isolated --timeout-settle 200`.
+
 `mock-api.js` repeats what `lib/tunnelvpn/window.py` returns: change a bridge answer or a text in Python →
 change the fixture in the same commit. A changed user-facing string → `grep -rn` it in `tests/`.
 
