@@ -42,7 +42,7 @@ A build never opens the port: anyone local could drive the window. The script al
 `LOCALAPPDATA`, so WebView2 gets a separate data folder.
 
 No `playwright-cdp` in `claude mcp list` (new machine):
-`claude mcp add -s local playwright-cdp -- playwright-mcp --cdp-endpoint http://127.0.0.1:9222`.
+`claude mcp add -s local playwright-cdp -- playwright-mcp --cdp-endpoint http://127.0.0.1:9222 --timeout-settle 200`.
 
 ## Windows-MCP: wizard and tray
 
