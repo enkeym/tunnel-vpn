@@ -52,6 +52,8 @@ paths:
   читает `_rules_from_file`. У туннеля `all` поля `exclude` и `exclude_apps` (`ruleKeys` в странице).
   «Добавить программу…» (`.rules-pick`) → `pick_app` → `lib/tunnelvpn/window.py:_pick_app` (проводник,
   `routelist.app`) → `appPicked(path)` дописывает строку в поле; записывает только «Сохранить».
+  `rulesSaved`/`rulesFailed` приходят после `_apply` — секунды: закрытие листа при `RULES.saving` ставит
+  `RULES.left` и закрывает без вопроса «Отменить изменения?», ответ тогда — только тостом, `ON_FAILED` обнуляет `RULES`.
 - Правки туннелей → `lib/tunnelvpn/window.py:_apply`: op `apply` (`lib/tunnelvpn/service.py:_apply`) — служба
   сама решает, перезапускать процесс туннеля или всё, выключенный не включает; затем
   `refresh(full=True)`. Окно само `stop`/`start` не шлёт — иначе интернет падал бы на каждую правку.
