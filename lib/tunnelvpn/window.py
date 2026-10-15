@@ -38,11 +38,11 @@ READY_LOST = 3
 # Сколько холодное окно ждёт готовую страницу, прежде чем показаться как
 # есть: дольше без окна кажется, что ярлык не сработал.
 COLD_SHOW_WAIT = 4.0
-# Сколько холодное окно, уже показанное за краем экрана, ждёт от страницы отчёт
-# о первой отрисовке, прежде чем встать на место: скрытый WebView2 кадра не
-# рисует, и показ сразу на ready давал тёмный фон. Вместе с COLD_SHOW_WAIT
-# меньше tray.WINDOW_SHOW_WAIT.
-PAINT_WAIT = 0.5
+# Сколько окно при первом показе (холодное и прогретое), уже показанное за краем
+# экрана, ждёт от страницы отчёт о кадре, прежде чем встать на место: WebView2
+# спрятанного окна кадра не рисует, и первый показ на месте давал чёрную рамку.
+# Вместе с COLD_SHOW_WAIT меньше tray.WINDOW_SHOW_WAIT.
+PAINT_WAIT = 0.8
 # В paths.FOCUS_FILE вместо id туннеля: пункт трея «Доступно обновление» —
 # открыть «Настройки → О программе». Двоеточия в id не бывает (tunnels.check_id).
 FOCUS_ABOUT = ":about"
@@ -142,7 +142,7 @@ class Api:
         # Холодное окно: создано спрятанным и покажется на ready, уже
         # отрисованным, — без него виден весь старт WebView2 с рывками.
         self.cold = False
-        # Страница отрисовала первый кадр (send('painted') из main.js).
+        # Страница отрисовала кадр после показа (paintAck → send('painted')).
         self.painted = threading.Event()
         # Где окну встать при первом показе; до него оно за краем экрана.
         # С подчёркиванием: публичные атрибуты js_api pywebview обходит, и .NET
@@ -374,12 +374,7 @@ class Api:
         self.cold = False
         w = self.holder.get("window")
         if w is not None:
-            # Форма ещё за краем экрана (_park): сначала показ там, чтобы
-            # WebView2 отрисовал кадр, потом на место.
-            w.show()
-            self.painted.wait(PAINT_WAIT)
-            _unpark(w, self)
-            _to_front(w)
+            _present(w, self)
 
     def _focus(self):
         """Карточка туннеля, по которому щёлкнули в меню трея: id из
@@ -1110,6 +1105,25 @@ def _park(window, api):
             api._home = None
 
 
+def _present(window, api):
+    """Показ окна. Первый — сначала за краем экрана (_park): WebView2
+    спрятанного окна ни одного кадра ещё не нарисовал, и на месте 15 октября
+    стояла чёрная рамка — и у холодного окна, и у прогретого. Кадр просим уже
+    после Show (paintAck в main.js): rAF спрятанной страницы срабатывал и без
+    показа. Ждём не дольше PAINT_WAIT, потом _unpark ставит окно на место."""
+    with api._park_lock:
+        parked = api._home is not None
+    if parked:
+        api.painted.clear()
+        window.show()
+        api.js("paintAck")
+        api.painted.wait(PAINT_WAIT)
+    _unpark(window, api)
+    if not parked:
+        window.show()
+    _to_front(window)
+
+
 def _unpark(window, api):
     """Перед первым показом — на место из _park. Дальше окно стоит там,
     куда его передвинули. Замок — только на флаг и место: Invoke под ним
@@ -1322,9 +1336,7 @@ def _show(window, api):
             timer.start()
             return
     api.cold = False
-    _unpark(window, api)
-    window.show()
-    _to_front(window)
+    _present(window, api)
     # Страница ещё грузится — всё это сделает её ready.
     if not on_screen and api.ready.is_set():
         api.refresh(full=True)

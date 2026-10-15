@@ -31,12 +31,13 @@ paths:
   в первые секунды после старта трея давал чёрную рамку до отрисовки. `COLD_SHOW_WAIT` меньше
   `lib/tunnelvpn/tray.py:WINDOW_SHOW_WAIT`: иначе трей снимает так и не показавшееся окно. `ready` шлётся в конце
   скрипта страницы. Убрали `ready` или таймер — окно появляется пустым, с опозданием или не появляется.
-- Первый кадр холодного окна: `Api.reveal` показывает форму ещё за краем экрана (`_park`), ждёт `Api.painted` до
-  `PAINT_WAIT` и только потом `_unpark` + `_to_front`; `painted` ставит `send('painted')` (двойной
-  `requestAnimationFrame` после `send('ready')`) из `lib/tunnelvpn/ui/js/main.js` → `_dispatch`. Скрытый WebView2 кадр не
-  рисует: без показа за краем окно вставало бы тёмным до первой отрисовки. `COLD_SHOW_WAIT + PAINT_WAIT` меньше
-  `lib/tunnelvpn/tray.py:WINDOW_SHOW_WAIT`. Убрали `painted` — окно встаёт на место на `PAINT_WAIT` позже; показ
-  до `_unpark` без паркинга (`_home` пуст) — как раньше, без защиты от тёмного кадра.
+- Первый показ окна, холодного (`Api.reveal`) и прогретого (`_show`), — `lib/tunnelvpn/window.py:_present`: пока
+  `api._home` есть (форма за краем, `_park`), сбрасывает `Api.painted`, показывает форму там, зовёт `paintAck` из
+  `lib/tunnelvpn/ui/js/main.js` (двойной `requestAnimationFrame` → `send('painted')` → `_dispatch`), ждёт до
+  `PAINT_WAIT` и только потом `_unpark` + `_to_front`. WebView2 спрятанного окна кадра не рисует: показ сразу на
+  месте давал чёрную рамку. Кадр просят после `Show`, не на загрузке: rAF спрятанной страницы срабатывает и без
+  показа. `COLD_SHOW_WAIT + PAINT_WAIT` меньше `lib/tunnelvpn/tray.py:WINDOW_SHOW_WAIT`. Переименовали `paintAck`
+  или потеряли `painted` — окно встаёт на место на `PAINT_WAIT` позже.
 - Спрятанное окно pywebview создаёт через `Opacity=0, Show, Hide` (`<site-packages>/webview/platforms/winforms.py:create_window`);
   этот показ уводит за край экрана `lib/tunnelvpn/window.py:_park` в `before_show` (синхронно, до `Show`), на
   место в центре форму возвращает `_unpark` из `Api.reveal` и `_show` по `api._home`. Показ бывает раньше

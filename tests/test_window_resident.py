@@ -281,9 +281,34 @@ def test_холодное_окно_показывается_за_краем_и_�
                         lambda t=None: waited.append((t, win.native.Location)))
 
     api.reveal()
-    assert shown == [("show", (52, 52))]           # (52, 52) — «за краем» в заглушке
+    assert shown == [("show", (52, 52)), "paintAck"]   # (52, 52) — «за краем» в заглушке
     assert waited == [(window.PAINT_WAIT, (52, 52))]
     assert win.native.Location == (440, 180)
+
+
+def test_прогретое_окно_при_первом_показе_ждёт_кадр_за_краем(monkeypatch):
+    """15 октября: первый клик по значку после прогрева давал чёрную рамку —
+    WebView2 спрятанного окна кадра ещё не рисовал. Кадр просят после Show."""
+    api, _, shown = _api(monkeypatch)
+    win = _parked(monkeypatch, shown)
+    api.holder["window"] = win
+    api._home, api.hidden = (440, 180), True
+    api.ready.set()
+    api.painted.set()                               # кадр спрятанной страницы не в счёт
+    win.show = lambda: shown.append(("show", win.native.Location))
+    waited = []
+    monkeypatch.setattr(api.painted, "wait",
+                        lambda t=None: waited.append((api.painted.is_set(), win.native.Location)))
+
+    window._show(win, api)
+    assert shown[:2] == [("show", (52, 52)), "paintAck"]
+    assert waited == [(False, (52, 52))]
+    assert win.native.Location == (440, 180)
+
+    shown.clear()
+    api.hidden = True                               # закрыли крестиком и открыли снова
+    window._show(win, api)
+    assert "paintAck" not in shown and waited == [(False, (52, 52))]
 
 
 def test_painted_отмечает_первый_кадр_страницы(monkeypatch):
