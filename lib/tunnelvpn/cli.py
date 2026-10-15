@@ -16,7 +16,8 @@
     tunnelvpn tray [--background] значок в трее и окно (обычный способ запуска);
                                   --background — только значок, без окна
     tunnelvpn window              окно с состоянием, конфигами и логом
-                                  (--resident --hidden — так его зовёт трей)
+                                  (--resident --hidden --tray-pid PID — так
+                                  его зовёт трей; с ним уходит и окно)
     tunnelvpn admin-op ОП ЗАПРОС ОТВЕТ
                                   служебное: окно зовёт так себя же с правами
                                   администратора на одну команду в conf\\ —
@@ -191,8 +192,14 @@ def main(argv=None):
 
     if cmd == "window":
         from . import window
-        window.open_window(resident="--resident" in argv[1:],
-                           hidden="--hidden" in argv[1:])
+        args = argv[1:]
+        tray_pid = None
+        if "--tray-pid" in args:
+            i = args.index("--tray-pid")
+            if i + 1 < len(args) and args[i + 1].isdigit():
+                tray_pid = int(args[i + 1])
+        window.open_window(resident="--resident" in args,
+                           hidden="--hidden" in args, tray_pid=tray_pid)
         return 0
 
     if cmd == "admin-op":

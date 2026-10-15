@@ -24,6 +24,7 @@ WINDOW_SHOW = "Local\\TunnelVPN-Window-Show"
 ERROR_ALREADY_EXISTS = 183
 ERROR_ACCESS_DENIED = 5
 ERROR_FILE_NOT_FOUND = 2
+ERROR_INVALID_PARAMETER = 87
 EVENT_MODIFY_STATE = 0x0002
 SYNCHRONIZE = 0x00100000
 SDDL_REVISION_1 = 1
@@ -56,6 +57,8 @@ def _kernel32():
     k.SetEvent.argtypes = [wintypes.HANDLE]
     k.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     k.WaitForSingleObject.restype = wintypes.DWORD
+    k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k.OpenProcess.restype = wintypes.HANDLE
     k.CloseHandle.argtypes = [wintypes.HANDLE]
     return k
 
@@ -160,6 +163,28 @@ def signal(name, wait=0.0):
         if time.monotonic() >= deadline:
             return False
         time.sleep(0.1)
+
+
+def on_exit(pid, callback):
+    """Зовёт callback в своём потоке, когда процесс pid завершится.
+
+    Процесса уже нет (OpenProcess не знает такого pid) — зовёт сразу.
+    """
+    k = _kernel32()
+    handle = k.OpenProcess(SYNCHRONIZE, False, pid)
+    if not handle:
+        err = ctypes.get_last_error()
+        if err == ERROR_INVALID_PARAMETER:
+            callback()
+            return
+        raise ctypes.WinError(err)
+
+    def wait():
+        k.WaitForSingleObject(handle, INFINITE)
+        k.CloseHandle(handle)
+        callback()
+
+    threading.Thread(target=wait, daemon=True).start()
 
 
 def allow_foreground(pid=ASFW_ANY):

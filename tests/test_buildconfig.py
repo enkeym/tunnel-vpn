@@ -782,6 +782,30 @@ def test_заглушка_после_туннеля_с_dns(build, tmp_path):
     assert buildconfig.side_ids(buildconfig.read_json(out)) == ["work", "lab", "home"]
 
 
+def test_первый_conf_с_dns_в_выключенный_туннель_на_лету(build, tmp_path):
+    """15.10.2026: после старта службы t1 без .conf собран заглушкой без DNS, и
+    первый .conf с DNS = в выключенный t1 спрашивал «Переподключить?». DNS
+    выключенного попадает в основной при включении — тогда полный."""
+    off = tunnels.validate({"tunnels": [dict(THREE[0], enabled=False), *THREE[1:]]})
+    confs = {tid: _write(tmp_path, f"{tid}.conf", CONFS[tid]) for tid in ("lab", "home")}
+    out = str(tmp_path / "config.json")
+    buildconfig.build(off, confs, out, log=lambda line: None)
+    stub = buildconfig.read_json(out)
+    assert "work" not in buildconfig.tunnel_dns(stub)
+    confs["work"] = _write(tmp_path, "work.conf", CORP)
+
+    def live(data):
+        config, *_ = buildconfig.assemble(
+            data, confs, lambda line: None, buildconfig.links_of(stub),
+            tunnel._api_link(stub), resolve=False, dns=buildconfig.tunnel_dns(stub))
+        return json.loads(json.dumps(config))
+
+    assert tunnel._fixed(live(off)) == tunnel._fixed(stub)
+    on = live(tunnels.validate({"tunnels": THREE}))
+    assert tunnel._fixed(on) != tunnel._fixed(stub)
+    assert buildconfig.tunnel_dns(on)["work"] == "10.0.0.53"
+
+
 def test_выключенный_туннель_собирается_с_пустыми_rule_set(build, tmp_path):
     """Основной конфиг тот же, что у включённого: вкл/выкл меняет только
     rule-set и боковой. Процесс не запускается, пир не резолвится."""

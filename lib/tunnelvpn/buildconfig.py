@@ -1020,6 +1020,9 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
     бы основной конфиг и роняли tun со всеми туннелями (Tunnel.live_plan).
     stubs=True — заглушка и без id в links: полная сборка (build), иначе после
     перезапуска службы первый .conf такого туннеля — новый socks и полный перезапуск.
+    На лету (stubs=False) DNS выключенного, которого нет в dns, в основной не
+    кладётся: первый .conf с DNS = в выключенную заглушку — на лету, DNS
+    добавит его включение (тогда полный).
     """
     # dns прошлой сборки — под своим именем: в цикле dns — DNS текущего туннеля.
     links, level, live_dns = links or {}, data["log_level"], dns or {}
@@ -1132,6 +1135,10 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
                       "outbound": via_tag(t["id"])})
         # DNS туннеля: из [Interface] DNS его .conf, иначе не поднимаем.
         servers = conf_dns(conf)
+        if not (stubs or t["enabled"] or t["id"] in live_dns):
+            # Выключенному DNS не нужен, а новый сервер меняет основной конфиг:
+            # первый .conf в выключенный туннель ронял бы tun со всеми туннелями.
+            servers = []
         if servers:
             host = conf["peer"]["endpoint"].rpartition(":")[0]
             dns = (t["id"], servers[0], off_endpoint(domains, host))

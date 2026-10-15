@@ -14,6 +14,10 @@ paths:
   Разошлось имя — ярлык снова ставит второй значок или окно не показывается, а трей его убивает.
 - Флаги окна `--resident`, `--hidden`: собирает `lib/tunnelvpn/tray.py:_launch_window`, разбирает
   `lib/tunnelvpn/cli.py:main` → `lib/tunnelvpn/window.py:open_window`. Без `--resident` крестик закрывает процесс.
+- `--tray-pid` (`os.getpid()` трея): `lib/tunnelvpn/tray.py:_launch_window` → `lib/tunnelvpn/cli.py:main` →
+  `lib/tunnelvpn/window.py:open_window` → `lib/tunnelvpn/instance.py:on_exit` (`os._exit(0)`, когда трей
+  завершился). Не `getppid` окна: у портативной окно — дочерний бутлоадера. Потеряли флаг — окно, пережившее
+  трей, остаётся спрятанной сиротой, а следующий трей открывает второе.
 - Порт DevTools: `installer/dev/cdp-window.ps1` ставит `TUNNELVPN_DEVTOOLS_PORT` ↔
   `lib/tunnelvpn/window.py:DEVTOOLS_PORT_ENV` → `_devtools_port` → `webview.settings["REMOTE_DEBUGGING_PORT"]`
   в `open_window`; тот же порт — `--cdp-endpoint` сервера playwright-cdp (`claude mcp`, local) и `docs/dev/testing.md`. Разошлось имя

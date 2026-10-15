@@ -91,14 +91,14 @@ def test_живой_процесс_без_окна_заменяется(monkeypa
     t._window_proc = _live(terminate=lambda: terminated.append(True))
     t._open_window()
     assert terminated and len(launched) == 1
-    assert launched[0][-1] == "--resident"
+    assert launched[0][-3:] == ["--resident", "--tray-pid", str(os.getpid())]
 
 
 def test_без_окна_запускается_показываемое_окно_трея(monkeypatch):
     launched = _launches(monkeypatch)
 
     tray.Tray()._open_window()
-    assert launched[0][-2:] == ["window", "--resident"]
+    assert launched[0][-4:] == ["window", "--resident", "--tray-pid", str(os.getpid())]
 
 
 def test_прогрев_запускает_спрятанное_окно_один_раз(monkeypatch):
@@ -106,7 +106,8 @@ def test_прогрев_запускает_спрятанное_окно_оди�
 
     t = tray.Tray()
     t._warm()
-    assert launched[0][-3:] == ["window", "--resident", "--hidden"]
+    assert launched[0][-5:-2] == ["window", "--resident", "--hidden"]
+    assert launched[0][-2:] == ["--tray-pid", str(os.getpid())]
     t._window_proc = _live()
     t._warm()
     assert len(launched) == 1

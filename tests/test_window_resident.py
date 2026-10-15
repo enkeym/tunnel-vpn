@@ -413,7 +413,38 @@ def test_cli_передаёт_режимы_окна_и_трея(monkeypatch):
     from tunnelvpn import tray
     monkeypatch.setattr(tray, "run", lambda **kw: seen.setdefault("tray", kw))
 
-    cli.main(["window", "--resident", "--hidden"])
+    cli.main(["window", "--resident", "--hidden", "--tray-pid", "4321"])
     cli.main(["tray", "--background"])
-    assert seen == {"window": {"resident": True, "hidden": True},
+    assert seen == {"window": {"resident": True, "hidden": True, "tray_pid": 4321},
                     "tray": {"background": True}}
+
+
+def test_cli_без_pid_трея_окно_низа_чем_не_следит(monkeypatch):
+    seen = []
+    monkeypatch.setattr(window, "open_window", lambda **kw: seen.append(kw))
+
+    cli.main(["window"])
+    cli.main(["window", "--tray-pid"])
+    assert [kw["tray_pid"] for kw in seen] == [None, None]
+
+
+def test_окно_узнаёт_о_выходе_трея():
+    """Окно, пережившее трей, оставалось сиротой, и следующий трей открывал второе."""
+    import subprocess
+    import threading
+
+    from tunnelvpn import instance
+
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    gone = threading.Event()
+    try:
+        instance.on_exit(proc.pid, gone.set)
+        assert not gone.wait(0.3)
+    finally:
+        proc.kill()
+        proc.wait()
+    assert gone.wait(5)
+
+    after = threading.Event()
+    instance.on_exit(proc.pid, after.set)
+    assert after.wait(5)

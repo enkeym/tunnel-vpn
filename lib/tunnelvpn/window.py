@@ -1310,12 +1310,14 @@ def _show(window, api):
         api._focus()
 
 
-def open_window(resident=False, hidden=False):
+def open_window(resident=False, hidden=False, tray_pid=None):
     """Открывает окно; когда его закроют, завершает процесс — не возвращается.
 
     resident — окно трея: крестик прячет его, процесс живёт до выхода из трея,
     а показывает окно снова сигнал instance.WINDOW_SHOW. hidden — запуск
-    спрятанным, прогрев: WebView2 и страница поднимаются заранее.
+    спрятанным, прогрев: WebView2 и страница поднимаются заранее. tray_pid —
+    трей, запустивший окно: он завершился — окно уходит вместе с ним, иначе
+    спрятанное окно-сирота жило бы рядом с окном следующего трея.
     """
     import webview
 
@@ -1349,6 +1351,11 @@ def open_window(resident=False, hidden=False):
         except OSError as exc:
             # Окно всё равно нужно; не показавшееся по сигналу трей заменит.
             api._log(f"сигнал показа недоступен: {exc}")
+    if tray_pid:
+        try:
+            instance.on_exit(tray_pid, lambda: os._exit(0))
+        except OSError as exc:
+            api._log(f"не слежу за треем {tray_pid}: {exc}")
     icon = None if getattr(sys, "frozen", False) else _source_icon()
     port = _devtools_port()
     if port:
