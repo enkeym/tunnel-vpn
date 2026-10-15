@@ -44,6 +44,10 @@ paths:
   Повторный клик по открытому окну: `lib/tunnelvpn/window.py:_show` по `api.hidden`/`api.cold` только
   выводит его вперёд; флаги ставят `_hide_on_close`, `open_window`, `Api.reveal`. Сломали флаг — открытое
   окно на каждый клик перерисовывается и снова проверяет туннели.
+- Правый клик по значку: `lib/tunnelvpn/tray.py:_hook_menu` → `_popup_menu` вместо ветки `WM_RBUTTONUP` из
+  `<site-packages>/pystray/_win32.py:_on_notify` (тот же `SetForegroundWindow` + `TrackPopupMenuEx`, но меню по центру значка
+  (`TPM_CENTERALIGN`), точка прижата к `rcWork` монитора: при открытом «Пуске» нижние пункты уходили под панель задач). Поля `icon._menu_handle`,
+  `_menu_hwnd`, `_hwnd` — pystray; обновили pystray и они переименованы — меню не открывается.
 - Метка версии вёрстки: `lib/tunnelvpn/window.py:_page_url` (`?v=` — самый свежий файл `ui/`, без `ui/dev`) ↔
   загрузчик в `lib/tunnelvpn/ui/index.html`, который передаёт `location.search` в `app.css` и `js/<раздел>.js`
   (список разделов — там же, `core` первым, `main` последним). Новый файл вёрстки без загрузчика не грузится;

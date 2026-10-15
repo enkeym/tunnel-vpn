@@ -80,6 +80,8 @@ WM_CHECKED = WM_APP + 2
 # pystray не разбирает: у него только WM_LBUTTONUP и WM_RBUTTONUP. Окно
 # открывает уже первый клик (WM_LBUTTONUP), двойной его только гасим.
 WM_LBUTTONDBLCLK = 0x0203
+# Меню по центру над значком (у pystray — правым краем по курсору).
+TPM_CENTERALIGN = 0x0004
 
 
 def _icon_image(state):
@@ -490,7 +492,7 @@ class Tray:
                              daemon=True).start()
             self._menu_open = True
             try:
-                return orig(wparam, lparam)
+                return self._popup_menu() or 0
             finally:
                 self._menu_open = False
                 self._sync_menu()
@@ -498,6 +500,49 @@ class Tray:
         handlers[win32.WM_NOTIFY] = on_notify
         handlers[WM_SYNC_MENU] = self._sync_menu
         handlers[WM_CHECKED] = self._on_checked
+
+    def _popup_menu(self):
+        """Показ меню, как у pystray, но по центру значка и от края рабочей области.
+
+        Курсор лежит на значке, то есть на панели задач; меню раскрывается
+        вверх от этой точки, и пока открыто «Пуск» (панель задач тогда выше
+        меню в порядке окон), нижние пункты уходили под панель. Точку
+        прижимаем к рабочей области монитора: меню встаёт над панелью.
+        """
+        import ctypes
+        from ctypes import wintypes
+
+        from pystray._util import win32
+
+        user32 = ctypes.windll.user32
+        user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+        user32.MonitorFromPoint.restype = wintypes.HANDLE
+        user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                        ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
+        icon = self.icon
+        if not icon._menu_handle:
+            return 0
+        win32.SetForegroundWindow(icon._hwnd)
+        point = wintypes.POINT()
+        win32.GetCursorPos(ctypes.byref(point))
+        info = MONITORINFO(cbSize=ctypes.sizeof(MONITORINFO))
+        monitor = user32.MonitorFromPoint(point, 2)      # MONITOR_DEFAULTTONEAREST
+        if monitor and user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            work = info.rcWork
+            point.x = min(max(point.x, work.left), work.right)
+            point.y = min(max(point.y, work.top), work.bottom)
+        hmenu, descriptors = icon._menu_handle
+        index = win32.TrackPopupMenuEx(
+            hmenu,
+            TPM_CENTERALIGN | win32.TPM_BOTTOMALIGN | win32.TPM_RETURNCMD,
+            point.x, point.y, icon._menu_hwnd, None)
+        if index > 0:
+            descriptors[index - 1](icon)
+        return 0
 
     def _check_work(self, gen, ids):
         """Проверка при открытии меню. Кружок туннеля перекрашивается, как
