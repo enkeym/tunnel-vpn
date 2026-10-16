@@ -40,6 +40,16 @@ READY_LOST = 3
 # запускает новое — спрятанным или на виду, каким было это.
 WEBVIEW_DIED = 4
 WEBVIEW_DIED_SHOWN = 5
+# Сменился масштаб Windows: pywebview делает процесс System DPI Aware, и DPI
+# окна застывает на запуске — при новом масштабе оно рисовалось в пол-окна
+# мелким шрифтом. Per-Monitor V2 не помог: WinForms растягивает рамку, а
+# WebView2 остаётся прежнего размера. Выходим, трей запускает новое окно —
+# спрятанным или на виду, каким было это.
+DPI_CHANGED = 6
+DPI_CHANGED_SHOWN = 7
+# Сколько ждём после события смены экрана, прежде чем спросить DPI: событие
+# приходит раньше, чем Windows доделывает переключение.
+DPI_SETTLE = 1.0
 # Сбои, после которых страницы нет. Процессы GPU и утилит WebView2 поднимает
 # сам, а «не отвечает» бывает и временным.
 _FATAL_FAILURES = ("BrowserProcessExited", "RenderProcessExited")
@@ -1273,6 +1283,87 @@ def _watch_webview(window, api):
         api._log(f"не слежу за WebView2: {exc}")
 
 
+def _system_dpi():
+    """DPI процесса: застыл на запуске (SetProcessDPIAware в pywebview)."""
+    import ctypes
+    return ctypes.WinDLL("user32").GetDpiForSystem()
+
+
+def _primary_dpi():
+    """DPI основного монитора сейчас — с ним стартует новый процесс окна.
+
+    Поток на время вопроса — Per-Monitor V2: иначе Windows отвечает застывшим
+    DPI процесса. Основной монитор, а не монитор окна: на втором мониторе с
+    другим масштабом окно перезапускалось бы на каждом событии.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    user32, shcore = ctypes.WinDLL("user32"), ctypes.WinDLL("shcore")
+    user32.SetThreadDpiAwarenessContext.restype = ctypes.c_void_p
+    user32.SetThreadDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+    user32.MonitorFromPoint.restype = wintypes.HMONITOR
+    user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+    old = user32.SetThreadDpiAwarenessContext(-4)       # PER_MONITOR_AWARE_V2
+    try:
+        monitor = user32.MonitorFromPoint(wintypes.POINT(0, 0), 1)  # DEFAULTTOPRIMARY
+        x, y = wintypes.UINT(), wintypes.UINT()
+        if shcore.GetDpiForMonitor(monitor, 0, ctypes.byref(x), ctypes.byref(y)):
+            return None
+        return x.value
+    finally:
+        if old:
+            user32.SetThreadDpiAwarenessContext(old)
+
+
+def _dpi_exit(system, start, now, api):
+    """Код выхода на смену масштаба; None — окно рисуется верно.
+
+    system — застывший DPI процесса, start — DPI экрана на запуске окна, now —
+    сейчас. Расходились уже на запуске (Windows не дал новому процессу свежий
+    DPI) — тот же масштаб перезапуском не лечится и крутил бы перезапуски.
+    """
+    if now is None or now == start or now == system:
+        return None
+    return DPI_CHANGED if api.hidden else DPI_CHANGED_SHOWN
+
+
+def _watch_dpi(api):
+    """Сменился масштаб экрана — выход окна, а не картинка в пол-окна.
+
+    Смена масштаба приходит то DisplaySettingsChanged, то только
+    UserPreferenceChanged — слушаем оба. Зовётся в потоке окна (before_show):
+    SystemEvents шлёт события в поток подписки, а у него есть цикл сообщений.
+    """
+    try:
+        from Microsoft.Win32 import SystemEvents
+        system = _system_dpi()
+        start = _primary_dpi()
+    except Exception as exc:                               # noqa: BLE001
+        api._log(f"не слежу за масштабом экрана: {exc}")
+        return
+
+    def check():
+        try:
+            now = _primary_dpi()
+        except Exception as exc:                           # noqa: BLE001
+            api._log(f"DPI экрана не узнать: {exc}")
+            return
+        code = _dpi_exit(system, start, now, api)
+        if code is not None:
+            api._log(f"масштаб экрана сменился: DPI окна {system}, экрана {now} — "
+                     f"окно выходит с кодом {code}")
+            os._exit(code)
+
+    def changed(_sender, _args):
+        timer = threading.Timer(DPI_SETTLE, check)
+        timer.daemon = True
+        timer.start()
+
+    SystemEvents.DisplaySettingsChanged += changed
+    SystemEvents.UserPreferenceChanged += changed
+
+
 def _listen_drop(window, api):
     """Перетаскивание .conf на окно. Подписка — из Python: только его
     обработчик получает полный путь файла. Оверлей и dragover страница
@@ -1424,6 +1515,8 @@ def open_window(resident=False, hidden=False, tray_pid=None):
     holder["window"].events.loaded += lambda window: _listen_drop(window, api)
     if resident:
         holder["window"].events.before_show += lambda window: _hide_on_close(window, api)
+        # Только у окна трея: окно без трея на смене масштаба просто исчезло бы.
+        holder["window"].events.before_show += lambda _window: _watch_dpi(api)
         # Слушаем до webview.start: сигнал, пришедший, пока WebView2 ещё
         # стартует, дождётся окна в window.show().
         try:

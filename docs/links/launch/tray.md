@@ -28,6 +28,11 @@ paths:
   `CoreWebView2.ProcessFailed` → `_failure_exit`, виды сбоя — `_FATAL_FAILURES`, строки `ProcessFailedKind`) ↔
   `lib/tunnelvpn/tray.py:_watch_window`: трей запускает новое окно спрятанным или на виду, если умершее прожило
   `WEBVIEW_DIED_GAP`. Сбой до `ready` — тот же `READY_LOST`. Разошёлся код — окно с мёртвым WebView2 просто исчезает.
+- Коды выхода `DPI_CHANGED` / `DPI_CHANGED_SHOWN` в `lib/tunnelvpn/window.py` (`_watch_dpi` на
+  `SystemEvents.DisplaySettingsChanged` / `UserPreferenceChanged` → `_primary_dpi` против `_system_dpi` →
+  `_dpi_exit`, только у `--resident`) ↔ `lib/tunnelvpn/tray.py:_watch_window`: трей сразу запускает новое окно
+  спрятанным или на виду. Причина — `SetProcessDPIAware` в pywebview (`webview/platforms/winforms.py`): DPI окна
+  застывает на запуске. Разошёлся код — после смены масштаба окно просто исчезает.
 - Холодное окно создаётся спрятанным и показывается на `send('ready')` из `lib/tunnelvpn/ui/js/main.js` →
   `lib/tunnelvpn/window.py:_dispatch` → `Api.reveal`, запасной таймер `COLD_SHOW_WAIT` в `open_window`;
   `_show` (сигнал `WINDOW_SHOW` от `lib/tunnelvpn/tray.py:_open_window`) показывает сразу, если страница уже

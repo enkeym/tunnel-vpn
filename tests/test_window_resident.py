@@ -573,3 +573,51 @@ def test_умерший_webview2_завершает_окно_кодом_для_�
         failed(core, types.SimpleNamespace(ProcessFailedKind="GpuProcessExited"))
         failed(core, types.SimpleNamespace(ProcessFailedKind="RenderProcessExited"))
     assert exits == [window.WEBVIEW_DIED_SHOWN]
+
+
+def test_код_выхода_на_смену_масштаба_по_dpi_и_состоянию_окна():
+    api = window.Api({})
+    assert window._dpi_exit(192, 192, 96, api) == window.DPI_CHANGED_SHOWN
+    api.hidden = True
+    assert window._dpi_exit(192, 192, 96, api) == window.DPI_CHANGED
+    # Масштаб тот же или вернулся к DPI окна — рисуется верно.
+    assert window._dpi_exit(192, 192, 192, api) is None
+    assert window._dpi_exit(192, 96, 192, api) is None
+    # Новому окну Windows дал старый DPI — перезапуск не поможет и крутился бы.
+    assert window._dpi_exit(192, 96, 96, api) is None
+    assert window._dpi_exit(192, 192, None, api) is None
+
+
+class _NowTimer:
+    """Таймер, срабатывающий сразу."""
+
+    def __init__(self, _delay, fn):
+        self.fn, self.daemon = fn, False
+
+    def start(self):
+        self.fn()
+
+
+def test_смена_масштаба_экрана_завершает_окно_кодом_для_трея(monkeypatch):
+    """Без выхода окно рисовалось бы в пол-окна мелким шрифтом."""
+    exits = []
+    monkeypatch.setattr(window.os, "_exit", exits.append)
+    monkeypatch.setattr(window.threading, "Timer", _NowTimer)
+    events = types.SimpleNamespace(DisplaySettingsChanged=_NetEvent(),
+                                   UserPreferenceChanged=_NetEvent())
+    monkeypatch.setitem(sys.modules, "Microsoft.Win32",
+                        types.SimpleNamespace(SystemEvents=events))
+    monkeypatch.setattr(window, "_system_dpi", lambda: 192)
+    dpi = [192]
+    monkeypatch.setattr(window, "_primary_dpi", lambda: dpi[0])
+    api = window.Api({})
+    monkeypatch.setattr(api, "_log", lambda _msg: None)
+    window._watch_dpi(api)
+
+    for changed in events.UserPreferenceChanged.handlers:
+        changed(None, None)
+    assert exits == []
+    dpi[0] = 96
+    for changed in events.DisplaySettingsChanged.handlers:
+        changed(None, None)
+    assert exits == [window.DPI_CHANGED_SHOWN]

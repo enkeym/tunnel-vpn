@@ -749,6 +749,9 @@ class Tray:
         Окно, чей WebView2 умер после готовности страницы (window.WEBVIEW_DIED*),
         заменяем таким же: спрятанное — новым прогревом, иначе первый показ
         снова был бы холодным. Не чаще WEBVIEW_DIED_GAP.
+
+        Окно, вышедшее на смене масштаба (window.DPI_CHANGED*), заменяем так же, но
+        без паузы: выходит оно только на событие смены экрана, само не крутится.
         """
         started = time.monotonic()
         code = proc.wait()
@@ -757,6 +760,8 @@ class Tray:
         elif (code in (window.WEBVIEW_DIED, window.WEBVIEW_DIED_SHOWN)
               and time.monotonic() - started >= WEBVIEW_DIED_GAP):
             hidden, retry = code == window.WEBVIEW_DIED, True
+        elif code in (window.DPI_CHANGED, window.DPI_CHANGED_SHOWN):
+            hidden, retry = code == window.DPI_CHANGED, True
         else:
             return
         with self._window_lock:

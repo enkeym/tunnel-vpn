@@ -168,6 +168,23 @@ def test_показанное_окно_с_умершим_webview2_открыва
     assert not any("--hidden" in cmd for cmd in launched)
 
 
+def test_окно_после_смены_масштаба_пересоздаётся_каким_было(monkeypatch):
+    """Без паузы WEBVIEW_DIED_GAP: окно выходит только на смену экрана."""
+    launched = _launches(monkeypatch, code=tray.window.DPI_CHANGED_SHOWN, once=True)
+
+    tray.Tray()._open_window()
+    assert _settle(launched, 2) == 2
+    assert not any("--hidden" in cmd for cmd in launched)
+
+
+def test_прогретое_окно_после_смены_масштаба_прогревается_снова(monkeypatch):
+    launched = _launches(monkeypatch, code=tray.window.DPI_CHANGED, once=True)
+
+    tray.Tray()._warm()
+    assert _settle(launched, 2) == 2
+    assert all("--hidden" in cmd for cmd in launched)
+
+
 def test_окно_умершее_сразу_после_старта_не_перезапускается(monkeypatch):
     """WebView2, падающий на каждом старте, не крутит перезапуски."""
     launched = _launches(monkeypatch, code=tray.window.WEBVIEW_DIED)
