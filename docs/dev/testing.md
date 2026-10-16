@@ -10,9 +10,13 @@ say so in one line and ask, do not build an environment. Running commands from W
 traffic goes through `amnezia`, not TunnelVPN.
 
 - `127.0.0.1` there is the namespace's own: Windows ports (CDP `9222`, windows-mcp `8790`) answer ECONNREFUSED to
-  `curl`, `playwright-cdp` and `windows-mcp` while they listen on Windows. Check a Windows port from Windows:
+  `curl` from the shell. Check a Windows port from Windows:
   `powershell.exe -NoProfile -Command 'Get-NetTCPConnection -State Listen -LocalPort 9222'`.
-- `powershell.exe`, `python.exe` and `wsl.exe` run outside it and reach Windows loopback.
+- `powershell.exe`, `python.exe` and `wsl.exe` run outside it and reach Windows loopback. So both MCP servers run on
+  Windows through `powershell.exe` (stdio crosses interop): `playwright-cdp` is Windows `npx @playwright/mcp`,
+  `windows-mcp` is the `mcp-remote` bridge to `127.0.0.1:8790`. Registration — in their sections below. `.wslconfig`
+  does not help: `mirrored` shares loopback with the root namespace only.
+- `Set-Location $env:TEMP` before `npx.cmd`: started from the UNC project folder, cmd prints its UNC warning.
 - The agent's link does not ride the tunnel: ⏻ of the main tunnel and «Выключить» keep it.
 - The mock page (`http.server` + `playwright`) lives inside the namespace and works as is.
 - Empty `ip netns identify` → the old setup: WSL loopback is Windows loopback (`networkingMode=mirrored`), the MCP
@@ -56,7 +60,7 @@ change the fixture in the same commit. A changed user-facing string → `grep -r
      JS with quotes goes in a file (`-EvalFile`, written with `Write`), an async IIFE returning what to check;
      click by selector (`button.power[aria-label*="…"]`, `[data-tab="log"]`), read the PNG with `Read`. Hidden rows
      keep their `textContent`: filter on `hidden` and `.closest('[hidden]')`, not on `innerText`.
-   - Outside it — the `playwright-cdp` MCP server tools: it attaches on the first call, so window first.
+   - Or the `playwright-cdp` MCP server tools: it attaches on the first call, so window first.
    Screenshots and console — as in the mock page.
 4. Done → close the window: `cdp.ps1 -Close` (asks UAC); by hand the cross ends the process (no `--resident`).
    Do not leave it open: its WebView2 dies later and shows as a black frame.
@@ -66,27 +70,22 @@ The port comes from `TUNNELVPN_DEVTOOLS_PORT`, read only when running from sourc
 A build never opens the port: anyone local could drive the window. The script also gives the window its own
 `LOCALAPPDATA`, so WebView2 gets a separate data folder.
 
-No `playwright-cdp` in `claude mcp list` (new machine):
-`claude mcp add -s local playwright-cdp -- playwright-mcp --cdp-endpoint http://127.0.0.1:9222 --timeout-settle 200`.
+No `playwright-cdp` in `claude mcp list` (new machine; Node on Windows):
+`claude mcp add -s local playwright-cdp -- powershell.exe -NoProfile -Command 'Set-Location $env:TEMP; npx.cmd -y @playwright/mcp@0.0.81 --cdp-endpoint http://127.0.0.1:9222 --timeout-settle 200'`.
 
 ## Windows-MCP: wizard and tray
 
-**Start the server first, then use the tools.** `windows-mcp` is not started by Claude Code: with no server on
-`127.0.0.1:8790` the session reports `CONNECT_TIMEOUT` and no `windows-mcp` tools exist. Run step 1 below, check
-the `401`, then `/mcp` → reconnect `windows-mcp` (step 2).
-
-In `awg-term` (Agent network) the server is unreachable even when it runs: the `401` check gives `000`, reconnect
-gives ECONNREFUSED. Do not start it there. Window states go through `cdp.ps1`; for the wizard, the tray menu and
-toasts, say in one line that windows-mcp is out of reach and ask.
+Claude Code starts `installer/dev/windows-mcp-bridge.ps1` once, at session start: nothing on `127.0.0.1:8790` → it
+starts the server elevated, waits for the port (~16 s cold), then runs the `mcp-remote` bridge. No `/mcp` reconnect.
 
 UI Automation over real windows: Inno wizard, uninstaller, tray menu, toasts. The wizard, the tray and the
 window run elevated, and UIPI keeps an unelevated process from driving them, so the server runs elevated over
 HTTP on `127.0.0.1:8790` rather than over stdio.
 
-1. Each session:
-   `powershell.exe -NoProfile -Command 'Start-Process (Get-Command uvx).Source -ArgumentList "windows-mcp","serve","--tools","App,Click,Move,Scroll,Shortcut,Snapshot,Screenshot,Type,Wait,WaitFor" -Verb RunAs -WindowStyle Hidden'`.
-   `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8790/mcp` → `401` (up, key required).
-2. Server started after the Claude session → `/mcp` → reconnect `windows-mcp`, then its tools appear.
+1. The server lives until step 4 or a reboot. Stopped mid-session → `/mcp` → reconnect `windows-mcp`: the bridge
+   starts it again.
+2. No `windows-mcp` tools → `claude mcp list` (`✔ Connected` or the error) and
+   `Get-NetTCPConnection -State Listen -LocalPort 8790` from `powershell.exe`.
 3. Only the UI tools: an elevated server with `PowerShell`, `Registry` or `FileSystem` on a local port is
    administrator rights for whoever holds the key. Commands still go through Bash.
 4. Done → stop it, elevated: the owner of port 8790 and its `uvx.exe` parent —
@@ -94,8 +93,8 @@ HTTP on `127.0.0.1:8790` rather than over stdio.
 
 Once per machine: `uvx windows-mcp auth --transport streamable-http --host 127.0.0.1 --port 8790` writes the key
 into `%USERPROFILE%\.windows-mcp\config.toml`; then
-`claude mcp add -s local --transport http windows-mcp http://127.0.0.1:8790/mcp --header "Authorization: Bearer <key>"`
-— `/mcp` without the slash, `/mcp/` answers 307.
+`claude mcp add -s local windows-mcp -- powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(wslpath -w installer/dev/windows-mcp-bridge.ps1)" -Key <key>`
+— the key stays in the local Claude config, never in the repository.
 
 ## Scenarios that drop the tunnel
 
