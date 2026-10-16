@@ -727,8 +727,8 @@ Windows SDK. Подписываются оба exe, портативная ве�
 ## Тесты
 
 ```bash
-pip install -r requirements.txt pytest
-python -m pytest tests -q
+pip install -r requirements.txt pytest pytest-xdist
+python -m pytest tests -q -n auto
 ```
 
 Гоняются в CI на Windows на каждый push. Покрывают чистую логику: разбор `.conf`, сборку

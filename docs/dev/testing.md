@@ -26,7 +26,7 @@ traffic goes through `amnezia`, not TunnelVPN.
 
 | What changed | How to check |
 | --- | --- |
-| Python logic: service, tunnels, update, settings, tray menu | `python.exe -m pytest tests -q`; one test: `python.exe -m pytest tests/<file>.py -q -k <name>` |
+| Python logic: service, tunnels, update, settings, tray menu | `python.exe -m pytest tests -q -n auto` (~20 s; `-n` needs `pip install pytest-xdist`, without it ~50 s); one test: `python.exe -m pytest tests/<file>.py -q -k <name>` |
 | Window: layout, texts, states, bridge calls | mock page in Playwright (below) |
 | Window against the live service | the app window over CDP (below) |
 | Real wizard, uninstaller, tray menu, toasts: clicks, texts, states | Windows-MCP (below) |
