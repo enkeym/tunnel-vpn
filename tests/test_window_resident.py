@@ -621,3 +621,45 @@ def test_смена_масштаба_экрана_завершает_окно_к
     for changed in events.DisplaySettingsChanged.handlers:
         changed(None, None)
     assert exits == [window.DPI_CHANGED_SHOWN]
+
+
+class _NoThread:
+    """Опрос страницы не нужен: тест проверяет подписки, а не готовность."""
+
+    def __init__(self, target, daemon=None):
+        pass
+
+    def start(self):
+        pass
+
+
+def test_окно_трея_зовёт_каждый_обработчик_before_show(monkeypatch):
+    """Настоящий Event pywebview отдаёт окно только параметру window:
+    обработчик `lambda _window:` падал TypeError, и за масштабом 1.0.13 не следил."""
+    from webview.event import Event
+
+    called = []
+    for name in ("_park", "_watch_webview", "_hide_on_close"):
+        monkeypatch.setattr(window, name, lambda _w, _api, name=name: called.append(name))
+    monkeypatch.setattr(window, "_watch_dpi", lambda _api: called.append("_watch_dpi"))
+    monkeypatch.setattr(window.instance, "listen", lambda _name, _fn: None)
+    monkeypatch.setattr(window.threading, "Thread", _NoThread)
+    monkeypatch.setattr(window.os, "_exit", lambda _code: None)
+    monkeypatch.setattr(window, "_devtools_port", lambda: None)
+    monkeypatch.setattr(window, "_storage_path", lambda: None)
+
+    created = []
+
+    def create_window(*_args, **_kw):
+        win = types.SimpleNamespace()
+        win.events = types.SimpleNamespace(shown=Event(win), before_show=Event(win, True),
+                                           loaded=Event(win))
+        created.append(win)
+        return win
+
+    fake = types.SimpleNamespace(create_window=create_window, settings={},
+                                 start=lambda **_kw: created[0].events.before_show.set())
+    monkeypatch.setitem(sys.modules, "webview", fake)
+    window.open_window(resident=True, hidden=True)
+
+    assert called == ["_park", "_watch_webview", "_hide_on_close", "_watch_dpi"]

@@ -33,6 +33,9 @@ paths:
   `_dpi_exit`, только у `--resident`) ↔ `lib/tunnelvpn/tray.py:_watch_window`: трей сразу запускает новое окно
   спрятанным или на виду. Причина — `SetProcessDPIAware` в pywebview (`webview/platforms/winforms.py`): DPI окна
   застывает на запуске. Разошёлся код — после смены масштаба окно просто исчезает.
+- Обработчики `events.*` в `lib/tunnelvpn/window.py:open_window` ↔ `webview/event.py:Event.set`: окно приходит
+  только параметру с именем `window`, иначе — без аргументов. `lambda _window:` падает `TypeError` в логгер
+  pywebview, не в window.log: так в 1.0.13 `_watch_dpi` не вызывался. Тест — `test_окно_трея_зовёт_каждый_обработчик_before_show`.
 - Холодное окно создаётся спрятанным и показывается на `send('ready')` из `lib/tunnelvpn/ui/js/main.js` →
   `lib/tunnelvpn/window.py:_dispatch` → `Api.reveal`, запасной таймер `COLD_SHOW_WAIT` в `open_window`;
   `_show` (сигнал `WINDOW_SHOW` от `lib/tunnelvpn/tray.py:_open_window`) показывает сразу, если страница уже

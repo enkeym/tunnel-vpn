@@ -1516,7 +1516,9 @@ def open_window(resident=False, hidden=False, tray_pid=None):
     if resident:
         holder["window"].events.before_show += lambda window: _hide_on_close(window, api)
         # Только у окна трея: окно без трея на смене масштаба просто исчезло бы.
-        holder["window"].events.before_show += lambda _window: _watch_dpi(api)
+        # Без параметров: pywebview отдаёт окно только параметру с именем
+        # window, обработчик с другим именем падал TypeError в его логгер.
+        holder["window"].events.before_show += lambda: _watch_dpi(api)
         # Слушаем до webview.start: сигнал, пришедший, пока WebView2 ещё
         # стартует, дождётся окна в window.show().
         try:
