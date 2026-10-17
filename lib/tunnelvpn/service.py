@@ -515,6 +515,10 @@ class Core:
         st["checking"] = self.prober.slow_busy.is_set()
         checks = st.pop("checks", None) or {}
         st["last_error"] = self.last_error
+        # Подъём не вышел, а сторож ещё повторит (_watch_once): при загрузке ПК
+        # сеть встаёт позже службы. Не busy — тот запер бы сторож и кнопки, а
+        # «Выключить» в это время обязано работать.
+        st["retrying"] = bool(self._retry_left) and not st["up"]
         st["pending_apply"] = self.pending_apply
         st["autostart"] = self.autostart_enabled()
         data = self._tunnels()

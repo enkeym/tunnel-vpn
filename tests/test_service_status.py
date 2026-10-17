@@ -88,6 +88,34 @@ def test_номер_статуса_растёт_и_после_перезапус
     assert restarted._status()["rev"] > second
 
 
+def test_повтор_подъёма_в_статусе_пока_туннель_не_поднят(monkeypatch):
+    """17.10 при загрузке ПК первый подъём упал без маршрута по умолчанию, а
+    14 с до повтора окно и трей кричали «Не запускается»."""
+    core = _core(monkeypatch, up=False)
+    _quiet(monkeypatch, core)
+    _with_tunnels(monkeypatch, {"id": "home", "name": "Личный", "mode": "all"})
+    core.last_error = "нет маршрута по умолчанию — сеть не поднята?"
+    core._retry_left = 2
+
+    assert core._status()["retrying"] is True
+
+    core.tunnel.start(None)
+    core.prober.probe_fast()
+    assert core._status()["retrying"] is False
+
+
+def test_выключение_во_время_повтора_снимает_ожидание(monkeypatch):
+    core = _core(monkeypatch, up=False)
+    _quiet(monkeypatch, core)
+    _with_tunnels(monkeypatch, {"id": "home", "name": "Личный", "mode": "all"})
+    core.last_error = "нет маршрута по умолчанию — сеть не поднята?"
+    core._retry_left = 2
+
+    assert core._do_stop() == {"ok": True}
+
+    assert core._status()["retrying"] is False
+
+
 def test_ipv6_через_туннель_по_конфигу_работающего_основного(monkeypatch):
     """main_v6 — v6-адрес в активном конфиге включённого основного, а не
     правило брандмауэра: оно на физическом адаптере стоит всегда."""

@@ -21,7 +21,8 @@ paths:
   `lib/tunnelvpn/ui/dev/mock-api.js` (`&revive=error`). Без ветки в `_dispatch` кнопка отвечает тостом «нет ответа».
 - Заголовок и проблемы: `lib/tunnelvpn/ui/js/model.js:headOf` — порядок веток как у
   `lib/tunnelvpn/tray.py:_tray_state`; `problemsOf` → пилюля и панель в `lib/tunnelvpn/ui/js/topbar.js`
-  (`ACTS`: `tunnel_rules`, `add_config {tunnel}`, `showTab('log')`, `focusCard(id)` — из шага карточек).
+  (`ACTS`: `tunnel_rules`, `showTab('log')`, `focusCard(id)` — из шага карточек). Туннель без конфига
+  проблемы не даёт: карточка пишет «Нет конфига», без всех — `missing` в `headOf`.
   Кнопки: `start`/`stop`/`restart` + `PENDING` (`pend`, сброс — обработчик в `ON_FAILED` из `failed` в
   `core.js`; там же сброс `WANT` карточек); `askFull` зовёт `pend('restart')`. Кнопка VPN `#btn-toggle` — с подписью
   «Включить / Выключить»; её ореол и его дыхание в `app.css` общие с `.power` карточки (ровный — `::after`,
@@ -38,7 +39,7 @@ paths:
   `busy` («проверяю…»). `checkStart/checkSides/checkDone` —
   в `model.js`. Вид карточки (`cardState`) и проблема того же туннеля (`problemsOf`) обязаны совпадать по виду:
   молчащий «по списку» — warn и там, и там.
-- Ошибка запуска: `last_error` из `lib/tunnelvpn/service.py:_status` → `headOf` в
+- Ошибка запуска: `last_error` из `lib/tunnelvpn/service.py:_status` (при `retrying` — «Жду сеть…») → `headOf` в
   `lib/tunnelvpn/ui/js/model.js`, заголовок «Не запускается».
 - Карточки: `paintCards`/`paintCard` в `lib/tunnelvpn/ui/js/cards.js` по `st["tunnels"]` (`id`, `name`, `mode`,
   `active`, `confs`, `rules`, `full`, `awg`, `check`, `answer`, `checking`, `last`, `seq`, `tests`, `enabled`) и

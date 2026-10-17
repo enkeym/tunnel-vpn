@@ -85,7 +85,9 @@ paths:
   ico без 20 точек и `LR_DEFAULTSIZE`, мыло. Состояние — `_tray_state` по `busy`, `up`, `v6_leak`, `out`,
   `exit_state` и работающему основному (`_main_on`: `mode all`, `enabled`) статуса службы (порядок — как у
   заголовка окна). `out`/`exit_state` мимо основного разбирает `_away` (`block` → `blocked`, `icon.TRAY["blocked"]`;
-  `direct` → `fallback`); новое состояние — ключ в `icon.TRAY`, его различимость без цвета проверяет `tests/test_icon.py`.
+  `direct` → `fallback`); `retrying` без `up` → `busy`; молчащий «по списку» — `_silent` (то же правило, что `silent` в
+  `lib/tunnelvpn/ui/js/model.js:model`) → `side` после запасного и утечки, разовое уведомление — `_note_silent`
+  (`_told_silent`: снова только после ответа); новое состояние — ключ в `icon.TRAY`, его различимость без цвета проверяет `tests/test_icon.py`.
 - Самолечение службы: `lib/tunnelvpn/tray.py:_poll_locked` → `_maybe_heal` (канал молчит `HEAL_AFTER`, не чаще
   `HEAL_EVERY`; мимо — `update.pending`, `portable.is_portable`, `settings.service_state` с `start: disabled`) →
   `_heal` → `lib/tunnelvpn/settings.py:restart_service`, итог — в `LOGS\tray.log`. Установщик и деинсталлятор

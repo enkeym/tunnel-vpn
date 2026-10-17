@@ -116,13 +116,34 @@ def _away(st):
     return {"blocked": "block", "direct": "direct"}.get(st.get("exit_state"), "")
 
 
+def _silent(st):
+    """Туннели «по списку», что не ответили на проверку, — как silent в
+    ui/js/model.js:model. Идущая проверка делает прошлый ответ устаревшим."""
+    if not st.get("up"):
+        return []
+    return [t for t in st.get("tunnels") or []
+            if t.get("mode") == "list" and t.get("enabled") is not False
+            and t.get("check") == "error" and not t.get("checking")]
+
+
+def _silent_text(silent):
+    """Что сказать о молчащих «по списку»: подпись и уведомление. Имя — как
+    tname в окне: выбранный конфиг, без него — туннель."""
+    names = ", ".join(f"«{_conf_name(t) or t['name']}»" for t in silent)
+    verb = "не отвечает" if len(silent) == 1 else "не отвечают"
+    return f"{names} {verb} · остальное работает"
+
+
 def _tray_state(st):
     """Состояние значка (ключ icon.TRAY) по статусу службы. Порядок — как
     у заголовка окна: утечка IPv6 раньше запасного выхода, а на запасном
-    выходе адрес провайдера ожидаем, это не утечка."""
+    выходе адрес провайдера ожидаем, это не утечка. Повтор подъёма (retrying)
+    — ожидание, не ошибка; молчащий «по списку» — после запасного и утечки."""
     if st.get("busy"):
         return "busy"
     if not st.get("up"):
+        if st.get("retrying"):
+            return "busy"
         return "error" if st.get("last_error") else "off"
     if st.get("v6_leak"):
         return "leak"
@@ -133,6 +154,8 @@ def _tray_state(st):
         return "fallback"
     if st.get("exit_state") == "leak":
         return "leak"
+    if _silent(st):
+        return "side"
     return "up"
 
 
@@ -177,6 +200,9 @@ class Tray:
         self._silent_since = None
         self._healed_at = None
         self._healing = False
+        # id «по списку», о чьём молчании уже сказали (_note_silent): уведомление
+        # — одно на переход в «не отвечает», а не на каждый опрос.
+        self._told_silent = frozenset()
 
     # ------------------------------------------------------------- статус
 
@@ -207,6 +233,7 @@ class Tray:
             self._maybe_heal(exc)
             # Установщик остановил службу — это ход обновления, не сбой.
             new = "busy" if self.installing or self._healing else "error"
+        self._note_silent()
         if new != self.state:
             self.state = new
             self._refresh_icon()
@@ -219,6 +246,21 @@ class Tray:
         # «выключен», и пункты, зависящие от статуса, так и оставались серыми.
         if self._menu_sig() != self._last_menu_sig:
             self._post(WM_SYNC_MENU)
+
+    def _note_silent(self):
+        """Разовое уведомление при переходе «по списку» в «не отвечает». Значок
+        жёлтый, пока туннель молчит (_tray_state), а всплывающее сообщение —
+        снова только после ответа. На время проверки прошлый итог держится:
+        перепроверка с тем же отказом — не новый переход."""
+        st = self.status
+        silent = _silent(st)
+        checking = {t["id"] for t in st.get("tunnels") or []
+                    if st.get("up") and t.get("checking")}
+        fresh = [t for t in silent if t["id"] not in self._told_silent]
+        self._told_silent = (frozenset(t["id"] for t in silent)
+                             | (self._told_silent & checking))
+        if fresh:
+            self._notify(_silent_text(fresh))
 
     def _maybe_heal(self, exc):
         """Служба молчит HEAL_AFTER подряд — перезапуск в своём потоке.
@@ -344,6 +386,8 @@ class Tray:
             return f"TunnelVPN — {st['busy']}…"
         if not st.get("up"):
             err = st.get("last_error")
+            if st.get("retrying"):
+                return "TunnelVPN — жду сеть, повторю сам" + (f" ({err})" if err else "")
             return "TunnelVPN — выключен" + (f" ({err})" if err else "")
         main = _main_on(st)
         name = main["name"] if main else "основной"
@@ -358,6 +402,8 @@ class Tray:
             return f"TunnelVPN — запасной выход напрямую: «{name}» не работает"
         if st.get("exit_state") == "leak":
             return f"TunnelVPN — УТЕЧКА, виден адрес провайдера ({exit_ip})"
+        if state == "side":
+            return "TunnelVPN — " + _silent_text(_silent(st))
         if not main:
             return "TunnelVPN — работает · всё остальное напрямую"
         return f"TunnelVPN — работает · {who} · выход {exit_ip}"

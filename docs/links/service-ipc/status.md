@@ -11,6 +11,11 @@ paths:
   `lib/tunnelvpn/tray.py:_state_word`, `lib/tunnelvpn/tray.py:_conf_colors`
   и `lib/tunnelvpn/ui/js/core.js:render` (вид — `model.js:model`, `cards.js`, `topbar.js`, `settings.js`). Переименовал ключ (`up`, `busy`, `last_error`, `exit_state`,
   `corp_ip`, `v6_leak`, `log_level`) — читатель молча видит пустое значение.
+- `retrying` — `lib/tunnelvpn/service.py:_status` (`_retry_left` и не `up`: подъём упал, сторож `_watch_once`
+  ещё повторит) → `lib/tunnelvpn/tray.py:_tray_state` (`busy`), `lib/tunnelvpn/tray.py:_title`,
+  `lib/tunnelvpn/ui/js/model.js:headOf` («Жду сеть…») и `problemsOf` (без «Не запускается»). Не `busy`: тот запирает
+  сторож и кнопки, а «Выключить» во время ожидания обнуляет `_retry_left`. Потеряли ключ — при загрузке ПК
+  снова красное «Не запускается» на время повтора.
 - `main_v6` — `lib/tunnelvpn/service.py:_status` (`_conf_facts(...)["v6"]` активного конфига `tunnels.main_on`,
   та же `buildconfig.has_v6`, что `v6` в `assemble`) → строка IPv6 в `lib/tunnelvpn/ui/js/settings.js` и
   `lib/tunnelvpn/cli.py:_print_status`. `v6_off` (правило брандмауэра) при включённом VPN истинно всегда —

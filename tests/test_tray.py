@@ -503,6 +503,8 @@ def test_кружки_без_vpn_и_без_итога_серые():
 
 _MAIN = {"id": "home", "mode": "all"}
 _SIDE = {"id": "work", "mode": "list"}
+_DEAD = {"id": "korolev", "name": "Работа", "mode": "list", "check": "error",
+         "confs": ["wg0-korolev"], "active": "wg0-korolev"}
 
 
 @pytest.mark.parametrize("st, state", [
@@ -524,6 +526,15 @@ _SIDE = {"id": "work", "mode": "list"}
     # Выключенный основной — то же: он основной, но не везёт ничего.
     ({"up": True, "tunnels": [{**_MAIN, "enabled": False}, _SIDE], "out": "direct",
       "exit_state": "direct"}, "up"),
+    # Первый подъём упал, служба повторит сама — ожидание, не красный крест.
+    ({"last_error": "нет маршрута", "retrying": True}, "busy"),
+    # Молчащий «по списку» при работающем основном.
+    ({"up": True, "tunnels": [_MAIN, _DEAD]}, "side"),
+    ({"up": True, "tunnels": [_MAIN, {**_DEAD, "checking": True}]}, "up"),
+    ({"up": True, "tunnels": [_MAIN, {**_DEAD, "enabled": False}]}, "up"),
+    ({"up": True, "tunnels": [_MAIN, {**_DEAD, "check": "ok"}]}, "up"),
+    # Запасной выход — про весь интернет и важнее молчащего «по списку».
+    ({"up": True, "tunnels": [_MAIN, _DEAD], "out": "direct"}, "fallback"),
 ])
 def test_состояние_значка_по_статусу(st, state):
     assert tray._tray_state(st) == state
@@ -534,6 +545,44 @@ def test_без_основного_прямой_выход_не_запасной
     t.status = {"up": True, "tunnels": [_SIDE], "out": "direct", "exit_ip": "1.2.3.4"}
 
     assert t._title() == "TunnelVPN — работает · всё остальное напрямую"
+
+
+def test_подпись_молчащего_по_списку_и_ожидания_повтора():
+    t = tray.Tray()
+    t.status = {"up": True, "tunnels": [{**_MAIN, "name": "Личный"}, _DEAD]}
+    assert t._title() == "TunnelVPN — «wg0-korolev» не отвечает · остальное работает"
+
+    t.status = {"last_error": "нет маршрута", "retrying": True}
+    assert t._title() == "TunnelVPN — жду сеть, повторю сам (нет маршрута)"
+
+
+def _told(monkeypatch, *statuses):
+    """Опросы трея по очереди со статусами statuses; возвращает уведомления."""
+    queue = list(statuses)
+    monkeypatch.setattr(ipc, "call", lambda op, **_kw: {"status": queue.pop(0)})
+    t = tray.Tray()
+    said = []
+    monkeypatch.setattr(t, "_notify", said.append)
+    for _ in statuses:
+        t._poll_once()
+    return said
+
+
+_OK = {"up": True, "tunnels": [_MAIN, {**_DEAD, "check": "ok"}]}
+_SILENT = {"up": True, "tunnels": [_MAIN, _DEAD]}
+_RECHECK = {"up": True, "tunnels": [_MAIN, {**_DEAD, "checking": True}]}
+
+
+def test_молчание_по_списку_уведомляет_один_раз_на_переход(monkeypatch):
+    said = _told(monkeypatch, _OK, _SILENT, _SILENT, _RECHECK, _SILENT)
+
+    assert said == ["«wg0-korolev» не отвечает · остальное работает"]
+
+
+def test_молчание_после_ответа_уведомляет_снова(monkeypatch):
+    said = _told(monkeypatch, _SILENT, _OK, _SILENT)
+
+    assert len(said) == 2
 
 
 def test_запасной_выход_меняет_значок_при_опросе(monkeypatch):
