@@ -100,9 +100,9 @@ into `%USERPROFILE%\.windows-mcp\config.toml`; then
 — the key stays in the local Claude config, never in the repository.
 
 Tray and toasts:
-- The icon sits in the overflow: `Snapshot` lists «Показать скрытые значки» on the taskbar; a click opens the
-  overflow, a second click closes it. The icon's tooltip is the name of its button in the `Snapshot` tree, its
-  colour — on a `Screenshot`.
+- The icon sits on the taskbar or in the overflow: not among the taskbar buttons in `Snapshot` → click «Показать
+  скрытые значки» to open the overflow, a second click closes it. The icon's tooltip is the name of its button in
+  the `Snapshot` tree, its colour — on a `Screenshot`.
 - The tray balloon only shows when Windows notifications are on (Settings → System → Notifications;
   `ToastEnabled` in `HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications`). Writing the registry
   value alone does not take effect — flip the switch in Settings, and put it back after the check.

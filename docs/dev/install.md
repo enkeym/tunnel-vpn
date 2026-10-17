@@ -4,6 +4,11 @@ The setup stops the service and drops the tunnel, so the user's connection (and 
 goes down. Update only silently, then put everything back in the same command. Elevation and paths:
 [run.md](run.md). Exit codes and test hooks: README, «Установка».
 
+Steps 1–5 in one command — `installer/dev/install.ps1` via Bash `run_in_background`; it copies itself and the setup
+to `%TEMP%\tvpn-install`, asks UAC, prints its log and exits with the setup's code:
+`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(wslpath -w installer/dev/install.ps1)" -Setup '<setup.exe>'`.
+The service-missing path of step 3 and the DualVPN checks of step 5 stay manual.
+
 1. Note `& "C:\Program Files\TunnelVPN\tunnelvpn.exe" status` first: was the tunnel `работает`? The first upgrade
    from DualVPN still has the old build: `& "C:\Program Files\DualVPN\dualvpn.exe" status`.
 2. `$p = Start-Process '<setup.exe>' -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Verb RunAs -PassThru; $p.WaitForExit()`,
@@ -33,3 +38,7 @@ A `v*` tag makes CI publish the release, and every installed copy offers it as a
 4. All good → commit `VERSION` as «Релиз X.Y.Z: …» (the body is what «Что нового» shows), tag `vX.Y.Z` on it,
    `git push origin main vX.Y.Z`.
 5. CI green → install the release build from GitHub the same way.
+
+Tag pushed before the live check → `gh release edit vX.Y.Z --repo enkeym/tunnel-vpn --draft=true` at once (a draft is
+invisible to the update check), install its setup (`gh release download`, SHA256 against `SHA256SUMS.txt`), check,
+then `--draft=false --latest`. Something wrong → fix and ask: new number or the tag moved.
