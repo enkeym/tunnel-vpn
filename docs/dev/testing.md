@@ -82,19 +82,32 @@ UI Automation over real windows: Inno wizard, uninstaller, tray menu, toasts. Th
 window run elevated, and UIPI keeps an unelevated process from driving them, so the server runs elevated over
 HTTP on `127.0.0.1:8790` rather than over stdio.
 
-1. The server lives until step 4 or a reboot. Stopped mid-session → `/mcp` → reconnect `windows-mcp`: the bridge
+The agent uses it on its own, without asking: the tray icon, its tooltip and menu, toasts, the window, Windows
+Settings — whatever a check needs on the real desktop. The user confirms only UAC prompts.
+
+1. The server lives until a reboot (or step 4). Stopped mid-session → `/mcp` → reconnect `windows-mcp`: the bridge
    starts it again.
 2. No `windows-mcp` tools → `claude mcp list` (`✔ Connected` or the error) and
    `Get-NetTCPConnection -State Listen -LocalPort 8790` from `powershell.exe`.
 3. Only the UI tools: an elevated server with `PowerShell`, `Registry` or `FileSystem` on a local port is
    administrator rights for whoever holds the key. Commands still go through Bash.
-4. Done → stop it, elevated: the owner of port 8790 and its `uvx.exe` parent —
+4. Left running between sessions. To stop it on request, elevated: the owner of port 8790 and its `uvx.exe` parent —
    `powershell.exe -NoProfile -Command '$o = (Get-NetTCPConnection -State Listen -LocalPort 8790).OwningProcess | Select-Object -Unique; $p = (Get-CimInstance Win32_Process -Filter "ProcessId=$o").ParentProcessId; Start-Process powershell.exe -ArgumentList "-NoProfile","-Command","Stop-Process -Id $o,$p -Force" -Verb RunAs -WindowStyle Hidden -Wait'`.
 
 Once per machine: `uvx windows-mcp auth --transport streamable-http --host 127.0.0.1 --port 8790` writes the key
 into `%USERPROFILE%\.windows-mcp\config.toml`; then
 `claude mcp add -s local windows-mcp -- powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(wslpath -w installer/dev/windows-mcp-bridge.ps1)" -Key <key>`
 — the key stays in the local Claude config, never in the repository.
+
+Tray and toasts:
+- The icon sits in the overflow: `Snapshot` lists «Показать скрытые значки» on the taskbar; a click opens the
+  overflow, a second click closes it. The icon's tooltip is the name of its button in the `Snapshot` tree, its
+  colour — on a `Screenshot`.
+- The tray balloon only shows when Windows notifications are on (Settings → System → Notifications;
+  `ToastEnabled` in `HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications`). Writing the registry
+  value alone does not take effect — flip the switch in Settings, and put it back after the check.
+- A balloon leaves the notification centre soon after it shows: catch it with a `Screenshot` right after the
+  trigger; an empty centre later proves nothing. «No second toast» — a `Screenshot` right after the same trigger.
 
 ## Scenarios that drop the tunnel
 
