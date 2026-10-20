@@ -12,6 +12,7 @@ from tunnelvpn import buildconfig, paths, probe, service, tunnels
 
 class _Tunnel:
     log_start = None
+    main_id = None
 
     def __init__(self, net):
         self.net = net
@@ -158,6 +159,30 @@ def test_статус_отдаёт_туннели_без_их_правил(monke
          "awg": {"corp": False, "old": False},
          "check": "", "answer": "", "seq": 0, "last": "", "checking": False,
          "tests": {}}]
+
+
+def test_основной_поднимается_на_лету_не_запасной_выход(monkeypatch):
+    """20.10: personal включили при работающем «по списку» — до «основной
+    туннель: personal» 3 с выход ещё direct, и окно писало «Запасной выход ·
+    не работает · интернет идёт напрямую»."""
+    core = _core(monkeypatch, up=True)
+    _quiet(monkeypatch, core)
+    monkeypatch.setattr(service, "_conf_facts", lambda *_a: {"full": True, "awg": False, "v6": False})
+    monkeypatch.setattr(service.tunnels, "list_confs", lambda tid: [f"{tid}.conf"])
+    _with_tunnels(monkeypatch, {"id": "work", "name": "Работа", "mode": "list"},
+                  {"id": "home", "name": "Личный", "mode": "all"})
+    core.prober.set(out="direct", exit_state="direct")
+
+    st = core._status()
+
+    assert (st["out"], st["exit_state"]) == ("", "unknown")
+    assert [t["checking"] for t in st["tunnels"]] == [False, True]
+
+    # Поднялся — выход снова как есть: настоящий запасной выход виден.
+    core.tunnel.main_id = "home"
+    st = core._status()
+    assert (st["out"], st["exit_state"]) == ("direct", "direct")
+    assert [t["checking"] for t in st["tunnels"]] == [False, False]
 
 
 def test_статус_отдаёт_уровень_журнала_для_галочки_окна(monkeypatch):

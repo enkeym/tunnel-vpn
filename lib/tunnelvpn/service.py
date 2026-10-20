@@ -552,6 +552,15 @@ class Core:
         # не скажет: оно закрывает физический адаптер всегда, пока VPN включён.
         main = tunnels.main_on(data)
         st["main_v6"] = bool(main) and _conf_facts(main["id"], main["active"])["v6"]
+        # Основной включили или сменили на живом VPN (_apply): пока его процесс
+        # поднимается, выход и его замер — от прежней раскладки, без основного
+        # это direct. Окно и трей прочли бы его как запасной выход нового
+        # основного: «не работает · интернет напрямую» на секунды подъёма.
+        if (st["up"] and main and in_use[main["id"]]
+                and main["id"] != self.tunnel.main_id):
+            st.update(out="", exit_state="unknown", exit_is_peer=False)
+            if not self.pending_apply:
+                next(t for t in st["tunnels"] if t["id"] == main["id"])["checking"] = True
         st["version"] = paths.version()
         st["singbox"] = self._singbox_version()
         # Галочка «подробный журнал» в окне: set-log-level пишет, читать — любому.
@@ -1057,8 +1066,11 @@ class Core:
                     self.log(f"!! {err}")
                 self._forget_side(side)
             # Выход мог смениться и без процессов: основной стал «по списку».
+            # Замер выхода — от прежнего: direct без основного горел бы
+            # «запасным выходом» нового до конца перепроверки.
             if done or self.tunnel.main_id != main:
-                self.prober.set(out=self.tunnel.out_now())
+                self.prober.set(out=self.tunnel.out_now(), exit_state="unknown",
+                                exit_is_peer=False)
                 self.prober.remeasure()
             return {"ok": not errs, "applied": "sides",
                     "restarted": [side.tid for side, _ in done],

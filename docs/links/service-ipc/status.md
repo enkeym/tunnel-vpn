@@ -84,6 +84,10 @@ paths:
   всё остальное — напрямую, без VPN», `lib/tunnelvpn/tray.py:_title` — «всё остальное напрямую»,
   `lib/tunnelvpn/cli.py:status_lines` — «основного нет» / «основной туннель выключен»; работающий основной
   (`mode all` и `enabled`) они проверяют раньше `out`, иначе это читалось бы как запасной выход.
+- Основной включён в `tunnels.json`, а `lib/tunnelvpn/tunnel.py:main_id` ещё прежний (подъём на лету в
+  `lib/tunnelvpn/service.py:_apply_locked`) — `lib/tunnelvpn/service.py:_status` отдаёт `out = ''`,
+  `exit_state = 'unknown'` и `checking` у основного: иначе те же читатели показали бы `direct` прежней раскладки
+  запасным выходом нового. После `_switch_main` `_apply_locked` сбрасывает `exit_state` до перепроверки.
 - Туннель жив — `check == 'up'` из `lib/tunnelvpn/probe.py:_check_result` (у основного — выход не `leak`/
   `direct`, у «по списку» — ответ DNS, а без DNS у туннеля — HTTPS, `probe._list_part`) в `lib/tunnelvpn/tray.py:_conf_colors` и
   `lib/tunnelvpn/service.py:_remember_check` и `lib/tunnelvpn/ui/js/cards.js:cardState` (`check`, `answer`).
