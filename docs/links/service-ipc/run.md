@@ -60,3 +60,8 @@ paths:
   включённый `weakhostsend` на интерфейсе пустит её через туннель, и неготовая сеть сойдёт за готовую. Не пропускает —
   круг возвращает (сеть, счёт) без `_reconnect`, проверка каждый круг (до `NET_CHECK_TIMEOUT`, круг сторожа длиннее),
   строка «не пропускает трафик» — на круге `UPLINK_SETTLE`.
+- Проверка после сна на прежней сети — `lib/tunnelvpn/service.py:_watch` (`_note_sleep` → `Core._wake_left =
+  WAKE_CHECKS`) ↔ `_watch_once` → `_wake_dead(cur)`: `tunnel.delay(via-<id основного>)` через clash_api основного;
+  ответил или нет основного (`Tunnel.main` — `None`) — счёт в ноль, нет ответа при `winnet.passes_traffic(iface)` —
+  минус проверка, ноль — полный `_reconnect`, не `_restart_side`. Сеть не пропускает трафик — проверка не тратится.
+  Счёт обнуляет и выключенный VPN (`Tunnel.uplink` — `None`). Новая сеть после сна идёт пунктом выше.

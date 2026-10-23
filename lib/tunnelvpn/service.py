@@ -95,6 +95,13 @@ BACK_EVERY = 15.0
 # после пробуждения сеть и туннель чаще всего и ломаются, и без отметки
 # о сне дыра в штампах журнала читается как зависшая служба.
 SLEEP_GAP = 60.0
+# После сна в той же сети сторож не переподключает, а процесс туннеля мог
+# потерять сокет к серверу, пока не было Wi-Fi: 21 и 23 октября личный так и
+# молчал, пока человек не переподключил руками — таймаутов в журнале не было
+# или их ждали полминуты. Поэтому после сна сторож сам спрашивает задержку
+# через основной; столько проверок подряд без ответа — полное переподключение:
+# перезапуск одного процесса 23 октября не помог, полное поднялось за 2 с.
+WAKE_CHECKS = 2
 # Куда что ходит: число соединений по тегу туннеля и адресу — по нему решать, что
 # из site.env действительно нужно, а что лишнее. Строки info-уровня sing-box:
 # соединение несёт только IP, домен берём из DNS-ответа с тем же номером запроса
@@ -324,6 +331,8 @@ class Core:
     # тогда пробуем запасные конфиги (_fallback), круг — не раньше _fallback_at.
     _main_kicked = False
     _fallback_at = 0.0
+    # Сколько ещё проверок основного после сна до переподключения (_wake_dead).
+    _wake_left = 0
     # Когда статистику адресов снова писать в PATHS_FILE.
     _paths_at = 0.0
     # (id туннеля, имя конфига) → {result, answer, at, stamp, checking}: итоги
@@ -1127,6 +1136,7 @@ class Core:
                 # Круги до сна к сети после него не относятся: 12 октября в 21:08
                 # два круга до сна и один после переподключили в ещё не поднятую сеть.
                 seen, streak = None, 0
+                self._wake_left = WAKE_CHECKS
             try:
                 seen, streak, retry_at = self._watch_once(seen, streak, retry_at)
             except Exception as exc:                       # noqa: BLE001
@@ -1168,11 +1178,15 @@ class Core:
             return None, 0, retry_at
 
         if not had:
+            self._wake_left = 0
             return None, 0, retry_at
         proc = self.tunnel.proc
         if proc is not None and proc.poll() is not None:
             self.log(f"!! sing-box завершился сам (код {proc.returncode}) — "
                      f"поднимаю заново")
+            return None, 0, self._reconnect()
+        # Новую сеть после сна переподключает разбор ниже, эту — проверка.
+        if self._wake_left and cur[1] and cur == had and self._wake_dead(cur):
             return None, 0, self._reconnect()
         with self.log_lock:
             lines, side_lines = self._read_logs()
@@ -1220,6 +1234,22 @@ class Core:
         self.log(f"→ сеть сменилась: интерфейс {had[0]}, шлюз {had[1]} → "
                  f"интерфейс {cur[0]}, шлюз {cur[1]} — переподключаю")
         return None, 0, self._reconnect()
+
+    def _wake_dead(self, cur):
+        """Проверка основного после сна (WAKE_CHECKS) на прежней сети cur.
+        True — не ответил ни разу, пора переподключать."""
+        main = self.tunnel.main
+        if main is None or self.tunnel.delay(buildconfig.via_tag(main.tid)) is not None:
+            self._wake_left = 0
+            return False
+        # Сама сеть ещё не пропускает трафик — туннель тут ни при чём, ждём её.
+        if not winnet.passes_traffic(cur[0]):
+            return False
+        self._wake_left -= 1
+        if self._wake_left:
+            return False
+        self.log(f"!! после сна «{main.title}» не отвечает — переподключаю")
+        return True
 
     def _read_logs(self):
         """Новые строки: (основного журнала, журналов обоих туннелей). Порознь:

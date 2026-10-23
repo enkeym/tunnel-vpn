@@ -1523,6 +1523,48 @@ def test_круги_до_сна_новую_сеть_не_подтверждаю�
     assert core.tunnel.starts == starts, core.logged
 
 
+@pytest.mark.parametrize("gaps, delay_ms, starts", [
+    # 23 октября в 10:29: та же сеть после сна, личный молчит.
+    ([25 * 60, probe.FAST_EVERY], None, 1),
+    # Одна неудачная проверка — ещё не повод.
+    ([25 * 60], None, 0),
+    ([25 * 60, probe.FAST_EVERY], 120, 0),
+    # Без сна молчание основного разбирает _mind_sides, не эта проверка.
+    ([probe.FAST_EVERY] * 3, None, 0),
+])
+def test_после_сна_молчащий_основной_переподключается(monkeypatch, gaps, delay_ms, starts):
+    core = _core(monkeypatch)
+    core.tunnel.delay_ms = delay_ms
+    core.prober.stop_event = _Ticks(monkeypatch, gaps)
+
+    core._watch()
+
+    assert core.tunnel.starts == starts, core.logged
+    assert len(_said(core, "после сна")) == starts
+
+
+def test_после_сна_сеть_без_трафика_проверку_не_тратит(monkeypatch):
+    core = _core(monkeypatch)
+    monkeypatch.setattr(service.winnet, "passes_traffic", lambda _idx: False)
+    core.prober.stop_event = _Ticks(monkeypatch, [25 * 60] + [probe.FAST_EVERY] * 3)
+
+    core._watch()
+
+    assert core.tunnel.starts == 0
+    assert core._wake_left == service.WAKE_CHECKS
+
+
+def test_после_сна_выключенный_vpn_не_проверяется(monkeypatch):
+    core = _core(monkeypatch)
+    core.tunnel.uplink = None
+    core.prober.stop_event = _Ticks(monkeypatch, [25 * 60, probe.FAST_EVERY])
+
+    core._watch()
+
+    assert core.tunnel.starts == 0
+    assert core._wake_left == 0
+
+
 # ------------------------------------------------------- куда что ходит
 
 _PFX = "+0300 2026-10-05 22:45:33 INFO "
