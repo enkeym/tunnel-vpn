@@ -314,6 +314,20 @@ def routes_on_interface(if_index):
     return [r.get("DestinationPrefix", "") for r in rows if r.get("DestinationPrefix")]
 
 
+def tun_cover(if_index):
+    """Префиксы, которыми tun накрывает интернет: маршруты sing-box (auto_route
+    ставит их через шлюз tun) и половинки /1, поставленные напрямую. С
+    route_exclude_address sing-box ставит не половинки, а дробные префиксы в обход
+    пиров. Адрес самого tun, multicast и broadcast Windows вешает на любой
+    интерфейс — их здесь нет."""
+    rows = _query("SELECT DestinationPrefix,NextHop FROM MSFT_NetRoute"
+                  f" WHERE InterfaceIndex={int(if_index)} AND AddressFamily=2",
+                  ("DestinationPrefix", "NextHop")) or []
+    return [r["DestinationPrefix"] for r in rows if r.get("DestinationPrefix")
+            and (_is_tun_hop(r.get("NextHop"))
+                 or r["DestinationPrefix"].endswith(("/0", "/1")))]
+
+
 # ------------------------------------------------------------------ DNS
 
 def resolve4(name):

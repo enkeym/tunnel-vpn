@@ -15,6 +15,7 @@
 
 import base64
 import functools
+import ipaddress
 import json
 import os
 import re
@@ -334,10 +335,12 @@ class Prober:
         up_idx, gw = winnet.default_route()
         tun = winnet.tun_index(paths.TUN_IP)
 
-        halves = {}
-        for half in ("0.0.0.0/1", "128.0.0.0/1"):
-            halves[half] = any(r.get("InterfaceIndex") == tun
-                               for r in winnet.routes_for(half)) if tun else False
+        # Половина адресов под tun, если её задевает хоть один маршрут tun: в обход
+        # пиров sing-box ставит дробные префиксы, и самой половинки с пиром нет.
+        cover = [ipaddress.ip_network(p, strict=False)
+                 for p in (winnet.tun_cover(tun) if tun else [])]
+        halves = {half: any(net.overlaps(ipaddress.ip_network(half)) for net in cover)
+                  for half in ("0.0.0.0/1", "128.0.0.0/1")}
 
         self.set(
             iface=up_idx, gw=gw, tun=tun,

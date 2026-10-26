@@ -33,6 +33,8 @@ class FakeNet:
         self.gone = set()       # маршруты, которые система потеряла
         self.pids = []          # sing-box из нашей папки в списке процессов
         self.flushed = 0        # сбросов кеша DNS Windows
+        # Что ставит на tun sing-box через auto_route: без исключения — половинки.
+        self.cover = list(tunnel.HALVES)
 
     def tun_index(self, _ip):
         return 45 if self.singbox_running else None
@@ -60,6 +62,10 @@ class FakeNet:
             return []
         return [{"InterfaceIndex": idx, "NextHop": hop}
                 for p, idx, hop, _m in self.added if p == prefix]
+
+    def tun_cover(self, if_index):
+        mine = [p for p, idx, _h, _m in self.added if idx == if_index]
+        return (list(self.cover) if self.singbox_running else []) + mine
 
 
 class FakeProc:
@@ -451,6 +457,77 @@ def test_маршрут_к_пиру_пропал_в_работе_ставитс�
                                   ("203.0.113.20/32", 18, "192.168.0.1", 1)]
 
 
+# Маршруты sing-box в обход пиров 203.0.113.x (route_exclude_address), сокращённо:
+# половинки 128.0.0.0/1 среди них нет.
+AROUND_PEER = ["0.0.0.0/1", "128.0.0.0/2", "192.0.0.0/5", "200.0.0.0/7",
+               "202.0.0.0/8", "203.0.0.0/18", "224.0.0.0/3"]
+
+
+def test_поверх_дробных_маршрутов_половинки_не_добиваются(env):
+    """Половинка 0.0.0.0/1 снова накрыла бы пира: пока Wi-Fi моргает и
+    host-маршрута нет, SSH к серверу получал бы RST от tun."""
+    tun, _build, seen = env
+    seen["net"].cover = AROUND_PEER
+
+    assert tun.start() == ""
+
+    assert not any(r[1] == 45 for r in seen["net"].added)
+    assert "→ маршруты выставлены: 7 через tun" in seen["log"]
+
+
+def test_без_маршрутов_sing_box_половинки_ставятся_сами(env, monkeypatch):
+    tun, _build, seen = env
+    seen["net"].cover = []
+    monkeypatch.setattr(tunnel, "TUN_ROUTE_WAIT", 0)
+
+    assert tun.start() == ""
+
+    assert [r for r in seen["net"].added if r[1] == 45] == [
+        ("0.0.0.0/1", 45, "0.0.0.0", 1), ("128.0.0.0/1", 45, "0.0.0.0", 1)]
+
+
+def test_маршруты_sing_box_дожидаются_а_не_добиваются_сразу(env, monkeypatch):
+    """Адрес tun появляется раньше маршрутов: проверка в тот же миг добила бы
+    половинки поверх дробных."""
+    tun, _build, seen = env
+    net, asked = seen["net"], []
+
+    def late_cover(if_index):
+        asked.append(if_index)
+        return AROUND_PEER if len(asked) > 1 else []
+
+    net.tun_cover = late_cover
+
+    assert tun.start() == ""
+
+    assert not any(r[1] == 45 for r in net.added)
+
+
+def test_уборка_снимает_дробные_маршруты_tun(env, monkeypatch):
+    tun, _build, seen = env
+    net = seen["net"]
+    net.cover = list(AROUND_PEER)
+    assert tun.start() == ""
+    deleted = []
+
+    def del_route(prefix, if_index=None):
+        deleted.append((prefix, if_index))
+        if prefix in net.cover:
+            net.cover.remove(prefix)
+
+    monkeypatch.setattr(net, "routes_on_interface", lambda _i: list(net.cover),
+                        raising=False)
+    monkeypatch.setattr(net, "del_route", del_route, raising=False)
+    for name in ("v6_unblock", "nrpt_clear"):
+        monkeypatch.setattr(net, name, lambda *_a: None, raising=False)
+    monkeypatch.setattr(net, "interface_exists", lambda _i: True, raising=False)
+
+    tun.stop()
+
+    assert {(p, 45) for p in AROUND_PEER} <= set(deleted)
+    assert not any(l.startswith("!! наши маршруты через tun") for l in seen["log"])
+
+
 def test_сверка_маршрутов_без_туннеля_ничего_не_делает(env):
     tun, _build, seen = env
 
@@ -826,8 +903,9 @@ def live(env, monkeypatch):
     running = buildconfig.read_json(paths.CONFIG_JSON)
     seen.update(asked=[], main_cfg=running, sets={}, peer="203.0.113.30")
 
-    def assemble(data, confs, log, links, api, resolve, dns):
-        seen["asked"].append({"links": links, "resolve": resolve, "dns": dns})
+    def assemble(data, confs, log, links, api, resolve, dns, peers):
+        seen["asked"].append({"links": links, "resolve": resolve, "dns": dns,
+                              "peers": peers})
         sides = {tid: _side_cfg(f"{tid}.example") for tid, path in confs.items() if path}
         built = [(t["id"], t["name"]) for t in data["tunnels"]
                  if t["enabled"] and confs.get(t["id"])]
@@ -886,6 +964,20 @@ def test_сборка_берёт_связи_работающего_запуск�
     assert {tid: [link["port"] for link in pair]
             for tid, pair in asked["links"].items()} == {
         "work": [1080, 1082], "home": [1081, 1083]}
+
+
+def test_сборка_на_лету_берёт_исключение_tun_работающего(live):
+    """Пересчёт по новым адресам пиров менял бы основной конфиг и ронял tun."""
+    tun, seen = live
+    running = {**seen["main_cfg"], "inbounds": [
+        {"type": "tun", "tag": "tun-in", "route_exclude_address": ["203.0.113.10/32"]}]}
+    buildconfig.write_json(paths.CONFIG_JSON, running)
+    seen["main_cfg"] = running
+    _use("home", "nl-2")
+
+    tun.reload_sides()
+
+    assert [a["peers"] for a in seen["asked"]] == [["203.0.113.10/32"]]
 
 
 def test_удалённый_conf_гасит_только_его_процесс_и_ключи(live):

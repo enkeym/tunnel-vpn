@@ -548,6 +548,8 @@ THREE = [
 def build(tmp_path, monkeypatch):
     """Собирает туннели во временную state\\run\\: (основной, {id: боковой})."""
     monkeypatch.setattr(paths, "RUN", str(tmp_path))
+    # Исключение tun берёт адреса пиров по имени отсюда, не с машины.
+    monkeypatch.setattr(paths, "PEER_IPS_FILE", str(tmp_path / "peer-ips.json"))
 
     def run(items, level="info", texts=CONFS):
         data = tunnels.validate({"log_level": level, "tunnels": items})
@@ -578,6 +580,38 @@ def test_каждый_туннель_живёт_в_своём_конфиге(bui
         assert cfg["route"]["final"] == f"wg-{tid}"
         # Автоопределение привязало бы сокет к tun основного процесса.
         assert cfg["route"]["auto_detect_interface"] is False
+
+
+def test_пиры_выведены_из_под_маршрутов_tun(build):
+    """Пока Wi-Fi моргает и host-маршрута к пиру нет, пакеты к нему не
+    должны попадать в tun: gvisor отвечал бы RST, и SSH к серверу рвался."""
+    main, sides = build(THREE)
+
+    tun_in = next(ib for ib in main["inbounds"] if ib["type"] == "tun")
+
+    peers = sorted({f"{cfg['endpoints'][0]['peers'][0]['address']}/32"
+                    for cfg in sides.values()})
+    assert len(peers) == 3
+    assert tun_in["route_exclude_address"] == peers == buildconfig.tun_excludes(main)
+
+
+def test_исключение_на_лету_из_работающего_а_не_по_новым_пирам(build, tmp_path):
+    """Новый адрес пира менял бы основной конфиг и ронял tun со всеми
+    туннелями: до полного переподключения пира держит host-маршрут."""
+    main, _ = build(THREE)
+    moved = {**CONFS, "lab": CONFS["lab"].replace(
+        _peer_ip(CONFS["lab"]), "192.0.2.77")}
+
+    again, _, _ = _again(main, tmp_path, moved)
+
+    assert buildconfig.tun_excludes(again) == buildconfig.tun_excludes(main)
+    assert "192.0.2.77/32" not in buildconfig.tun_excludes(again)
+
+
+def _peer_ip(text):
+    """Адрес из строки Endpoint .conf."""
+    line = next(l for l in text.splitlines() if l.replace(" ", "").startswith("Endpoint="))
+    return line.split("=", 1)[1].strip().rsplit(":", 1)[0]
 
 
 def test_endpoint_пускает_всё_что_отдал_основной(build):
@@ -797,7 +831,8 @@ def test_туннель_без_конфига_в_полной_сборке_за�
     confs["work"] = _write(tmp_path, "work.conf", CORP)
     live, *_ = buildconfig.assemble(
         data, confs, lambda line: None, buildconfig.links_of(stub),
-        tunnel._api_link(stub), resolve=False, dns=buildconfig.tunnel_dns(stub))
+        tunnel._api_link(stub), resolve=False, dns=buildconfig.tunnel_dns(stub),
+        peers=buildconfig.tun_excludes(stub))
     assert tunnel._fixed(live) == tunnel._fixed(stub)
 
 
@@ -831,7 +866,8 @@ def test_первый_conf_с_dns_в_выключенный_туннель_на_
     def live(data):
         config, *_ = buildconfig.assemble(
             data, confs, lambda line: None, buildconfig.links_of(stub),
-            tunnel._api_link(stub), resolve=False, dns=buildconfig.tunnel_dns(stub))
+            tunnel._api_link(stub), resolve=False, dns=buildconfig.tunnel_dns(stub),
+            peers=buildconfig.tun_excludes(stub))
         return json.loads(json.dumps(config))
 
     assert tunnel._fixed(live(off)) == tunnel._fixed(stub)
@@ -996,7 +1032,8 @@ def _again(main, tmp_path, texts, items=THREE):
     confs = {tid: _write(tmp_path, f"{tid}-2.conf", text) for tid, text in texts.items()}
     config, sides, sets, _, _ = buildconfig.assemble(
         data, confs, lambda line: None, buildconfig.links_of(main),
-        tunnel._api_link(main), resolve=False, dns=buildconfig.tunnel_dns(main))
+        tunnel._api_link(main), resolve=False, dns=buildconfig.tunnel_dns(main),
+        peers=buildconfig.tun_excludes(main))
     return json.loads(json.dumps(config)), sides, sets
 
 
@@ -1023,7 +1060,8 @@ def test_удалённый_conf_на_ходу_оставляет_заглушк
 
     config, sides, sets, built, _ = buildconfig.assemble(
         data, confs, lambda line: None, buildconfig.links_of(main),
-        tunnel._api_link(main), resolve=False, dns=buildconfig.tunnel_dns(main))
+        tunnel._api_link(main), resolve=False, dns=buildconfig.tunnel_dns(main),
+        peers=buildconfig.tun_excludes(main))
 
     assert json.loads(json.dumps(config)) == main
     assert list(sides) == ["lab", "home"]

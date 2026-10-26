@@ -42,7 +42,7 @@ paths:
   rule-set): `winnet.flush_dns`, clash_api `POST /cache/dns/flush`, `DELETE /connections/<id>` у соединений, чьи
   `metadata` `host`/`destinationIP`/`processPath` попадают в смену записей (`_set_entries` — поля
   `tunnel._ENTRY_KEYS`; новое поле в rule-set из `buildconfig` без записи туда соединения по нему не закроет). `live_plan` отдаёт `assemble`
-  ещё `dns=tunnel_dns(running)`: удалённый и вернувшийся `.conf` — на лету (заглушка, `build.md`).
+  ещё `dns=tunnel_dns(running)`: удалённый и вернувшийся `.conf` — на лету (заглушка, `build.md`), и `peers=tun_excludes(running)` (`routes.md`).
   Иначе `None` и полное включение (`Core._apply`). Основной конфиг меняют: новый туннель или первый
   `.conf` туннеля, собранного без него (новый `socks-<id>`), удалённый туннель,
   адрес DNS туннеля, `SB_TUN_MTU` (MTU tun — `buildconfig.TUN_MTU`, от MTU туннелей не зависит: правка MTU в

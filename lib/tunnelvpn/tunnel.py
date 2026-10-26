@@ -44,6 +44,10 @@ LOG_ROLL_BYTES = 4 * 1024 * 1024
 # и исходная картина сети возвращается сама, как только мы уберём свои строки.
 HALVES = ("0.0.0.0/1", "128.0.0.0/1")
 
+# Сколько ждём маршруты sing-box на tun после появления его адреса: ставит он
+# их следом, и половинки, добитые раньше, накрыли бы пиров поверх дробных.
+TUN_ROUTE_WAIT = 3
+
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 # Сколько ждём, пока боковой процесс откроет socks на loopback.
@@ -534,17 +538,24 @@ class Tunnel:
         self.own("tun", tun_idx)
         self._tun_hint = tun_idx
 
-        # Половинки ставит и сам sing-box через auto_route. Записываем их как
-        # своё в любом случае: снимать их всё равно нам, иначе половина
-        # интернета останется смотреть в мёртвый tun.
-        missing = []
+        # Маршруты ставит сам sing-box через auto_route: в обход пиров
+        # (route_exclude_address) — дробными префиксами, иначе половинками.
+        # Добиваем половинки, только если его маршрутов на tun нет вовсе:
+        # половинка поверх дробных снова накрыла бы пира, и пока Wi-Fi моргает,
+        # SSH к нему получал бы RST от tun. Половинки записываем как своё в любом
+        # случае: снимать их всё равно нам, иначе половина интернета останется
+        # смотреть в мёртвый tun.
         for half in HALVES:
             self.own("net", half, tun_idx)
-            if not any(r.get("InterfaceIndex") == tun_idx
-                       for r in winnet.routes_for(half)):
-                missing.append((half, tun_idx, "0.0.0.0", 1))
-        winnet.add_routes(missing)
-        self.log("→ маршруты выставлены")
+        cover = self._await_cover(tun_idx)
+        if self.cancel.is_set():
+            return CANCELLED
+        if cover:
+            self.log(f"→ маршруты выставлены: {len(cover)} через tun")
+        else:
+            winnet.add_routes([(half, tun_idx, "0.0.0.0", 1) for half in HALVES])
+            self.log("!! sing-box не поставил маршрутов на tun — ставлю половинки "
+                     "сам, пиры держит только host-маршрут")
         # Первый запуск после старта службы бывал мёртвым: ни один туннель
         # не делал рукопожатия. Подозрение — host-маршрута к пиру к этому
         # моменту нет, и WireGuard уходит в tun петлёй. Сверяем и пишем в журнал.
@@ -569,6 +580,15 @@ class Tunnel:
         self.uplink = (up_idx, gw)
         self.log("→ работает")
         return ""
+
+    def _await_cover(self, tun_idx):
+        """Маршруты sing-box на tun (winnet.tun_cover), ждём до TUN_ROUTE_WAIT;
+        [] — не поставил или включение отменили."""
+        deadline = time.time() + TUN_ROUTE_WAIT
+        while True:
+            cover = winnet.tun_cover(tun_idx)
+            if cover or time.time() >= deadline or self.cancel.wait(0.25):
+                return cover
 
     def _fetch_real_ip(self):
         """Настоящий адрес провайдера, пока туннель не поднят, или ''.
@@ -897,7 +917,8 @@ class Tunnel:
             # а резолвить всех заново незачем — только сменившихся, ниже.
             config, sides, sets, built, _ = buildconfig.assemble(
                 data, confs, self.log, links, _api_link(running), resolve=False,
-                dns=buildconfig.tunnel_dns(running))
+                dns=buildconfig.tunnel_dns(running),
+                peers=buildconfig.tun_excludes(running))
         except SystemExit:
             return None
         if _fixed(config) != _fixed(running):
@@ -1310,8 +1331,8 @@ class Tunnel:
         for half in HALVES:
             self.del_net_ours(half)
 
-        # 4. Всё, что ещё висит на нашем tun. Страховка на случай, если
-        # sing-box успел прописать что-то помимо двух половинок.
+        # 4. Всё, что ещё висит на нашем tun: дробные префиксы sing-box в обход
+        # пиров (в журнал их не пишем) и всё, что он прописал помимо половинок.
         tun_idx = winnet.tun_index(paths.TUN_IP)
         if tun_idx is not None:
             for prefix in winnet.routes_on_interface(tun_idx):
@@ -1372,9 +1393,14 @@ class Tunnel:
             for r in winnet.routes_for(half):
                 if self.is_ours(r.get("InterfaceIndex")):
                     stuck.append(f"{half}({r.get('InterfaceIndex')})")
+        # tun пережил уборку — на нём могли остаться дробные префиксы sing-box.
+        tun_idx = winnet.tun_index(paths.TUN_IP)
+        if tun_idx is not None:
+            stuck += [f"{p}({tun_idx})" for p in winnet.tun_cover(tun_idx)
+                      if p not in (*HALVES, "0.0.0.0/0")]
         if stuck:
-            self.log(f"!! наши половинки дефолтного маршрута на месте: {' '.join(stuck)}")
-            self.log("   снять вручную: Remove-NetRoute -DestinationPrefix 0.0.0.0/1")
+            self.log(f"!! наши маршруты через tun на месте: {' '.join(stuck)}")
+            self.log("   снять вручную: Remove-NetRoute -DestinationPrefix <префикс>")
             return
         _, gw = winnet.default_route()
         if gw:

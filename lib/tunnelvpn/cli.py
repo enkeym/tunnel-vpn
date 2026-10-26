@@ -90,7 +90,7 @@ def status_lines(st):
     out.append(f"  sing-box : {st.get('pid') or 'не запущен'}")
     out.append(f"  tun      : {st.get('tun') or 'нет'}")
     out.append(f"  аплинк   : интерфейс {st.get('iface')} / шлюз {st.get('gw') or '—'}")
-    out.append(f"  маршруты : 0.0.0.0/1 {'есть' if st.get('r_low') else 'нет'}, "
+    out.append(f"  маршруты : под tun 0.0.0.0/1 {'есть' if st.get('r_low') else 'нет'}, "
                f"128.0.0.0/1 {'есть' if st.get('r_high') else 'нет'}")
     # v6_off — правило брандмауэра на физическом адаптере: при включённом VPN
     # стоит всегда, через туннель IPv6 идёт по v6 основного (main_v6).

@@ -1059,7 +1059,7 @@ def build(data, confs, out_path, side_path=None, log=print, set_path=None,
 
 
 def assemble(data, confs, log=print, links=None, api=None, resolve=True,
-             dns=None, stubs=False):
+             dns=None, stubs=False, peers=None):
     """(основной конфиг, {id: боковой конфиг}, {тег: rule-set}, [(id, имя)],
     строки сводки) без записи на диск.
 
@@ -1075,6 +1075,8 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
     На лету (stubs=False) DNS выключенного, которого нет в dns, в основной не
     кладётся: первый .conf с DNS = в выключенную заглушку — на лету, DNS
     добавит его включение (тогда полный).
+    peers — исключение tun работающего (tun_excludes), иначе — по пирам сборки
+    (peer_excludes): новый адрес пира не должен ронять tun со всеми туннелями.
     """
     # dns прошлой сборки — под своим именем: в цикле dns — DNS текущего туннеля.
     links, level, live_dns = links or {}, data["log_level"], dns or {}
@@ -1149,6 +1151,7 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
     #   SB_TUN_MTU=1380                MTU самого tun вместо TUN_MTU
     #   SB_CORP_*                      туннелям «по списку», см. corp_diagnostics
     stack = os.environ.get("SB_STACK", "gvisor")
+    peers = peer_excludes(built) if peers is None else peers
 
     rules, dns_tunnels, report, sets = [], [], [], {}
     for t, conf, ep in built:
@@ -1269,6 +1272,7 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
             # адаптерах правилами брандмауэра. Выключить: SB_STRICT_ROUTE=0.
             "strict_route": os.environ.get("SB_STRICT_ROUTE") != "0",
             "stack": stack,
+            **({"route_exclude_address": peers} if peers else {}),
         }, {
             "type": "direct", "tag": PEER_DNS_IN, "network": "udp",
             "listen": "127.0.0.1", "listen_port": peer_dns,
@@ -1320,6 +1324,33 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
     return (config, sides, sets,
             [(t["id"], t["name"]) for t, conf, _ in built if t["enabled"] and conf],
             report)
+
+
+def peer_excludes(built):
+    """Адреса пиров /32 — мимо маршрутов tun (route_exclude_address).
+
+    Пока Wi-Fi моргает, Windows снимает host-маршрут к пиру, и пакеты к нему
+    уходили в tun: gvisor отвечал RST, и SSH к серверу туннеля рвался за
+    0,1 с. Имя выключенного (resolve=False) — прошлый удачный адрес, если он
+    есть: включение тогда идёт на лету. Сменившийся адрес исключение
+    перестроит только полное переподключение — до него держит host-маршрут."""
+    known, out = _known_peer_ips(), set()
+    for _, _, ep in built:
+        if not ep:
+            continue
+        host = ep["peers"][0]["address"]
+        ip = host if re.match(r"^[\d.]+$", host) else known.get(host)
+        if ip:
+            out.add(f"{ip}/32")
+    return sorted(out)
+
+
+def tun_excludes(main_cfg):
+    """route_exclude_address tun собранного основного конфига."""
+    for ib in main_cfg.get("inbounds", []):
+        if ib.get("type") == "tun":
+            return list(ib.get("route_exclude_address", []))
+    return []
 
 
 def _slot_links(pair):

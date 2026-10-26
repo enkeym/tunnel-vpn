@@ -7,6 +7,7 @@ probe_slow (висит, пока тест не отпустит), запись s
 import json
 import threading
 import time
+import types
 import urllib.error
 import urllib.request
 
@@ -33,6 +34,26 @@ def _run_loop(monkeypatch, net, slow):
     loop = threading.Thread(target=p.run, daemon=True)
     loop.start()
     return p, loop
+
+
+@pytest.mark.parametrize("cover, low, high", [
+    (["0.0.0.0/2", "64.0.0.0/3", "128.0.0.0/1"], True, True),
+    (["0.0.0.0/0"], True, True),
+    (["0.0.0.0/1"], True, False),
+    ([], False, False),
+])
+def test_половины_под_tun_и_по_дробным_маршрутам(monkeypatch, cover, low, high):
+    """В обход пиров sing-box ставит дробные префиксы: половинки 0.0.0.0/1 нет,
+    а туннель поднят — иначе служба считала бы его лежащим."""
+    monkeypatch.setattr(probe, "winnet", types.SimpleNamespace(
+        default_route=lambda: (18, "192.168.0.1"), tun_index=lambda _ip: 45,
+        tun_cover=lambda _i: cover, pids_of=lambda _exe: [], v6_blocked=lambda: True))
+    monkeypatch.setattr(probe.Prober, "current_profile", staticmethod(lambda: ""))
+    p = probe.Prober()
+
+    p.probe_fast()
+
+    assert (p.snapshot()["r_low"], p.snapshot()["r_high"]) == (low, high)
 
 
 @pytest.mark.parametrize("out, state", [("direct", "direct"), ("personal-socks", "leak")])
