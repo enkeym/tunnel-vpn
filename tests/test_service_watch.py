@@ -253,8 +253,9 @@ def test_пропавший_шлюз_не_переподключает(monkeypat
 @pytest.mark.parametrize("back, starts", [(HOME, 1), (OFFICE, 0)])
 def test_сеть_пропала_и_вернулась(monkeypatch, back, starts):
     """Вернулась другой — переподключаемся после устойчивых кругов, как при
-    прямой смене; вернулась та же — туннель не трогаем."""
+    прямой смене; вернулась та же и основной отвечает — туннель не трогаем."""
     core = _core(monkeypatch)
+    core.tunnel.delay_ms = 120
     core.prober.set(iface=None, gw="")
     state = _rounds(core, service.UPLINK_SETTLE * 2)
 
@@ -1563,6 +1564,44 @@ def test_после_сна_выключенный_vpn_не_проверяетс�
 
     assert core.tunnel.starts == 0
     assert core._wake_left == 0
+
+
+@pytest.mark.parametrize("delay_ms, starts", [(None, 1), (120, 0)])
+def test_возврат_сети_без_паузы_проверяет_основной(monkeypatch, delay_ms, starts):
+    """26 октября в 10:00: S0-сон службу не замораживал, паузы между кругами
+    не было, Wi-Fi пропал и вернулся тем же — личный молчал до таймаутов."""
+    core = _core(monkeypatch)
+    core.tunnel.delay_ms = delay_ms
+    _net(core, (None, ""))
+    state = _rounds(core, 2)
+    _net(core, OFFICE)
+
+    _rounds(core, service.WAKE_CHECKS, state)
+
+    assert _said(core, "сеть вернулась")
+    assert core.tunnel.starts == starts, core.logged
+
+
+def test_возврат_в_другую_сеть_идёт_сменой_сети(monkeypatch):
+    core = _core(monkeypatch)
+    _net(core, (None, ""))
+    state = _rounds(core, 1)
+    _net(core, HOME)
+
+    _rounds(core, service.UPLINK_SETTLE, state)
+
+    assert not _said(core, "сеть вернулась")
+    assert _said(core, "сеть сменилась")
+    assert core._wake_left == 0
+
+
+def test_без_пропажи_сети_основной_не_проверяется(monkeypatch):
+    core = _core(monkeypatch)
+
+    _rounds(core, service.WAKE_CHECKS + 1)
+
+    assert core.tunnel.starts == 0
+    assert not _said(core, "сеть вернулась")
 
 
 # ------------------------------------------------------- куда что ходит

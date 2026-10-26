@@ -102,6 +102,10 @@ SLEEP_GAP = 60.0
 # через основной; столько проверок подряд без ответа — полное переподключение:
 # перезапуск одного процесса 23 октября не помог, полное поднялось за 2 с.
 WAKE_CHECKS = 2
+# Современный режим ожидания (S0) службу не замораживает: круги идут, паузы
+# нет, а Wi-Fi на время сна пропадает. 26 октября в 10:00 личный после такого
+# сна молчал, пока его не перезапустили таймауты, — 21 с без интернета. Поэтому
+# пропажа шлюза и возврат в ту же сеть взводят ту же проверку, что и сон.
 # Куда что ходит: число соединений по тегу туннеля и адресу — по нему решать, что
 # из site.env действительно нужно, а что лишнее. Строки info-уровня sing-box:
 # соединение несёт только IP, домен берём из DNS-ответа с тем же номером запроса
@@ -333,6 +337,8 @@ class Core:
     _fallback_at = 0.0
     # Сколько ещё проверок основного после сна до переподключения (_wake_dead).
     _wake_left = 0
+    # Шлюз пропадал при поднятом туннеле: его возврат в ту же сеть — как сон.
+    _uplink_lost = False
     # Когда статистику адресов снова писать в PATHS_FILE.
     _paths_at = 0.0
     # (id туннеля, имя конфига) → {result, answer, at, stamp, checking}: итоги
@@ -1178,13 +1184,21 @@ class Core:
             return None, 0, retry_at
 
         if not had:
-            self._wake_left = 0
+            self._wake_left, self._uplink_lost = 0, False
             return None, 0, retry_at
         proc = self.tunnel.proc
         if proc is not None and proc.poll() is not None:
             self.log(f"!! sing-box завершился сам (код {proc.returncode}) — "
                      f"поднимаю заново")
             return None, 0, self._reconnect()
+        if not cur[1]:
+            self._uplink_lost = True
+        elif self._uplink_lost:
+            self._uplink_lost = False
+            if cur == had:
+                self.log(f"→ сеть вернулась: интерфейс {cur[0]}, шлюз {cur[1]} — "
+                         f"проверяю основной")
+                self._wake_left = WAKE_CHECKS
         # Новую сеть после сна переподключает разбор ниже, эту — проверка.
         if self._wake_left and cur[1] and cur == had and self._wake_dead(cur):
             return None, 0, self._reconnect()
