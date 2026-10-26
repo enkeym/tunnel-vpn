@@ -1756,8 +1756,9 @@ class Core:
 
         С tunnel или kind — в этот туннель, добавленный выбирается; place
         "replace" (и старый пункт «рабочий») — вместо его конфигов, туннель
-        берёт имя файла, правила остаются; так же с одним tunnel, если у
-        конфига общий частный DNS с выбранным в туннеле. place "new" —
+        берёт имя файла, правила остаются; у основного — только вместо
+        выбранного, запасные остаются, и новый обязан быть полным; так же с
+        одним tunnel, если у конфига общий частный DNS с выбранным в туннеле. place "new" —
         новый туннель «по списку». Без них место выбирает _place; при ask ничего не пишется, а
         ответ несёт ask: окно спрашивает и повторяет команду с replace или new.
 
@@ -1787,9 +1788,20 @@ class Core:
                 where = "replace" if replace else "to"
             else:
                 where, t = self._place(buildconfig.parse_text(text), data)
-            if where == "replace" and t["mode"] != "list":
-                raise ValueError(f"«{t['name']}» — не туннель «по списку», "
-                                 f"заменять в нём нечего")
+            gone = None
+            if where == "replace" and t["mode"] == "all":
+                # Основной: уходит только выбранный конфиг, запасные остаются; новый
+                # обязан быть полным — иначе «всё остальное» некуда пускать.
+                if not buildconfig.is_full(buildconfig.parse_text(text)):
+                    raise ValueError(f"«{t['name']}» — основной: в AllowedIPs нового конфига "
+                                     f"нет 0.0.0.0/0, через него нельзя пускать всё остальное")
+                gone = self._in_use(data)[t["id"]]
+                if not gone:
+                    raise ValueError(f"в «{t['name']}» не выбран конфиг — "
+                                     f"выберите, какой заменить")
+                if name != gone and name in tunnels.list_confs(t["id"]):
+                    raise ValueError(f"в «{t['name']}» уже есть запасной конфиг {name}.conf: "
+                                     f"переименуйте файл или удалите запасной")
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
         if where == "ask":
@@ -1836,7 +1848,7 @@ class Core:
             return {"ok": False, "error": f"конфиг лёг, но не выбран: {exc}"}
         if where == "replace":
             # После записи: сбой оставит прежние файлы, а не туннель без конфига.
-            for old in before:
+            for old in ([gone] if gone else before):
                 if old == name:
                     continue
                 try:

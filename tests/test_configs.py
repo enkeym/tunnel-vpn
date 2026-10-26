@@ -1422,13 +1422,47 @@ def test_замена_без_туннеля_отказывает(core):
     assert _ids() == ["work", "home"] and not os.path.exists(tunnels.conf_dir("t1"))
 
 
-def test_замена_в_основном_отказывает(core):
+def test_замена_в_основном_меняет_выбранный_запасные_и_правила_остаются(core):
     _put("home", "nl-1.conf", FULL)
+    _put("home", "nl-s.conf", FULL)
+    core._set_active("nl-1", tunnel="home")
+    core._set_tunnel("home", {"exclude": "198.51.100.7"})
 
     r = core._add_config("nl-2", FULL, tunnel="home", place="replace")
 
-    assert not r["ok"] and "не туннель «по списку»" in r["error"]
-    assert _files("home") == ["nl-1.conf"]
+    assert r["ok"] and (r["tunnel"], r["place"]) == ("home", "replace")
+    assert _files("home") == ["nl-2.conf", "nl-s.conf"]
+    t = _tunnel("home")
+    assert (t["name"], t["active"], t["mode"]) == ("nl-2", "nl-2", "all")
+    assert t["exclude"] == ["198.51.100.7/32"]
+
+
+def test_замена_в_основном_тем_же_именем(core):
+    _put("home", "nl-1.conf", FULL)
+
+    r = core._add_config("nl-1", _wg("0.0.0.0/0, ::/0"), tunnel="home", place="replace")
+
+    assert r["ok"] and _files("home") == ["nl-1.conf"] and _active("home") == "nl-1"
+
+
+@pytest.mark.parametrize("have, active, name, text, error", [
+    (["nl-1"], "", "nl-2", _wg("10.10.0.0/16"), "нет 0.0.0.0/0"),
+    (["nl-1", "nl-s"], "nl-1", "nl-s", FULL, "уже есть запасной"),
+    (["nl-1", "nl-s"], "", "nl-2", FULL, "не выбран конфиг"),
+])
+def test_замена_в_основном_отказывает(core, have, active, name, text, error):
+    """Не полный — «всё остальное» некуда пускать; имя запасного — затёрла бы
+    его; без выбора — не понять, какой заменить. Файлы не тронуты."""
+    for conf in have:
+        _put("home", f"{conf}.conf", FULL)
+    if active:
+        core._set_active(active, tunnel="home")
+    before = _files("home")
+
+    r = core._add_config(name, text, tunnel="home", place="replace")
+
+    assert not r["ok"] and error in r["error"]
+    assert _files("home") == before
 
 
 def test_в_туннель_с_общим_частным_dns_заменяет(core):

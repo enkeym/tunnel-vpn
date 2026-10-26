@@ -79,7 +79,8 @@ paths:
   и частному `[Interface] DNS` (`_private_dns`) → `place` в ответе: `all` (запасным в основной, active прежний),
   `list` (новый туннель `t<N>`, `name` = имя файла), `replace` (молча), иначе `{ok: False, ask: {id, name, conf}}`
   без записи — окно повторяет с `place: "replace"` + `tunnel` или `place: "new"`. Замена (и старый `kind=corp`)
-  переименовывает туннель в имя файла. `remove-config` с `drop_tunnel` убирает туннель без конфигов.
+  переименовывает туннель в имя файла. У основного (`mode all`) замена убирает только выбранный конфиг, запасные
+  остаются; новый обязан быть полным (`is_full`) и не совпадать именем с запасным — иначе `ok: False`. `remove-config` с `drop_tunnel` убирает туннель без конфигов.
   `move-config` {`tunnel`, `name`, `to`: `new`|`all`, `drop_tunnel`} — только полный конфиг; не в
   `READ_OPS/USER_OPS` → администратору. Отправитель авто, `place`, `drop_tunnel`, `move-config` —
   `lib/tunnelvpn/window.py:_send_config`/`_place_config` и `_dispatch` (`del_config`, `move_config`); `set-active` —
