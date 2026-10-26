@@ -1138,12 +1138,15 @@ class Core:
         # Отсчёт — от конца круга: долгое переподключение сном не считаем.
         last = time.time()
         while not self.prober.stop_event.wait(probe.FAST_EVERY):
-            if self._note_sleep(last, time.time()):
+            slept = self._note_sleep(last, time.time())
+            if slept:
                 # Круги до сна к сети после него не относятся: 12 октября в 21:08
                 # два круга до сна и один после переподключили в ещё не поднятую сеть.
                 seen, streak = None, 0
                 self._wake_left = WAKE_CHECKS
             try:
+                if slept:
+                    self._wake_autostart()
                 seen, streak, retry_at = self._watch_once(seen, streak, retry_at)
             except Exception as exc:                       # noqa: BLE001
                 # Умри сторож — смену сети снова придётся лечить руками.
@@ -1157,6 +1160,19 @@ class Core:
         since = datetime.datetime.fromtimestamp(last).strftime("%H:%M:%S")
         self.log(f"→ компьютер спал {(now - last) / 60:.1f} мин (с {since})")
         return True
+
+    def _wake_autostart(self):
+        """Автоподключение и после сна, а не только при загрузке.
+
+        26 октября в 17:59 VPN выключили перед гибернацией, в 01:07 крышку
+        открыли — служба не перезапускалась, и туннель стоял выключенным при
+        включённом автоподключении. Для человека открыть ноутбук — то же, что
+        включить компьютер: галочка значит «включать». Повторы — как при
+        загрузке: после сна сеть тоже поднимается не сразу."""
+        if self.tunnel.uplink or self.busy or not self.autostart_enabled():
+            return
+        self.log("→ автоподключение после сна: включаю")
+        self._do_start(retries=RECONNECT_TRIES, wake=True)
 
     def _watch_once(self, seen, streak, retry_at):
         """Один круг сторожа. Принимает и возвращает его состояние:

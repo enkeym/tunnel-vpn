@@ -127,6 +127,8 @@ def _core(monkeypatch):
     # Запасных конфигов нет: иначе сторож читал бы tunnels.json других тестов.
     monkeypatch.setattr(core, "_spares", lambda tid: (None, []))
     monkeypatch.setattr(core, "_any_conf", lambda: True)
+    # Автоподключение выключено, пока тест не скажет иначе: не флаг этой машины.
+    monkeypatch.setattr(service.Core, "autostart_enabled", staticmethod(lambda: False))
     monkeypatch.setattr(core.prober, "probe_fast", lambda: None)
     monkeypatch.setattr(probe.Prober, "current_profile", staticmethod(lambda: "p"))
     monkeypatch.setattr(service, "RECONNECT_GAP", 0.0)
@@ -1564,6 +1566,50 @@ def test_после_сна_выключенный_vpn_не_проверяетс�
 
     assert core.tunnel.starts == 0
     assert core._wake_left == 0
+
+
+@pytest.mark.parametrize("autostart, uplink, gaps, starts", [
+    # 27 октября в 01:07: выключили перед гибернацией, галочка стоит.
+    (True, None, [25 * 60], 1),
+    (False, None, [25 * 60], 0),
+    # Туннель и так поднят — его проверяет _wake_dead, не автоподключение.
+    (True, OFFICE, [25 * 60], 0),
+    # Без сна выключенный человеком VPN так и стоит выключенным.
+    (True, None, [probe.FAST_EVERY] * 3, 0),
+])
+def test_автоподключение_после_сна(monkeypatch, autostart, uplink, gaps, starts):
+    core = _core(monkeypatch)
+    monkeypatch.setattr(service.Core, "autostart_enabled", staticmethod(lambda: autostart))
+    core.tunnel.uplink = uplink
+    core.tunnel.delay_ms = 120
+    core.prober.stop_event = _Ticks(monkeypatch, gaps)
+
+    core._watch()
+
+    assert core.tunnel.starts == starts, core.logged
+    assert len(_said(core, "автоподключение после сна")) == starts
+
+
+def test_автоподключение_после_сна_без_сети_ждёт_шлюз(monkeypatch):
+    """После сна сеть поднимается не сразу: в 01:11 первая попытка упала на
+    «нет маршрута по умолчанию». Повторы ждут шлюз, как при загрузке."""
+    core = _core(monkeypatch)
+    monkeypatch.setattr(service.Core, "autostart_enabled", staticmethod(lambda: True))
+    core.tunnel.uplink = None
+    core.tunnel.fail = True
+    _net(core, (None, ""))
+    core.prober.stop_event = _Ticks(monkeypatch, [25 * 60])
+
+    core._watch()
+    assert core.tunnel.starts == 1
+    assert core._retry_left == service.RECONNECT_TRIES
+
+    core.tunnel.fail = False
+    _net(core, HOME)
+    _rounds(core, 1)
+
+    assert core.tunnel.starts == 2
+    assert core.tunnel.uplink == HOME
 
 
 @pytest.mark.parametrize("delay_ms, starts", [(None, 1), (120, 0)])

@@ -67,3 +67,7 @@ paths:
   Счёт обнуляет и выключенный VPN (`Tunnel.uplink` — `None`). Новая сеть после сна идёт пунктом выше.
   Второй взвод — в `_watch_once`: шлюз в снимке пробера пропадал при поднятом туннеле (`Core._uplink_lost`) и
   вернулся равным `Tunnel.uplink` — S0-сон службу не замораживает, и `_note_sleep` паузы не видит.
+- Автоподключение после сна — `lib/tunnelvpn/service.py:_watch` (`_note_sleep`) → `_wake_autostart`: VPN выключен
+  (`Tunnel.uplink` — `None`), `busy` пуст и `Core.autostart_enabled()` → `_do_start(retries=RECONNECT_TRIES, wake=True)`
+  синхронно в потоке сторожа, как автоподключение в `Core.start`: через `_command`, повторы ждут шлюз в
+  `_watch_once`. Пауза, которую `_note_sleep` не видит (S0 без заморозки), автоподключения не даёт.
