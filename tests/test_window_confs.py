@@ -394,3 +394,140 @@ def test_простой_текст_идёт_в_первое_поле_целик�
     # JSON, но не наш: ни include, ни exclude — тоже просто текст.
     assert window._rules_from_file('["a.ru"]') == {"text": '["a.ru"]'}
     assert window._rules_from_file('{"exclude": 5}') == {"include": "", "exclude": ""}
+
+
+VLESS = ("vless://00000000-0000-4000-8000-000000000001@example.com:443"
+         "?type=ws&security=tls&encryption=none&path=%2Fws&host=example.com"
+         "&sni=example.com&fp=chrome#Test%20Server")
+
+
+def test_вставленная_ссылка_уходит_службе_и_закрывает_лист(monkeypatch):
+    api, admin, shown = _api(monkeypatch, [{"ok": True, "tunnel": "v"}])
+    monkeypatch.setattr(api, "_apply", lambda: shown.append(("apply", None)))
+
+    got = api.send("add_link", {"link": VLESS, "tunnel": "", "place": ""})
+
+    assert got == {"ok": True, "tunnel": "v"}
+    assert admin == [("add-link", {"link": VLESS, "tunnel": "", "place": ""})]
+    assert shown == [("closeSheet", None), ("apply", None)]
+
+
+def test_отказ_ссылки_возвращается_и_лист_остаётся(monkeypatch):
+    api, _, shown = _api(monkeypatch, [{"ok": False, "error": "Reality не поддерживается"}])
+    applied = []
+    monkeypatch.setattr(api, "_apply", lambda: applied.append(True))
+
+    got = api.send("add_link", {"link": VLESS})
+
+    assert got == {"ok": False, "error": "Reality не поддерживается"}
+    assert applied == []
+    assert "closeSheet" not in [fn for fn, _ in shown]
+
+
+def test_подписка_уходит_службе_с_флагом_частных_адресов(monkeypatch):
+    api, admin, shown = _api(monkeypatch, [{"ok": True, "added": 2}])
+    monkeypatch.setattr(api, "_apply", lambda: shown.append(("apply", None)))
+
+    got = api.send("add_subscription", {"url": "https://example.com/sub",
+                                        "name": "Токио", "allow_private": True})
+
+    assert got == {"ok": True, "added": 2}
+    assert admin == [("add-subscription", {"url": "https://example.com/sub",
+                                           "name": "Токио", "allow_private": True})]
+    assert shown == [("closeSheet", None), ("apply", None)]
+
+
+def test_подробности_vless_без_uuid(monkeypatch):
+    api, admin, _ = _api(monkeypatch, [{"ok": True, "text": VLESS}])
+
+    got = api.send("conf_details", {"tunnel": "v", "name": "p1", "proto": "vless"})
+
+    assert admin == [("read-config", {"tunnel": "v", "name": "p1"})]
+    assert got["ok"] and got["proto"] == "vless"
+    assert (got["endpoint"], got["transport"]) == ("example.com:443", "WebSocket")
+    assert (got["host"], got["ws_path"], got["sni"], got["fp"]) == (
+        "example.com", "/ws", "example.com", "chrome")
+    assert "00000000-0000-4000-8000-000000000001" not in str(got)
+
+
+def test_подробности_vless_с_битой_ссылкой_объясняются(monkeypatch):
+    api, _, _ = _api(monkeypatch, [{"ok": True, "text": "мусор"}])
+
+    got = api.send("conf_details", {"tunnel": "v", "name": "p1", "proto": "vless"})
+
+    assert not got["ok"] and "vless" in got["error"]
+
+
+def test_правка_vless_профиля_отклоняется_подсказкой(monkeypatch):
+    api, _, shown = _api(monkeypatch, [])
+    monkeypatch.setattr(ipc, "call", lambda op, **_kw: {"ok": True, "status": {"tunnels": [
+        {"id": "v", "proto": "vless", "confs": ["p1"], "active": "p1"}]}})
+
+    api._edit_conf("v", "p1")
+
+    assert shown == [("failed", "VLESS-профиль меняется повторной вставкой ссылки")]
+
+
+def test_профиль_и_флаг_источника_без_лишнего_перезапуска(monkeypatch):
+    api, admin, _ = _api(monkeypatch, [{"ok": True}, {"ok": True}])
+    applied, refreshed = [], []
+    monkeypatch.setattr(api, "_apply", lambda: applied.append(True))
+    monkeypatch.setattr(api, "refresh", lambda full=False: refreshed.append(full))
+
+    assert api.send("remove_profile", {"id": "p1"}) == {"ok": True}
+    assert api.send("set_allow_private", {"id": "s1", "on": True}) == {"ok": True}
+
+    assert admin == [("remove-profile", {"id": "p1"}),
+                     ("set-allow-private", {"id": "s1", "on": True})]
+    # Профиль меняет набор туннеля — apply; флаг источника — только чтение статуса.
+    assert applied == [True] and refreshed == [True]
+
+
+def test_обновление_подписки_применяется(monkeypatch):
+    api, admin, _ = _api(monkeypatch, [{"ok": True, "added": 1}])
+    applied = []
+    monkeypatch.setattr(api, "_apply", lambda: applied.append(True))
+
+    got = api.send("update_subscription", {"id": "s1"})
+
+    assert got == {"ok": True, "added": 1}
+    assert admin == [("update-subscription", {"id": "s1"})]
+    assert applied == [True]
+
+
+def test_список_подписок_возвращается_ответом(monkeypatch):
+    reply = {"ok": True, "subscriptions": [], "profiles": [], "tunnels": []}
+    api, admin, shown = _api(monkeypatch, [reply])
+
+    assert api.send("list_subscriptions", {}) == reply
+    assert admin == [("list-subscriptions", {})]
+    assert shown == []
+
+
+def test_предпросмотр_ссылки_уходит_службе_без_записи(monkeypatch):
+    reply = {"ok": True, "type": "link", "name": "Test Server",
+             "host": "example.com", "port": 443, "profiles": 1}
+    api, admin, shown = _api(monkeypatch, [reply])
+    applied = []
+    monkeypatch.setattr(api, "_apply", lambda: applied.append(True))
+
+    assert api.send("preview", {"link": VLESS}) == reply
+
+    assert admin == [("preview", {"link": VLESS, "url": "", "name": "",
+                                  "allow_private": False, "kind": "auto"})]
+    assert shown == [] and applied == []
+
+
+def test_предпросмотр_подписки_передаёт_имя_и_флаг(monkeypatch):
+    reply = {"ok": True, "type": "base64", "name": "Моя",
+             "host": "sub.example.test", "port": 443, "profiles": 2}
+    api, admin, shown = _api(monkeypatch, [reply])
+
+    got = api.send("preview", {"url": "https://sub.example.test/sub",
+                               "name": "Моя", "allow_private": True})
+
+    assert got == reply
+    assert admin == [("preview", {"link": "", "url": "https://sub.example.test/sub",
+                                  "name": "Моя", "allow_private": True,
+                                  "kind": "auto"})]
+    assert shown == []

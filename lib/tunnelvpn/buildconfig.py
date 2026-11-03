@@ -27,7 +27,7 @@ import sys
 import threading
 
 # Раскладку знает paths.py — здесь только имена.
-from . import paths, tunnels, winnet
+from . import paths, tunnels, vless, winnet
 from .tunnels import NAME_MAX, check_name, safe_name  # их зовут и через buildconfig
 
 BASE = paths.BASE
@@ -747,6 +747,10 @@ UPLINK_DNS_TAG = "uplink"
 # (UPLINK_DNS_TAG). Им служба резолвит имена пиров при поднятом VPN
 # (resolve_peer, net_dns): системный DNS тогда смотрит в основной туннель.
 PEER_DNS_IN = "peer-dns-in"
+# Боковой процесс VLESS: выход и его bootstrap-DNS. Тег выхода не зависит от
+# туннеля: в конфиге он один.
+VLESS_TAG = "vless-out"
+VLESS_DNS_TAG = "dns-bootstrap"
 
 
 def _free_port(kind=socket.SOCK_STREAM):
@@ -803,6 +807,15 @@ def side_json(tid, slot=0):
     return os.path.join(paths.RUN, f"tunnel{slot + 1 if slot else ''}-{tid}.json")
 
 
+def _mixed_inbound(link):
+    return {
+        "type": "mixed", "tag": "socks-in",
+        "listen": "127.0.0.1", "listen_port": link["port"],
+        "users": [{"username": link["username"],
+                   "password": link["password"]}],
+    }
+
+
 def side_config(ep, link, level="info"):
     """Конфиг бокового процесса: вход на loopback и один endpoint.
 
@@ -812,12 +825,7 @@ def side_config(ep, link, level="info"):
     нерабочий конфиг туннель «отвечал» адресом от прежнего."""
     return {
         "log": {"level": level, "timestamp": True},
-        "inbounds": [{
-            "type": "mixed", "tag": "socks-in",
-            "listen": "127.0.0.1", "listen_port": link["port"],
-            "users": [{"username": link["username"],
-                       "password": link["password"]}],
-        }],
+        "inbounds": [_mixed_inbound(link)],
         "endpoints": [ep],
         "route": {
             "final": ep["tag"],
@@ -827,6 +835,72 @@ def side_config(ep, link, level="info"):
             "auto_detect_interface": False,
         },
     }
+
+
+def _is_ip(host):
+    """host — IP-литерал: резолвить и держать для него DNS нечего."""
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
+def side_config_vless(profile, link, level="info", server=""):
+    """Боковой конфиг VLESS: вход на loopback и VLESS outbound.
+
+    server — адрес сервера профиля, уже резолвленный сборкой: имя в outbound
+    дожило бы до старта, когда системный DNS уже смотрит в tun, и пакеты к
+    серверу ушли бы петлёй. Осталось имя (туннель выключен) — резолвит сам
+    sing-box через bootstrap-DNS, как резерв до включения."""
+    out = vless.to_outbound(profile, VLESS_TAG)
+    if server:
+        out["server"] = server
+    config = {
+        "log": {"level": level, "timestamp": True},
+        "inbounds": [_mixed_inbound(link)],
+        "outbounds": [out],
+        "route": {
+            "final": VLESS_TAG,
+            "auto_detect_interface": False,
+        },
+    }
+    if not _is_ip(out["server"]):
+        out["domain_resolver"] = {"server": VLESS_DNS_TAG,
+                                  "strategy": "prefer_ipv4"}
+        config["dns"] = {"servers": [{"type": "udp", "tag": VLESS_DNS_TAG,
+                                      "server": PUBLIC_DNS[0]}]}
+    return config
+
+
+def side_host(cfg):
+    """Адрес сервера бокового конфига: пир WireGuard или сервер VLESS.
+
+    В боковом VLESS нет endpoints — адрес лежит в outbound. По нему включение
+    ставит host-маршрут и переписывает его на резолвленный IP."""
+    for ep in cfg.get("endpoints") or []:
+        for peer in ep.get("peers") or []:
+            host = (peer.get("address") or "").strip()
+            if host:
+                return host
+    for ob in cfg.get("outbounds") or []:
+        if ob.get("type") == "vless":
+            return (ob.get("server") or "").strip()
+    return ""
+
+
+def set_side_host(cfg, host):
+    """Ставит резолвленный адрес в боковой конфиг. False — заменять нечего."""
+    for ep in cfg.get("endpoints") or []:
+        for peer in ep.get("peers") or []:
+            if (peer.get("address") or "").strip():
+                peer["address"] = host
+                return True
+    for ob in cfg.get("outbounds") or []:
+        if ob.get("type") == "vless":
+            ob["server"] = host
+            return True
+    return False
 
 
 def slot_config(cfg, link):
@@ -1002,11 +1076,25 @@ def _summary(t, ep, nets, domains, dns, conf_name=""):
     интерфейса, пир, что пускаем и чей DNS."""
     peer = ep["peers"][0]
     awg = "да" if any(k in ep for k in AWG_INT) else "нет"
-    lines = [f"  [{t['id']}] «{t['name']}»: "
-             f"{'весь остальной трафик' if t['mode'] == 'all' else 'по списку'}, "
-             f"{'' if t['enabled'] else 'выключен, '}{conf_name or 'конфиг'}, "
-             f"адрес {', '.join(ep['address']) or '—'}, пир {peer['address']}:{peer['port']}, "
-             f"mtu {ep['mtu']}, awg={awg}"]
+    head = (f"  [{t['id']}] «{t['name']}»: "
+            f"{'весь остальной трафик' if t['mode'] == 'all' else 'по списку'}, "
+            f"{'' if t['enabled'] else 'выключен, '}{conf_name or 'конфиг'}, "
+            f"адрес {', '.join(ep['address']) or '—'}, пир {peer['address']}:{peer['port']}, "
+            f"mtu {ep['mtu']}, awg={awg}")
+    return _summary_lines(t, head, nets, domains, dns)
+
+
+def _summary_vless(t, profile, nets, domains, conf_name=""):
+    v = profile["vless"]
+    head = (f"  [{t['id']}] «{t['name']}»: "
+            f"{'весь остальной трафик' if t['mode'] == 'all' else 'по списку'}, "
+            f"{'' if t['enabled'] else 'выключен, '}{conf_name or 'профиль'}, "
+            f"сервер {v['server']}:{v['server_port']} (vless ws+tls)")
+    return _summary_lines(t, head, nets, domains, None)
+
+
+def _summary_lines(t, head, nets, domains, dns):
+    lines = [head]
     if nets or domains:
         lines.append(f"      пускаю: {_few(nets + domains)}")
     if t["exclude"]:
@@ -1096,7 +1184,13 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
             else:
                 log(f"  [{t['id']}] «{t['name']}»: конфига нет, туннель пропускаю")
             continue
-        if t["enabled"]:
+        if t.get("proto") == "vless":
+            # path здесь — профиль из subscriptions.json, .conf у vless нет.
+            conf, ep = path, None
+            if not t["enabled"]:
+                log(f"  [{t['id']}] «{t['name']}»: выключен — процесс не "
+                    f"запускаю, правила пустые")
+        elif t["enabled"]:
             conf = parse_conf(path)
             # Значение по умолчанию — только когда в конфиге нет строки MTU.
             #
@@ -1139,7 +1233,8 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
     #     "missing IPv6 local address",
     # причём не молча — соединение уже открыто, и браузер рвёт страницу
     # (это и был ERR_CONNECTION_CLOSED).
-    v6 = main is not None and has_v6(main[1])
+    v6 = main is not None and (main[0].get("proto") == "vless"
+                               or has_v6(main[1]))
     # Адрес v6 у tun — всегда: от v6 основного он не зависит, и смена
     # конфига, вкл/выкл и смена основного не меняют основной конфиг и не
     # роняют tun (Tunnel.live_plan). Выход без v6 — IPv6 отвергает rule-set
@@ -1167,13 +1262,16 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
         # Какой трафик пустить в туннель, решает основной процесс. С AllowedIPs
         # из файла endpoint отбрасывал бы домены и адреса из «пускать»,
         # которых в AllowedIPs нет.
-        ep["peers"][0]["allowed_ips"] = ["0.0.0.0/0"] + (["::/0"] if v6 else [])
+        if ep:
+            ep["peers"][0]["allowed_ips"] = (["0.0.0.0/0"]
+                                             + (["::/0"] if v6 else []))
         listed = t["mode"] == "list"
         nets, domains, rule, dns = [], [], None, None
         if listed:
-            corp_diagnostics(ep)
+            if ep:
+                corp_diagnostics(ep)
             inc_nets, domains = split_entries(t["include"], v6)
-            nets = _unique(allowed_nets(conf, v6) + inc_nets)
+            nets = _unique((allowed_nets(conf, v6) if ep else []) + inc_nets)
             ex_nets, ex_domains = split_entries(t["exclude"], v6)
             rule = tunnel_rule(nets, domains, ex_nets, ex_domains)
             if not t["enabled"]:
@@ -1189,7 +1287,8 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
         rules.append({"rule_set": [rules_tag(t["id"])],
                       "outbound": via_tag(t["id"])})
         # DNS туннеля: из [Interface] DNS его .conf, иначе не поднимаем.
-        servers = conf_dns(conf)
+        # У VLESS своего DNS нет — имя сервера резолвит боковой процесс.
+        servers = conf_dns(conf) if ep else []
         if not (stubs or t["enabled"] or t["id"] in live_dns):
             # Выключенному DNS не нужен, а новый сервер меняет основной конфиг:
             # первый .conf в выключенный туннель ронял бы tun со всеми туннелями.
@@ -1200,8 +1299,11 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
             dns_tunnels.append(dns)
             sets[names_tag(t["id"])] = rule_set(
                 {"domain_suffix": dns[2]} if dns[2] and t["enabled"] else None)
-        report += _summary(t, ep, nets, domains, dns if listed else None,
-                           os.path.basename(confs[t["id"]]))
+        if ep:
+            report += _summary(t, ep, nets, domains, dns if listed else None,
+                               os.path.basename(confs[t["id"]]))
+        else:
+            report += _summary_vless(t, conf, nets, domains, conf["name"])
 
     # Локальная сеть — напрямую, не в туннель. Без этого запросы к соседним
     # устройствам (NAS, принтер, роутер) уходили в личный туннель и висли там
@@ -1319,8 +1421,19 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
         {"type": "local", "tag": tag, "format": "source",
          "path": rule_set_json(tag)} for tag in sets]
 
-    sides = {t["id"]: side_config(ep, links[t["id"]][0], level)
-             for t, _, ep in built if ep}
+    sides = {}
+    for t, conf, ep in built:
+        if not conf:
+            continue
+        link = links[t["id"]][0]
+        if t.get("proto") == "vless":
+            # Включённому сервер резолвим здесь, пока DNS ещё системный; у
+            # выключенного имя резолвит включение (_place_side).
+            server = (peer_host(conf["vless"]["server"], ep_tag(t["id"]), log)
+                      if resolve and t["enabled"] else "")
+            sides[t["id"]] = side_config_vless(conf, link, level, server)
+        elif ep:
+            sides[t["id"]] = side_config(ep, link, level)
     return (config, sides, sets,
             [(t["id"], t["name"]) for t, conf, _ in built if t["enabled"] and conf],
             report)
@@ -1335,13 +1448,19 @@ def peer_excludes(built):
     есть: включение тогда идёт на лету. Сменившийся адрес исключение
     перестроит только полное переподключение — до него держит host-маршрут."""
     known, out = _known_peer_ips(), set()
-    for _, _, ep in built:
-        if not ep:
+    for t, conf, ep in built:
+        if t.get("proto") == "vless":
+            host = conf["vless"]["server"] if conf else ""
+        elif ep:
+            host = ep["peers"][0]["address"]
+        else:
             continue
-        host = ep["peers"][0]["address"]
-        ip = host if re.match(r"^[\d.]+$", host) else known.get(host)
-        if ip:
-            out.add(f"{ip}/32")
+        if re.match(r"^[\d.]+$", host):
+            out.add(f"{host}/32")
+        elif ":" in host:
+            out.add(f"{host}/128")
+        elif known.get(host):
+            out.add(f"{known[host]}/32")
     return sorted(out)
 
 

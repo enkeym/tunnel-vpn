@@ -39,7 +39,7 @@ import os
 import re
 import threading
 
-from . import paths, routelist
+from . import paths, routelist, subscriptions
 
 VERSION = 1
 # Один замок на tunnels.json и папки конфигов. Канал службы обслуживает
@@ -52,6 +52,7 @@ LOCK = threading.RLock()
 # с сервером. Восьми хватает с запасом; больше — скорее ошибка, чем замысел.
 MAX_TUNNELS = 8
 MODES = ("list", "all")
+PROTOS = ("wg", "vless")
 NAME_MAX_LEN = 40
 # Уровни журнала sing-box. Статистика адресов и сторож службы читают строки
 # info и error, поэтому по умолчанию info.
@@ -113,8 +114,10 @@ def conf_path(tid, name):
     return os.path.join(conf_dir(tid), f"{check_name(name)}.conf")
 
 
-def list_confs(tid):
-    """Имена конфигов туннеля, без .conf."""
+def list_confs(tid, proto="wg"):
+    """Имена конфигов туннеля, без .conf; для vless — id профилей."""
+    if proto == "vless":
+        return [p["id"] for p in subscriptions.list_profiles()]
     try:
         return sorted(f[:-5] for f in os.listdir(conf_dir(tid))
                       if f.lower().endswith(".conf"))
@@ -161,16 +164,22 @@ def _check_tunnel(raw):
     mode = raw.get("mode")
     if mode not in MODES:
         raise ValueError(f"туннель {tid}: режим {mode!r}, ожидаю list или all")
+    proto = raw.get("proto") or "wg"
+    if proto not in PROTOS:
+        raise ValueError(f"туннель {tid}: протокол {proto!r}, ожидаю wg или vless")
     active = raw.get("active") or ""
     if active:
         if not isinstance(active, str):
             raise ValueError(f"туннель {tid}: active должен быть строкой")
-        check_name(active)
+        if proto == "vless":
+            subscriptions.check_profile_id(active)
+        else:
+            check_name(active)
     enabled = raw.get("enabled", True)
     if not isinstance(enabled, bool):
         raise ValueError(f"туннель {tid}: enabled должен быть true или false")
-    tunnel = {"id": tid, "name": name, "mode": mode, "active": active,
-              "enabled": enabled}
+    tunnel = {"id": tid, "name": name, "mode": mode, "proto": proto,
+              "active": active, "enabled": enabled}
     tunnel["include"] = _check_list(raw, "include")
     tunnel["exclude"] = _check_list(raw, "exclude")
     tunnel["exclude_apps"] = _check_apps(raw)
@@ -264,13 +273,33 @@ def by_kind(items, kind):
     return next((t for t in items if mode and t.get("mode") == mode), None)
 
 
+def _active_profile(tunnel):
+    data = subscriptions.load()
+    have = data["profiles"]
+    pid = tunnel.get("active") or ""
+    if pid:
+        profile = subscriptions.find_profile(data, pid)
+        if profile is None:
+            raise ValueError(f"туннель «{tunnel['name']}»: нет профиля «{pid}»")
+        return profile
+    if not have:
+        return None
+    if len(have) > 1:
+        ids = ", ".join(p["id"] for p in have)
+        raise ValueError(f"туннель «{tunnel['name']}»: профилей несколько "
+                         f"({ids}) — выберите один")
+    return have[0]
+
+
 def active_conf(tunnel):
-    """Путь к активному конфигу туннеля; None — конфигов у него нет.
+    """Путь к активному .conf или профиль VLESS; None — конфигов нет.
 
     Не выбран, а конфиг один — берём его, как раньше брали единственный
     личный. Несколько без выбора или выбранный пропал — ValueError: собрать
     «какой-нибудь» значило бы молча включить не тот сервер.
     """
+    if tunnel.get("proto") == "vless":
+        return _active_profile(tunnel)
     have = list_confs(tunnel["id"])
     name = tunnel.get("active") or ""
     if name:

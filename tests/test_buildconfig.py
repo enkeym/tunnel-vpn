@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from tunnelvpn import buildconfig, paths, tunnel, tunnels
+from tunnelvpn import buildconfig, paths, subscriptions, tunnel, tunnels, vless
 
 
 CORP = """
@@ -1409,3 +1409,181 @@ def test_split_list_режет_по_запятой_и_чистит_пробел�
 ])
 def test_распознавание_cidr(value, ok):
     assert buildconfig._is_cidr(value) is ok
+
+
+# --------------------------------------------------------------- vless
+
+VLESS_LINK = ("vless://11111111-1111-4111-8111-111111111111@example.com:443"
+              "?encryption=none&security=tls&type=ws&path=%2Fws"
+              "&host=example.com&fp=chrome#Test%20Server")
+
+
+@pytest.fixture
+def vless_build(tmp_path, monkeypatch):
+    """VLESS-туннель без .conf: active — профиль из subscriptions.json."""
+    monkeypatch.setattr(paths, "RUN", str(tmp_path))
+    monkeypatch.setattr(paths, "CONF", str(tmp_path / "conf"))
+    monkeypatch.setattr(paths, "SUBSCRIPTIONS_JSON",
+                        str(tmp_path / "conf" / "subscriptions.json"))
+    monkeypatch.setattr(paths, "PEER_IPS_FILE", str(tmp_path / "peer-ips.json"))
+    monkeypatch.setattr(buildconfig, "peer_host",
+                        lambda host, *_args, **_kw: host)
+
+    def run(link=VLESS_LINK, items=None):
+        profile = subscriptions.add_profile(link)
+        tunnel = {"id": "home", "name": "Home", "mode": "all",
+                  "proto": "vless", "active": profile["id"], "enabled": True,
+                  "include": [], "exclude": [], "exclude_apps": []}
+        data = tunnels.validate({"log_level": "info",
+                                 "tunnels": items or [tunnel]})
+        confs = {t["id"]: profile if t.get("proto") == "vless" else None
+                 for t in data["tunnels"]}
+        main, sides, sets, built, report = buildconfig.assemble(
+            data, confs, log=lambda line: None)
+        return main, sides, sets, built, report
+    return run
+
+
+def test_min_конфиг_для_проверки_ядра_совпадает_со_сборкой():
+    """sing-box check на Windows идёт по этому файлу: он должен быть тем же
+    боковым конфигом, который собирает приложение."""
+    path = os.path.join(os.path.dirname(__file__), "fixtures",
+                        "singbox-vless-min.json")
+    with open(path, encoding="utf-8") as fh:
+        fixture = json.load(fh)
+
+    profile = vless.parse_link(VLESS_LINK)
+    link = {"port": 1080, "username": "check", "password": "check"}
+
+    assert fixture == buildconfig.side_config_vless(profile, link)
+
+
+def test_vless_боковой_это_mixed_и_vless_outbound(vless_build):
+    _, sides, _, _, _ = vless_build()
+    side = sides["home"]
+
+    assert side["inbounds"][0]["type"] == "mixed"
+    assert side["inbounds"][0]["tag"] == "socks-in"
+    [out] = side["outbounds"]
+    assert out["type"] == "vless"
+    assert out["tag"] == buildconfig.VLESS_TAG
+    assert out["server"] == "example.com"
+    assert out["transport"] == {"type": "ws", "path": "/ws",
+                                "headers": {"Host": "example.com"}}
+    assert out["tls"]["utls"]["fingerprint"] == "chrome"
+    assert side["route"]["final"] == buildconfig.VLESS_TAG
+
+
+def test_vless_домен_сервера_резолвит_свой_bootstrap_dns(vless_build):
+    _, sides, _, _, _ = vless_build()
+    side = sides["home"]
+
+    assert side["outbounds"][0]["domain_resolver"] == {
+        "server": buildconfig.VLESS_DNS_TAG, "strategy": "prefer_ipv4"}
+    assert side["dns"]["servers"] == [{"type": "udp",
+                                       "tag": buildconfig.VLESS_DNS_TAG,
+                                       "server": "8.8.8.8"}]
+
+
+def test_vless_резолвленный_сервер_без_bootstrap_dns(vless_build, monkeypatch):
+    """Сервер резолвит сборка, пока DNS системный: в outbound уже IP, и
+    резолвить в боковом процессе нечего — ни DNS, ни domain_resolver."""
+    monkeypatch.setattr(buildconfig, "peer_host",
+                        lambda *_args, **_kw: "203.0.113.9")
+
+    _, sides, _, _, _ = vless_build()
+    side = sides["home"]
+
+    assert side["outbounds"][0]["server"] == "203.0.113.9"
+    assert "domain_resolver" not in side["outbounds"][0]
+    assert "dns" not in side
+
+
+def test_адрес_сервера_бокового_конфига_wg_и_vless():
+    wg = {"endpoints": [{"peers": [{"address": "nl.example"}]}]}
+    vl = {"outbounds": [{"type": "vless", "tag": "vless-out",
+                         "server": "203.0.113.9"}]}
+
+    assert buildconfig.side_host(wg) == "nl.example"
+    assert buildconfig.side_host(vl) == "203.0.113.9"
+    assert buildconfig.side_host({}) == ""
+
+    assert buildconfig.set_side_host(wg, "203.0.113.9") is True
+    assert wg["endpoints"][0]["peers"][0]["address"] == "203.0.113.9"
+    assert buildconfig.set_side_host(vl, "203.0.113.10") is True
+    assert vl["outbounds"][0]["server"] == "203.0.113.10"
+    assert buildconfig.set_side_host({"outbounds": []}, "1.1.1.1") is False
+
+
+def test_vless_основной_ходит_в_него_через_socks(vless_build):
+    main, sides, _, _, _ = vless_build()
+
+    socks = _by_tag(main["outbounds"], "socks-home")
+    assert socks["type"] == "socks"
+    assert socks["server"] == "127.0.0.1"
+    assert socks["server_port"] == sides["home"]["inbounds"][0]["listen_port"]
+    assert _by_tag(main["outbounds"], "via-home")["type"] == "selector"
+    assert _by_tag(main["outbounds"], "out")["default"] == "via-home"
+    assert main["route"]["final"] == "out"
+    assert all(o.get("type") != "vless" for o in main["outbounds"])
+
+
+def test_vless_основной_отдаёт_v6_пустым_no_v6(vless_build):
+    main, _, sets, _, _ = vless_build()
+
+    assert "fdfe:dcba:9876::1/126" in main["inbounds"][0]["address"]
+    assert sets["no-v6"] == {"version": 3, "rules": []}
+
+
+def test_vless_сервер_исключён_из_маршрутов_tun(vless_build):
+    link = VLESS_LINK.replace("@example.com", "@203.0.113.5")
+    main, _, _, _, _ = vless_build(link=link)
+
+    assert "203.0.113.5/32" in main["inbounds"][0]["route_exclude_address"]
+
+
+def test_исключение_сервера_vless_ipv4_и_ipv6(monkeypatch, tmp_path):
+    monkeypatch.setattr(paths, "PEER_IPS_FILE", str(tmp_path / "peer-ips.json"))
+    built = [({"id": "v4", "proto": "vless"},
+              {"vless": {"server": "203.0.113.5"}}, None),
+             ({"id": "v6", "proto": "vless"},
+              {"vless": {"server": "2001:db8::1"}}, None)]
+
+    assert buildconfig.peer_excludes(built) == ["2001:db8::1/128",
+                                                "203.0.113.5/32"]
+
+
+def test_vless_по_списку_берёт_include(vless_build):
+    profile = subscriptions.add_profile(VLESS_LINK)
+    tunnel = {"id": "home", "name": "Home", "mode": "list", "proto": "vless",
+              "active": profile["id"], "enabled": True,
+              "include": ["corp.example", "198.51.100.9"], "exclude": [],
+              "exclude_apps": []}
+
+    _, _, sets, _, report = vless_build(items=[tunnel])
+
+    assert sets["rules-home"]["rules"] == [
+        {"ip_cidr": ["198.51.100.9/32"], "domain_suffix": ["corp.example"]}]
+    assert any("vless ws+tls" in line and "example.com:443" in line
+               for line in report)
+
+
+def test_vless_сборка_пишет_боковой_конфиг_без_conf(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "RUN", str(tmp_path))
+    monkeypatch.setattr(paths, "CONF", str(tmp_path / "conf"))
+    monkeypatch.setattr(paths, "SUBSCRIPTIONS_JSON",
+                        str(tmp_path / "conf" / "subscriptions.json"))
+    monkeypatch.setattr(paths, "PEER_IPS_FILE", str(tmp_path / "peer-ips.json"))
+    profile = subscriptions.add_profile(VLESS_LINK)
+    data = tunnels.validate({"tunnels": [{
+        "id": "home", "name": "Home", "mode": "all", "proto": "vless",
+        "active": profile["id"]}]})
+
+    built = buildconfig.build(data, {"home": profile},
+                              str(tmp_path / "config.json"),
+                              log=lambda line: None)
+
+    assert built == [("home", "Home")]
+    side = _load(tmp_path / "tunnel-home.json")
+    assert side["outbounds"][0]["type"] == "vless"
+    assert side["route"]["final"] == buildconfig.VLESS_TAG

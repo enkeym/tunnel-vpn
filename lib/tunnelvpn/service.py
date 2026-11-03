@@ -22,7 +22,8 @@ import sys
 import threading
 import time
 
-from . import buildconfig, ipc, paths, probe, routelist, tunnel, tunnels, winnet
+from . import (buildconfig, ipc, paths, probe, routelist, subscriptions, tunnel,
+               tunnels, vless, winnet)
 
 AUTOSTART_FILE = os.path.join(paths.STATE, "autostart")
 # Ответ «Включить», когда ни у одного туннеля нет .conf: не сбой, last_error не ставится.
@@ -51,7 +52,8 @@ MAX_RULES = routelist.MAX_RULES
 CONF_OPS = frozenset({
     "set-profile", "set-active", "set-enabled", "add-config", "remove-config",
     "move-config", "add-tunnel", "set-tunnel", "remove-tunnel", "set-log-level",
-    "set-kill-switch"})
+    "set-kill-switch", "add-link", "add-subscription", "update-subscription",
+    "remove-subscription", "remove-profile", "set-allow-private"})
 # Сколько кругов пробера (по FAST_EVERY) новая сеть должна продержаться,
 # прежде чем переподключаться: Wi-Fi при смене точки и пробуждении моргает,
 # и на каждый пропавший на секунду маршрут перезапуск только мешал бы.
@@ -146,12 +148,15 @@ _conf_cache = {}
 _NO_FACTS = {"full": False, "awg": False, "v6": False}
 
 
-def _conf_facts(tid, name):
+def _conf_facts(tid, name, proto="wg"):
     """{full, awg, v6} конфига туннеля: 0.0.0.0/0 в AllowedIPs, поля маскировки
     AmneziaWG и v6-адрес в [Interface] Address; нет файла или не читается —
-    все False."""
+    все False. VLESS-профиль несёт весь трафик (full), IPv6 прозрачен, а
+    маскировки AmneziaWG у него нет."""
     if not name:
         return _NO_FACTS
+    if proto == "vless":
+        return {"full": True, "awg": False, "v6": True, "proto": "vless"}
     try:
         path = tunnels.conf_path(tid, name)
         stamp = os.stat(path).st_mtime_ns
@@ -168,9 +173,9 @@ def _conf_facts(tid, name):
     return facts
 
 
-def _conf_full(tid, name):
+def _conf_full(tid, name, proto="wg"):
     """Есть ли у конфига туннеля 0.0.0.0/0; нет или не читается — False."""
-    return _conf_facts(tid, name)["full"]
+    return _conf_facts(tid, name, proto)["full"]
 
 
 def _private_dns(conf):
@@ -509,6 +514,32 @@ class Core:
         if op == "set-kill-switch":
             # Строго True/False, как on у set-enabled.
             return self._set_kill_switch(payload.get("on"))
+        if op == "add-link":
+            return self._add_link(payload.get("link", ""), tid,
+                                  payload.get("place", ""))
+        if op == "add-subscription":
+            return self._add_subscription(payload.get("url", ""),
+                                          payload.get("name", ""),
+                                          payload.get("allow_private") is True,
+                                          payload.get("kind", "auto"))
+        if op == "preview":
+            # Только чтение: ничего не пишет, но скачивание подписки идёт
+            # от имени службы, поэтому права те же, что у добавления.
+            return self._preview(payload.get("link", ""), payload.get("url", ""),
+                                 payload.get("name", ""),
+                                 payload.get("allow_private") is True,
+                                 payload.get("kind", "auto"))
+        if op == "update-subscription":
+            return self._update_subscription(payload.get("id", ""))
+        if op == "list-subscriptions":
+            return self._list_subscriptions()
+        if op == "remove-subscription":
+            return self._remove_subscription(payload.get("id", ""))
+        if op == "remove-profile":
+            return self._remove_profile(payload.get("id", ""))
+        if op == "set-allow-private":
+            return self._set_allow_private(payload.get("id", ""),
+                                           payload.get("on") is True)
         if op == "log":
             return {"ok": True, "lines": self._tail_log(int(payload.get("lines", 200)))}
         return {"ok": False, "error": f"неизвестная команда: {op}"}
@@ -544,14 +575,30 @@ class Core:
         # awg — бейдж WG/AWG у каждого конфига, запасные тоже.
         in_use = self._in_use(data)
         st["tunnels"] = [{"id": t["id"], "name": t["name"], "mode": t["mode"],
+                          "proto": t.get("proto", "wg"),
                           "active": t["active"], "enabled": t["enabled"],
                           "confs": confs,
                           "rules": (len(t["include"]) + len(t["exclude"])
                                     + len(t["exclude_apps"])),
-                          "full": _conf_full(t["id"], in_use[t["id"]]),
-                          "awg": {c: _conf_facts(t["id"], c)["awg"] for c in confs}}
+                          "full": _conf_full(t["id"], in_use[t["id"]],
+                                             t.get("proto", "wg")),
+                          "awg": {c: _conf_facts(t["id"], c,
+                                                 t.get("proto", "wg"))["awg"]
+                                  for c in confs}}
                          for t in data["tunnels"]
-                         for confs in [tunnels.list_confs(t["id"])]]
+                         for confs in [tunnels.list_confs(
+                             t["id"], t.get("proto", "wg"))]]
+        # У VLESS active — id профиля, а не имя: окну для карточек и меню нужно
+        # человеческое имя. Читаем только когда такие туннели есть, и только для
+        # них: у WG состав статуса прежний.
+        if any(t.get("proto") == "vless" for t in st["tunnels"]):
+            try:
+                names = {p["id"]: p["name"] for p in subscriptions.list_profiles()}
+            except (OSError, ValueError):
+                names = {}
+            for t in st["tunnels"]:
+                if t.get("proto") == "vless":
+                    t["names"] = {c: names.get(c, c) for c in t["confs"]}
         # Итог проверки каждого туннеля; checking — как у сторон: туннель
         # проверен раньше соседей, его кружок уже свежий.
         last = self._last_results(data)
@@ -561,12 +608,13 @@ class Core:
             t.update(check=c.get("result", ""), answer=c.get("answer", ""),
                      seq=seq, last=last.get(t["id"], ""),
                      checking=st["checking"] and seq < st.get("check_seq", 0),
-                     tests=self._tests_of(t["id"], t["confs"]))
+                     tests=self._tests_of(t["id"], t["confs"], t.get("proto", "wg")))
         # IPv6 через туннель — по v6-адресу в конфиге работающего основного
         # (как v6 в buildconfig.assemble). Правило брандмауэра (v6_off) этого
         # не скажет: оно закрывает физический адаптер всегда, пока VPN включён.
         main = tunnels.main_on(data)
-        st["main_v6"] = bool(main) and _conf_facts(main["id"], main["active"])["v6"]
+        st["main_v6"] = bool(main) and _conf_facts(
+            main["id"], in_use[main["id"]], main.get("proto", "wg"))["v6"]
         # Основной включили или сменили на живом VPN (_apply): пока его процесс
         # поднимается, выход и его замер — от прежней раскладки, без основного
         # это direct. Окно и трей прочли бы его как запасной выход нового
@@ -600,10 +648,12 @@ class Core:
         dns = buildconfig.tunnel_dns(main_cfg)
         endpoints = []
         for tid in ids:
-            for ep in buildconfig.read_json(buildconfig.side_json(tid)).get("endpoints", []):
+            side = buildconfig.read_json(buildconfig.side_json(tid))
+            for ep in side.get("endpoints", []):
                 peers = ep.get("peers") or [{}]
                 endpoints.append({
                     "tag": ep.get("tag", ""),
+                    "tid": tid,
                     "address": ", ".join(ep.get("address") or []),
                     "mtu": ep.get("mtu"),
                     "awg": any(k in ep for k in ("jc", "s1", "h1")),
@@ -612,11 +662,33 @@ class Core:
                     "nets": buildconfig.tunnel_nets(main_cfg, tid) if is_admin else [],
                     "domains": buildconfig.tunnel_domains(main_cfg, tid) if is_admin else [],
                 })
+            for ob in side.get("outbounds", []):
+                if ob.get("type") != "vless":
+                    continue
+                endpoints.append({
+                    "tag": ob.get("tag", ""),
+                    "tid": tid,
+                    "address": f"{ob.get('server', '')}:{ob.get('server_port', '')}",
+                    "proto": "vless",
+                    "mtu": None,
+                    "awg": False,
+                    "peer": "",
+                    "dns": dns.get(tid, ""),
+                    "nets": buildconfig.tunnel_nets(main_cfg, tid) if is_admin else [],
+                    "domains": buildconfig.tunnel_domains(main_cfg, tid) if is_admin else [],
+                })
         return {"endpoints": endpoints}
 
     @staticmethod
-    def _conf_stamp(tid, name):
-        """Отпечаток файла конфига: заменили файл — прошлый итог не про него."""
+    def _conf_stamp(tid, name, proto="wg"):
+        """Отпечаток конфига: заменили файл или профиль — прошлый итог не про него."""
+        if proto == "vless":
+            try:
+                profiles = subscriptions.load()["profiles"]
+            except (OSError, ValueError):
+                return None
+            return next((p["fingerprint"] for p in profiles
+                         if p["id"] == name), None)
         try:
             return os.stat(tunnels.conf_path(tid, name)).st_mtime_ns
         except (OSError, ValueError):
@@ -629,7 +701,10 @@ class Core:
         data = data if data is not None else self._tunnels()
         out = {}
         for t in data["tunnels"]:
-            confs = tunnels.list_confs(t["id"])
+            if t.get("proto") == "vless":
+                confs = tunnels.list_confs(t["id"], "vless")
+            else:
+                confs = tunnels.list_confs(t["id"])
             out[t["id"]] = t["active"] or (confs[0] if len(confs) == 1 else "")
         return out
 
@@ -644,7 +719,8 @@ class Core:
         for tid, name in self._in_use(data).items():
             rec = saved.get(tid) or {}
             fresh = (name and rec.get("name") == name
-                     and rec.get("stamp") == self._conf_stamp(tid, name))
+                     and rec.get("stamp") == self._conf_stamp(
+                         tid, name, self._proto_of(data, tid)))
             out[tid] = rec.get("result", "") if fresh else ""
         return out
 
@@ -654,7 +730,8 @@ class Core:
         # rules — сервер отвечал, не подошли правила: конфиг работал.
         result = {t["id"]: {"up": "up", "rules": "up", "error": "error"}.get(t.get("check"), "")
                   for t in st.get("tunnels") or []}
-        data = {tid: {"name": n, "stamp": self._conf_stamp(tid, n),
+        data = {tid: {"name": n, "stamp": self._conf_stamp(
+                          tid, n, self._proto_of(self._tunnels(), tid)),
                       "result": result.get(tid, "")}
                 for tid, n in self._in_use().items() if n}
         try:
@@ -682,13 +759,13 @@ class Core:
 
     # ------------------------------------------------- проверка конфига
 
-    def _tests_of(self, tid, confs):
+    def _tests_of(self, tid, confs, proto="wg"):
         """{имя: {result, answer, at, checking}} проверок конфигов туннеля tid,
         что лежат сейчас: заменённый файл — уже не тот конфиг."""
         out = {}
         for (owner, name), rec in self._conf_checks.items():
             if (owner == tid and name in confs
-                    and rec.get("stamp") == self._conf_stamp(tid, name)):
+                    and rec.get("stamp") == self._conf_stamp(tid, name, proto)):
                 out[name] = {k: rec.get(k) for k in ("result", "answer", "at", "checking")}
         return out
 
@@ -719,12 +796,14 @@ class Core:
         со списком, а не склеиваем в путь."""
         try:
             t = self._target(self._tunnels(), tunnel)
-            if name not in tunnels.list_confs(t["id"]):
-                raise ValueError(f"нет конфига {name}.conf в туннеле «{t['name']}»")
+            proto = t.get("proto", "wg")
+            if name not in tunnels.list_confs(t["id"], proto):
+                raise ValueError(f"нет {'профиля' if proto == 'vless' else 'конфига'}"
+                                 f" {name} в туннеле «{t['name']}»")
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
         key = (t["id"], name)
-        self._note_test(key, stamp=self._conf_stamp(*key), checking=True)
+        self._note_test(key, stamp=self._conf_stamp(*key, proto), checking=True)
         if not wait:
             threading.Thread(target=self._finish_test, args=(t, name),
                              kwargs={"swap": swap}, daemon=True).start()
@@ -735,7 +814,7 @@ class Core:
         """Проверка после _test_conf: итог в _conf_checks и в журнал, его же — наружу.
         alone — в _run_test, swap — в _await_swap."""
         key = (t["id"], name)
-        stamp = self._conf_stamp(*key)
+        stamp = self._conf_stamp(t["id"], name, t.get("proto", "wg"))
         if swap:
             self._await_swap(t["id"], swap)
         try:
@@ -744,13 +823,13 @@ class Core:
             with lock:
                 result, answer = self._run_test(t, name, alone)
         except Exception as exc:
-            self.log(f"!! проверка {name}.conf упала: {exc!r}")
+            self.log(f"!! проверка {name} упала: {exc!r}")
             result, answer = "error", "проверка упала"
         rec = {"result": result, "answer": answer, "at": time.time()}
         self._note_test(key, stamp=stamp, checking=False, **rec)
         # Не ответил — предупреждение: окно покажет его в фильтре «Предупреждения».
         sign = "→" if result in ("up", "none") else "!!"
-        self.log(f"{sign} проверка {name}.conf («{t['name']}»): {result or 'нет итога'}"
+        self.log(f"{sign} проверка {name} («{t['name']}»): {result or 'нет итога'}"
                  + (f", {answer}" if answer else ""))
         return {**rec, "checking": False}
 
@@ -782,6 +861,8 @@ class Core:
         основного, и пробер мерил бы тот самый процесс, от которого уходим.
         Полный — конфиг основного туннеля или с 0.0.0.0/0; «по списку» без DNS и домена в «пускать» — none без запуска.
         """
+        if t.get("proto") == "vless":
+            return self._run_test_vless(t, name, alone)
         conf = _read_conf(t["id"], name)
         if conf is None:
             return "error", "конфиг не читается"
@@ -806,6 +887,50 @@ class Core:
             if err:
                 return "error", err
             return probe.trial_check(link, full, host, dns)
+
+    def _run_test_vless(self, t, name, alone=False):
+        """(итог, ответ) профиля name VLESS-туннеля t.
+
+        Тот же профиль уже работает в боковом процессе — проверяем его
+        пробером: второй процесс с тем же сервером увёл бы у живого сессию.
+        Иначе — временный sing-box (Tunnel.trial_vless) и HTTP 204 через него.
+        """
+        try:
+            profile = subscriptions.find_profile(subscriptions.load(), name)
+        except (OSError, ValueError) as exc:
+            return "error", str(exc)
+        if profile is None:
+            return "error", "профиль не найден"
+        what = f"→ проверка {name} («{t['name']}»): "
+        twin = None if alone else self._side_with_profile(profile)
+        if twin:
+            self.log(what + f"тот же профиль у работающего процесса {twin} — спрашиваю его")
+            return self.prober.check_one(twin, self.tunnel.delay)
+        v = profile["vless"]
+        self.log(what + f"временный sing-box, VLESS {v['server']}:{v['server_port']}")
+        with self.tunnel.trial_vless(t["id"], profile) as (link, err):
+            if err:
+                return "error", err
+            return probe.trial_check(link, True, "", "")
+
+    def _side_with_profile(self, profile):
+        """id работающего бокового процесса с тем же профилем VLESS, иначе None."""
+        if self.tunnel.uplink is None:
+            return None
+        mark = vless.fingerprint(profile)
+        for side in self.tunnel.sides:
+            if not side.alive():
+                continue
+            cfg = buildconfig.read_json(buildconfig.side_json(side.tid))
+            for ob in cfg.get("outbounds") or []:
+                if ob.get("type") != "vless":
+                    continue
+                try:
+                    if vless.fingerprint(vless.from_outbound(ob)) == mark:
+                        return side.tid
+                except ValueError:
+                    continue
+        return None
 
     _singbox_cached = None
 
@@ -965,7 +1090,8 @@ class Core:
         """Хоть у одного туннеля есть .conf. Испорченный tunnels.json — True:
         причину скажет сборка."""
         try:
-            return any(tunnels.list_confs(t["id"]) for t in tunnels.load()["tunnels"])
+            return any(tunnels.list_confs(t["id"], t.get("proto", "wg"))
+                       for t in tunnels.load()["tunnels"])
         except ValueError:
             return True
 
@@ -1014,7 +1140,8 @@ class Core:
             data = tunnels.load()
         except ValueError:
             return ""
-        if any(t["enabled"] and tunnels.list_confs(t["id"]) for t in data["tunnels"]):
+        if any(t["enabled"] and tunnels.list_confs(t["id"], t.get("proto", "wg"))
+               for t in data["tunnels"]):
             return ""
         off = [t for t in data["tunnels"] if not t["enabled"]]
         if not off:
@@ -1475,7 +1602,7 @@ class Core:
             t = Core._target(tunnels.load(), tid)
         except (OSError, ValueError):
             return None, []
-        names = tunnels.list_confs(t["id"])
+        names = tunnels.list_confs(t["id"], t.get("proto", "wg"))
         at = names.index(t["active"]) if t["active"] in names else -1
         return t, names[at + 1:] + names[:max(at, 0)]
 
@@ -1658,6 +1785,12 @@ class Core:
         except ValueError:
             return tunnels.empty()
 
+    @staticmethod
+    def _proto_of(data, tid):
+        """Протокол туннеля tid: в tunnels.json до VLESS поля не было — wg."""
+        t = tunnels.find(data, tid) if data and tid else None
+        return t.get("proto", "wg") if t else "wg"
+
     def _migrate(self):
         """Старая установка — в туннели, один раз после обновления: плоский
         conf\\ (до 0.3) — по папкам типов, папки типов и site.env (до 0.4) — в
@@ -1751,7 +1884,11 @@ class Core:
         Сравнивается с выбранным конфигом каждого туннеля. Иначе ValueError.
         """
         if buildconfig.is_full(conf):
-            return "all", tunnels.main_tunnel(data)
+            main = tunnels.main_tunnel(data)
+            if main is not None and main.get("proto") == "vless":
+                raise ValueError(f"«{main['name']}» — основной VLESS-туннель: "
+                                 f"WG-конфиг на весь трафик некуда добавить")
+            return "all", main
         nets = [ipaddress.ip_network(n) for n in buildconfig.allowed_nets(conf)]
         if not nets:
             raise ValueError("в AllowedIPs конфига ни 0.0.0.0/0, ни подсетей — "
@@ -1794,6 +1931,9 @@ class Core:
             elif tunnel or kind or place == "replace":
                 # replace без туннеля — отказ _target, а не авто: заменять — значит где-то.
                 t = self._target(data, tunnel, kind)
+                if t.get("proto") == "vless":
+                    raise ValueError(f"«{t['name']}» — VLESS-туннель: .conf в него "
+                                     f"не добавляется")
                 # У старого «рабочего» конфиг один, как до туннелей.
                 replace = place == "replace" or (kind == "corp" and not tunnel)
                 if tunnel and not place and not kind:
@@ -1874,6 +2014,165 @@ class Core:
                     self.log(f"→ не удалить {old}.conf: {exc}")
         return {"ok": True, "name": name, "tunnel": t["id"], "place": where}
 
+    def _attach_profile(self, data, profile, tunnel="", place=""):
+        """VLESS-туннель профиля: указанный tunnel, первый VLESS или новый.
+
+        Новый туннель — основным, если основного ещё нет. Если основной уже
+        есть, ссылка становится основным выходом, а его правила («не пускать»,
+        программы мимо VPN и «пускать») переходят к ней: маршрутизация
+        действующего конфига продолжает работать. Прежний основной — «по
+        списку»: вернуться к нему можно сменой роли туннеля. place "new" —
+        отдельный туннель «по списку» со своими правилами.
+        """
+        if tunnel:
+            t = self._target(data, tunnel)
+            if t.get("proto", "wg") != "vless":
+                raise ValueError(f"«{t['name']}» — не VLESS-туннель")
+            return t
+        if place != "new":
+            t = next((x for x in data["tunnels"] if x.get("proto") == "vless"), None)
+            if t is not None:
+                return t
+        if len(data["tunnels"]) >= tunnels.MAX_TUNNELS:
+            raise ValueError(f"туннелей уже {tunnels.MAX_TUNNELS}, больше нельзя")
+        main = tunnels.main_tunnel(data)
+        t = {"id": self._new_tid(data), "name": profile["name"],
+             "mode": "list" if place == "new" and main is not None else "all",
+             "proto": "vless", "active": "", "include": [], "exclude": [],
+             "exclude_apps": []}
+        if main is not None and t["mode"] == "all":
+            for key in ("include", "exclude", "exclude_apps"):
+                t[key] = list(main.get(key) or [])
+            main["mode"] = "list"
+        data["tunnels"].append(t)
+        return t
+
+    def _add_link(self, link, tunnel="", place=""):
+        """Ссылка vless:// — профиль и VLESS-туннель, где он активный.
+
+        Та же ссылка второй раз не дублируется (subscriptions.add_profile),
+        повтор команды идемпотентен. place "new" — новый туннель.
+        """
+        try:
+            profile = subscriptions.add_profile(link)
+            data = tunnels.load()
+            t = self._attach_profile(data, profile, tunnel, place)
+            t["active"] = profile["id"]
+            data = tunnels.save(data)
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        self.log(f"→ добавлена ссылка VLESS: профиль {profile['id']} "
+                 f"в туннеле «{t['name']}»")
+        return {"ok": True, "profile": profile["id"], "tunnel": t["id"],
+                "place": place or "to"}
+
+    def _add_subscription(self, url, name="", allow_private=False, kind="auto"):
+        """HTTPS-подписка и её первый профиль — активным в VLESS-туннель."""
+        try:
+            sub = subscriptions.add(url, name, allow_private, kind)
+            profiles = subscriptions.list_profiles(sub["id"])
+            tid = pid = ""
+            if profiles:
+                data = tunnels.load()
+                t = self._attach_profile(data, profiles[0])
+                t["active"] = profiles[0]["id"]
+                tunnels.save(data)
+                tid, pid = t["id"], profiles[0]["id"]
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        self.log(f"→ добавлена подписка «{sub['name']}» ({sub['id']}): "
+                 f"профилей {len(profiles)}")
+        return {"ok": True, "subscription": sub["id"], "profiles": len(profiles),
+                "tunnel": tid, "profile": pid}
+
+    def _preview(self, link="", url="", name="", allow_private=False, kind="auto"):
+        """Что будет добавлено: вид, имя, адрес и число профилей. Ничего не
+        пишет; UUID и параметры ссылки в ответ не попадают."""
+        try:
+            if link:
+                profile = vless.parse_link(link)
+                fields = profile["vless"]
+                return {"ok": True, "type": "link", "name": profile["name"],
+                        "host": fields["server"], "port": fields["server_port"],
+                        "profiles": 1}
+            if not url:
+                raise ValueError("нужна ссылка vless:// или HTTPS-адрес подписки")
+            sub = subscriptions.preview(url, name, allow_private, kind)
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "type": sub["kind"], "name": sub["name"],
+                "host": sub["host"], "port": sub["port"],
+                "profiles": sub["profiles"]}
+
+    def _update_subscription(self, sid):
+        """Перечитывает подписку: новые профили, изменённые, пропавшие (missing)."""
+        try:
+            r = subscriptions.refresh(sid)
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        self.log(f"→ подписка {sid} обновлена: +{r['added']}, "
+                 f"изменено {r['updated']}, пропало {r['missing']}")
+        return {"ok": True, **r}
+
+    def _list_subscriptions(self):
+        """Подписки, профили и VLESS-туннели для окна."""
+        try:
+            subs = subscriptions.list_subscriptions()
+            profiles = subscriptions.list_profiles()
+            data = tunnels.load()
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        in_use = self._in_use(data)
+        vless = [{"id": t["id"], "name": t["name"], "active": in_use[t["id"]]}
+                 for t in data["tunnels"] if t.get("proto") == "vless"]
+        return {"ok": True, "subscriptions": subs, "profiles": profiles,
+                "tunnels": vless}
+
+    def _drop_profiles(self):
+        """Активный профиль VLESS-туннеля пропал: берём первый оставшийся."""
+        data = tunnels.load()
+        changed = False
+        for t in data["tunnels"]:
+            if t.get("proto") != "vless":
+                continue
+            have = tunnels.list_confs(t["id"], "vless")
+            if t["active"] and t["active"] not in have:
+                t["active"] = have[0] if have else ""
+                changed = True
+        if changed:
+            tunnels.save(data)
+
+    def _remove_subscription(self, sid):
+        """Подписка и её профили; активные ссылки на них снимаются."""
+        try:
+            if not subscriptions.delete(sid):
+                raise ValueError(f"нет подписки {sid}")
+            self._drop_profiles()
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        self.log(f"→ удалена подписка {sid}")
+        return {"ok": True, "id": sid}
+
+    def _remove_profile(self, pid):
+        """Один профиль; активная ссылка VLESS-туннеля на него снимается."""
+        try:
+            subscriptions.remove_profile(pid)
+            self._drop_profiles()
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        self.log(f"→ удалён профиль {pid}")
+        return {"ok": True, "id": pid}
+
+    def _set_allow_private(self, sid, on):
+        """Частные адреса источников этой подписки: разрешить (RFC1918) или нет."""
+        try:
+            sub = subscriptions.set_allow_private(sid, on)
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        self.log(f"→ подписка {sid}: allow_private={'да' if on else 'нет'}")
+        return {"ok": True, "subscription": sub["id"],
+                "allow_private": sub["allow_private"]}
+
     def _read_config(self, name, kind="", tunnel=""):
         """Отдаёт конфиг целиком, вместе с ключами.
 
@@ -1882,8 +2181,13 @@ class Core:
         READ_OPS, ни в USER_OPS, значит нужен администратор.
         """
         try:
-            path = tunnels.conf_path(
-                self._target(self._tunnels(), tunnel, kind)["id"], name)
+            t = self._target(self._tunnels(), tunnel, kind)
+            if t.get("proto") == "vless":
+                profile = subscriptions.find_profile(subscriptions.load(), name)
+                if profile is None:
+                    raise ValueError(f"нет профиля {name} в туннеле «{t['name']}»")
+                return {"ok": True, "text": vless.canonical(profile)}
+            path = tunnels.conf_path(t["id"], name)
             with open(path, encoding="utf-8", errors="replace") as fh:
                 return {"ok": True, "text": fh.read()}
         except (OSError, ValueError) as exc:
@@ -1894,6 +2198,9 @@ class Core:
         не осталось. Без него пустой туннель хранит правила до нового конфига."""
         try:
             data, t = self._load_target(tunnel, kind)
+            if t.get("proto") == "vless":
+                raise ValueError("у VLESS-туннеля нет .conf — удалите профиль "
+                                 "(remove-profile)")
             os.remove(tunnels.conf_path(t["id"], name))
         except (OSError, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
@@ -1932,6 +2239,9 @@ class Core:
             if to not in ("new", "all"):
                 raise ValueError(f"переносить можно в new или all, а не {to!r}")
             data, src = self._load_target(tunnel)
+            if src.get("proto") == "vless":
+                raise ValueError("профиль VLESS переносится только между "
+                                 "VLESS-туннелями — перенос .conf не подходит")
             path = tunnels.conf_path(src["id"], name)
             need = "all" if to == "new" else "list"
             if src["mode"] != need:
@@ -1995,8 +2305,12 @@ class Core:
             data, t = self._load_target(tunnel, kind)
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
-        if name and name not in tunnels.list_confs(t["id"]):
-            return {"ok": False, "error": f"нет конфига {name}.conf в туннеле «{t['name']}»"}
+        proto = t.get("proto", "wg")
+        if name and name not in tunnels.list_confs(t["id"], proto):
+            return {"ok": False,
+                    "error": (f"нет профиля {name} в туннеле «{t['name']}»"
+                              if proto == "vless"
+                              else f"нет конфига {name}.conf в туннеле «{t['name']}»")}
         t["active"] = name
         try:
             tunnels.save(data)
@@ -2089,7 +2403,7 @@ class Core:
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
         for t in data["tunnels"]:
-            t["confs"] = tunnels.list_confs(t["id"])
+            t["confs"] = tunnels.list_confs(t["id"], t.get("proto", "wg"))
         return {"ok": True, **data}
 
     def _add_tunnel(self, name, mode):
@@ -2208,7 +2522,7 @@ class Core:
             texts.append(f"у «{t['name']}» остался список программ мимо VPN с тех пор, как он "
                          f"был основным, а у запасного своих списков нет — сделайте его "
                          f"основным и очистите программы или впишите, что пускать через него")
-        if len(tunnels.list_confs(t["id"])) > 1:
+        if len(tunnels.list_confs(t["id"], t.get("proto", "wg"))) > 1:
             texts.append(f"у «{t['name']}» несколько конфигов — запасным к "
                        f"«{main['name']}» уходит только единственный: уберите лишние "
                        f"или впишите, что пускать через него")
@@ -2227,7 +2541,8 @@ class Core:
     def _idle_full(self, data, t):
         """Полный конфиг «по списку» с пустым «пускать»: такой не везёт ничего."""
         return (t["mode"] == "list" and not t["include"]
-                and _conf_full(t["id"], self._in_use(data)[t["id"]]))
+                and _conf_full(t["id"], self._in_use(data)[t["id"]],
+                               t.get("proto", "wg")))
 
     def _promote(self, data, skip=None):
         """Основной ушёл (удалён или перенесён) — им становится первый по
@@ -2255,7 +2570,8 @@ class Core:
         """Готовит t к режиму all: конфиг должен забирать весь трафик, иначе
         его сервер отбросил бы чужой. Прежний основной → list; он и
         возвращается — его записи тоже проверяются на дубль."""
-        if not _conf_full(t["id"], self._in_use(data)[t["id"]]):
+        if not _conf_full(t["id"], self._in_use(data)[t["id"]],
+                          t.get("proto", "wg")):
             raise ValueError(f"у «{t['name']}» нет конфига с 0.0.0.0/0 в AllowedIPs — "
                              f"весь остальной трафик его сервер отбросил бы")
         main = tunnels.main_tunnel(data)

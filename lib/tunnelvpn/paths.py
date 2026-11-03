@@ -50,6 +50,7 @@ CONF_PERSONAL = os.path.join(CONF, "personal")
 # Туннели — слоты с правилами (tunnels.py): список в tunnels.json, конфиги
 # каждого — в conf\tunnels\<id>\.
 TUNNELS_JSON = os.path.join(CONF, "tunnels.json")
+SUBSCRIPTIONS_JSON = os.path.join(CONF, "subscriptions.json")
 CONF_TUNNELS = os.path.join(CONF, "tunnels")
 STATE = os.path.join(DATA, "state")
 # Собранные конфиги sing-box: основной (CONFIG_JSON) и боковые

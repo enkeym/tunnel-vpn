@@ -18,7 +18,7 @@ import tempfile
 import threading
 import time
 
-from . import instance, ipc, paths, portable, routelist, settings, tunnels, update
+from . import instance, ipc, paths, portable, routelist, settings, tunnels, update, vless
 
 POLL_EVERY = 2.0
 # Ход скачивания обновления — не чаще: куски по 256 КБ идут десятками в
@@ -289,11 +289,29 @@ class Api:
             self._add_config(arg or {})
         elif name == "place_config":
             self._place_config(arg or {})
+        elif name == "add_link":
+            return self._add_link(arg or {})
+        elif name == "add_subscription":
+            return self._add_subscription(arg or {})
+        elif name == "preview":
+            return self._preview(arg or {})
+        elif name == "update_subscription":
+            return self._subscription_op("update-subscription", arg or {})
+        elif name == "remove_subscription":
+            return self._subscription_op("remove-subscription", arg or {})
+        elif name == "remove_profile":
+            return self._subscription_op("remove-profile", arg or {})
+        elif name == "set_allow_private":
+            # Флаг источника: профили не меняются, перезапускать туннели нечего.
+            return self._subscription_op("set-allow-private", arg or {}, apply=False)
+        elif name == "list_subscriptions":
+            # Ответ — возвратом send: лист подписок ждёт его промисом.
+            return self._admin_call("list-subscriptions")
         elif name == "show_config":
             self._show_conf(arg["tunnel"], arg["name"])
         elif name == "conf_details":
             # Ответ — возвратом send: страница ждёт его промисом (request).
-            return self._conf_details(arg["tunnel"], arg["name"])
+            return self._conf_details(arg["tunnel"], arg["name"], arg.get("proto", ""))
         elif name == "edit_config":
             # Блокнот держит поток, пока его не закроют, — мост не ждёт.
             threading.Thread(target=self._edit_conf,
@@ -779,6 +797,10 @@ class Api:
         if t is None or name not in (t.get("confs") or []):
             self.js("failed", f"нет конфига «{name}»")
             return
+        if t.get("proto") == "vless":
+            # У профиля нет файла: меняется он повторной вставкой ссылки.
+            self.js("failed", "VLESS-профиль меняется повторной вставкой ссылки")
+            return
         # Полный путь: с правами запускается то, что найдётся по имени, а
         # PATH и текущий каталог пишет и обычный пользователь.
         notepad = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
@@ -837,12 +859,26 @@ class Api:
             # Поток pywebview: исключение отсюда никто бы не увидел.
             self.js("failed", str(exc))
 
-    def _conf_details(self, tunnel, name):
+    def _conf_details(self, tunnel, name, proto=""):
         """«Подробности» конфига: поля файла без ключей. Читает служба, как и
-        «Показать», — каталог закрыт."""
+        «Показать», — каталог закрыт. У VLESS «файла» нет: из канонической
+        ссылки берём сервер и транспорт, UUID не отдаём."""
         reply = self._admin_call("read-config", tunnel=tunnel, name=name)
         if not reply.get("ok"):
             return {"ok": False, "error": reply.get("error") or "не прочитать конфиг"}
+        if proto == "vless":
+            try:
+                v = vless.parse_link(reply.get("text", ""))["vless"]
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
+            server = v["server"]
+            return {"ok": True, "proto": "vless", "path": "ссылка VLESS",
+                    "endpoint": f"[{server}]:{v['server_port']}" if ":" in server
+                    else f"{server}:{v['server_port']}",
+                    "security": "TLS", "transport": "WebSocket",
+                    "host": v.get("host", ""), "ws_path": v.get("path", ""),
+                    "sni": v.get("sni", ""), "fp": v.get("fp", ""),
+                    "problem": ""}
         try:
             facts = _conf_summary(reply.get("text", ""))
         except ValueError as exc:
@@ -869,6 +905,62 @@ class Api:
             self.js("failed", reply.get("error") or "не удалось добавить")
             return
         self._apply()
+
+    # ------------------------------------------------- ссылки и подписки
+
+    def _add_link(self, arg):
+        """Вставленная ссылка vless://: служба заводит профиль и VLESS-туннель."""
+        reply = self._admin_call("add-link", link=arg.get("link", ""),
+                                 tunnel=arg.get("tunnel", ""),
+                                 place=arg.get("place", ""))
+        if not reply.get("ok"):
+            return reply
+        self.js("closeSheet")
+        try:
+            self._apply()
+        except Exception as exc:                       # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+        return reply
+
+    def _add_subscription(self, arg):
+        """HTTPS-подписка: профили и первый из них — в VLESS-туннель."""
+        reply = self._admin_call("add-subscription", url=arg.get("url", ""),
+                                 name=arg.get("name", ""),
+                                 allow_private=bool(arg.get("allow_private")))
+        if not reply.get("ok"):
+            return reply
+        self.js("closeSheet")
+        try:
+            self._apply()
+        except Exception as exc:                       # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+        return reply
+
+    def _preview(self, arg):
+        """Предпросмотр ссылки или подписки: ничего не добавляет."""
+        return self._admin_call("preview",
+                                link=arg.get("link", ""),
+                                url=arg.get("url", ""),
+                                name=arg.get("name", ""),
+                                allow_private=bool(arg.get("allow_private")),
+                                kind=arg.get("kind", "auto") or "auto")
+
+    def _subscription_op(self, op, arg, apply=True):
+        """Обновление, удаление и флаг источника: меняется хранилище профилей."""
+        payload = {"id": arg.get("id", "")}
+        if op == "set-allow-private":
+            payload["on"] = bool(arg.get("on"))
+        reply = self._admin_call(op, **payload)
+        if not reply.get("ok"):
+            return reply
+        try:
+            if apply:
+                self._apply()
+            else:
+                self.refresh(full=True)
+        except Exception as exc:                       # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+        return reply
 
     # ------------------------------------------------------ туннелирование
 

@@ -885,6 +885,42 @@ def test_имена_пиров_резолвятся_разом(env, monkeypatch)
     assert time.monotonic() - begun < 0.5
 
 
+def test_включение_vless_резолвит_сервер_и_ставит_маршрут(live):
+    """В боковом VLESS нет endpoints: адрес берётся из outbound, host-маршрут
+    к нему ставится тот же, что пиру WireGuard, — иначе петля через tun."""
+    tun, seen = live
+    side = tunnel.Side("v", "VLESS")
+    cfg = {"inbounds": [{"type": "mixed", "tag": "socks-in",
+                         "listen_port": 1090}],
+           "outbounds": [{"type": "vless", "tag": "vless-out",
+                          "server": "v.example", "server_port": 443}],
+           "route": {"final": "vless-out"}}
+    seen["peer"] = "203.0.113.40"
+
+    assert tun._place_side(side, cfg, ("p1", "fp")) == ""
+
+    assert cfg["outbounds"][0]["server"] == "203.0.113.40"
+    assert ("203.0.113.40/32", 18, "192.168.0.1", 1) in seen["net"].added
+    assert any(parts[:2] == ["host", "203.0.113.40"]
+               for parts in tun.owned_lines())
+
+
+def test_пиры_vless_берутся_из_outbound(live):
+    tun, _seen = live
+    main = buildconfig.read_json(paths.CONFIG_JSON)
+    main["outbounds"].append({"type": "socks",
+                              "tag": buildconfig.socks_tag("v"),
+                              "server_port": 1090})
+    buildconfig.write_json(paths.CONFIG_JSON, main)
+    buildconfig.write_json(buildconfig.side_json("v"), {
+        "inbounds": [{"type": "mixed", "tag": "socks-in",
+                      "listen_port": 1090}],
+        "outbounds": [{"type": "vless", "tag": "vless-out",
+                       "server": "203.0.113.40", "server_port": 443}]})
+
+    assert "203.0.113.40" in tun._peer_ips()
+
+
 # ------------------------------------------------- смена конфига на ходу
 
 

@@ -40,3 +40,4 @@ lib/tunnelvpn/ui/dev/screenshots/
 # им не место.
 .tokensave/
 .ragsave/
+.opencode/

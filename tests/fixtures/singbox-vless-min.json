@@ -1,0 +1,61 @@
+{
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "dns": {
+    "servers": [
+      {
+        "type": "udp",
+        "tag": "dns-bootstrap",
+        "server": "8.8.8.8"
+      }
+    ]
+  },
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "socks-in",
+      "listen": "127.0.0.1",
+      "listen_port": 1080,
+      "users": [
+        {
+          "username": "check",
+          "password": "check"
+        }
+      ]
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "vless-out",
+      "server": "example.com",
+      "server_port": 443,
+      "uuid": "11111111-1111-4111-8111-111111111111",
+      "tls": {
+        "enabled": true,
+        "server_name": "example.com",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        }
+      },
+      "transport": {
+        "type": "ws",
+        "path": "/ws",
+        "headers": {
+          "Host": "example.com"
+        }
+      },
+      "domain_resolver": {
+        "server": "dns-bootstrap",
+        "strategy": "prefer_ipv4"
+      }
+    }
+  ],
+  "route": {
+    "final": "vless-out",
+    "auto_detect_interface": false
+  }
+}

@@ -29,7 +29,7 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-from . import buildconfig, paths, tunnels, winnet
+from . import buildconfig, paths, tunnels, vless, winnet
 
 KEEP_LOGS = 10
 
@@ -637,22 +637,18 @@ class Tunnel:
         пира резолвит включение туннеля (_place_side).
         """
         out, hosts = [], []
-        endpoints = []
         main_cfg = buildconfig.read_json(paths.CONFIG_JSON)
         for cfg_path in (paths.CONFIG_JSON,
                          *(buildconfig.side_json(tid)
                            for tid in buildconfig.side_ids(main_cfg)
                            if tids is None or tid in tids)):
-            endpoints += buildconfig.read_json(cfg_path).get("endpoints", [])
-        for ep in endpoints:
-            for peer in ep.get("peers", []):
-                host = (peer.get("address") or "").strip()
-                if not host:
-                    continue
-                if all(c in "0123456789." for c in host):
-                    out.append(host)
-                else:
-                    hosts.append(host)
+            host = buildconfig.side_host(buildconfig.read_json(cfg_path))
+            if not host:
+                continue
+            if all(c in "0123456789." for c in host):
+                out.append(host)
+            else:
+                hosts.append(host)
         if hosts:
             with ThreadPoolExecutor(len(hosts)) as pool:
                 out += [ip for ip in pool.map(winnet.resolve4, hosts) if ip]
@@ -769,6 +765,40 @@ class Tunnel:
             self.log(f"!! проверка [{tag}]: {exc}")
             yield None, "конфиг не собирается"
             return
+        with self._trial_run(
+                tid, f"проверка [{tag}]",
+                lambda link: buildconfig.trial_config(ep, link),
+                ep["peers"][0]["address"]) as got:
+            yield got
+
+    @contextlib.contextmanager
+    def trial_vless(self, tid, profile):
+        """Временный sing-box с VLESS-профилем profile туннеля tid.
+
+        Сервер-имя резолвится до старта процесса и получает host-маршрут через
+        аплинк, как пир WireGuard: иначе при поднятом VPN пакеты к нему ушли бы
+        в tun петлёй."""
+        tag = buildconfig.ep_tag(tid)
+        try:
+            peer = buildconfig.peer_host(profile["vless"]["server"], tag,
+                                         self.log, self._net_dns())
+        except SystemExit as exc:
+            self.log(f"!! проверка [{tag}]: {exc}")
+            yield None, "сервер не резолвится"
+            return
+        with self._trial_run(
+                tid, f"проверка [{tag}]",
+                lambda link: buildconfig.side_config_vless(profile, link,
+                                                           server=peer),
+                peer) as got:
+            yield got
+
+    @contextlib.contextmanager
+    def _trial_run(self, tid, label, config, peer=""):
+        """Общий запуск временного sing-box: json config(link) в state\\run\\,
+        вход на loopback и host-маршрут к peer через аплинк. Отдаёт
+        (связь, '') или (None, причина); процесс, json и маршрут снимаются
+        на выходе."""
         if not os.path.isfile(paths.SINGBOX):
             yield None, "нет sing-box — переустановите приложение"
             return
@@ -779,8 +809,9 @@ class Tunnel:
         try:
             try:
                 paths.ensure_dirs()
-                buildconfig.write_json(path, buildconfig.trial_config(ep, link))
-                route = self._trial_route_up(ep["peers"][0]["address"], uplink)
+                buildconfig.write_json(path, config(link))
+                if peer:
+                    route = self._trial_route_up(peer, uplink)
                 logfile = self.open_log(f"{TRIAL_PREFIX}-{tid}")
                 with self._trials_lock:
                     proc = subprocess.Popen(
@@ -795,10 +826,10 @@ class Tunnel:
                         break
                     time.sleep(0.25)
                 else:
-                    self.log(f"!! проверка [{tag}]: sing-box не открыл вход: "
+                    self.log(f"!! {label}: sing-box не открыл вход: "
                              f"{_fatal_line(logfile.name)}")
             except OSError as exc:
-                self.log(f"!! проверка [{tag}]: {exc}")
+                self.log(f"!! {label}: {exc}")
             yield got
         finally:
             _end(proc)
@@ -1140,15 +1171,17 @@ class Tunnel:
     def _place_side(self, side, cfg, stamp):
         """Конфиг бокового на диск до старта: пир резолвлен, host-маршрут к нему
         стоит, метка stamp записана. '' или ошибка."""
-        peer = cfg["endpoints"][0]["peers"][0]
+        host = buildconfig.side_host(cfg)
+        if not host:
+            return f"«{side.title}»: в конфиге нет адреса сервера"
         try:
             # Через DNS сети, как на включении: системный сейчас туннельный.
-            peer["address"] = buildconfig.peer_host(peer["address"], side.tag,
-                                                    self.log, self._net_dns())
+            ip = buildconfig.peer_host(host, side.tag, self.log, self._net_dns())
         except SystemExit as exc:
             return f"«{side.title}»: {exc}"
+        if not buildconfig.set_side_host(cfg, ip):
+            return f"«{side.title}»: адрес сервера в конфиг не записать"
         up_idx, gw = self.uplink
-        ip = peer["address"]
         if ip not in self._peers_owned():
             # Мимо туннеля до старта процесса — иначе его пакеты к пиру уйдут
             # в tun петлёй.
@@ -1415,6 +1448,8 @@ def _conf_stamp(path):
     другой — метка другая."""
     if not path:
         return None
+    if isinstance(path, dict):
+        return path.get("id"), path.get("fingerprint")
     try:
         st = os.stat(path)
     except OSError:

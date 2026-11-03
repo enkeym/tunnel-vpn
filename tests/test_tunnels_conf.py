@@ -14,7 +14,7 @@ import shutil
 
 import pytest
 
-from tunnelvpn import paths, tunnels
+from tunnelvpn import paths, subscriptions, tunnels
 
 WG = "[Interface]\nPrivateKey = x\nAddress = 10.0.0.2/32\n\n[Peer]\nPublicKey = y\n"
 
@@ -23,7 +23,7 @@ WG = "[Interface]\nPrivateKey = x\nAddress = 10.0.0.2/32\n\n[Peer]\nPublicKey = 
 def clean_conf():
     for d in (paths.CONF_TUNNELS, paths.CONF_CORP, paths.CONF_PERSONAL):
         shutil.rmtree(d, ignore_errors=True)
-    for f in (paths.TUNNELS_JSON, paths.PROFILE_FILE,
+    for f in (paths.TUNNELS_JSON, paths.SUBSCRIPTIONS_JSON, paths.PROFILE_FILE,
               os.path.join(paths.CONF, "site.env"),
               os.path.join(paths.CONF, "site.env.bak")):
         if os.path.exists(f):
@@ -32,8 +32,9 @@ def clean_conf():
 
 
 def _tunnel(**over):
-    t = {"id": "work", "name": "Работа", "mode": "list", "active": "",
-         "enabled": True, "include": [], "exclude": [], "exclude_apps": []}
+    t = {"id": "work", "name": "Работа", "mode": "list", "proto": "wg",
+         "active": "", "enabled": True, "include": [], "exclude": [],
+         "exclude_apps": []}
     t.update(over)
     return t
 
@@ -319,11 +320,12 @@ def test_переезд_нынешней_установки():
     assert data == {
         "version": 1, "log_level": "debug", "kill_switch": False,
         "tunnels": [
-            {"id": "work", "name": "Работа", "mode": "list", "active": "corp",
-             "enabled": True, "include": ["corp.example"],
+            {"id": "work", "name": "Работа", "mode": "list", "proto": "wg",
+             "active": "corp", "enabled": True, "include": ["corp.example"],
              "exclude": ["198.51.100.7/32", "203.0.113.9/32"], "exclude_apps": []},
-            {"id": "home", "name": "Личный", "mode": "all", "active": "nl-1",
-             "enabled": True, "include": [], "exclude": [], "exclude_apps": []},
+            {"id": "home", "name": "Личный", "mode": "all", "proto": "wg",
+             "active": "nl-1", "enabled": True, "include": [], "exclude": [],
+             "exclude_apps": []},
         ],
     }
     assert tunnels.load() == data
@@ -406,3 +408,67 @@ def test_файл_переезда_читается_как_json_с_кирилл�
         assert "Работа" in fh.read()
     with open(paths.TUNNELS_JSON, encoding="utf-8") as fh:
         assert json.load(fh)["version"] == 1
+
+
+# ------------------------------------------------------------------- vless
+
+def _vless(host="example.com"):
+    return (f"vless://11111111-1111-4111-8111-111111111111@{host}:443"
+            "?encryption=none&security=tls&type=ws&path=%2Fws&fp=chrome#Test")
+
+
+def test_протокол_по_умолчанию_wg():
+    assert tunnels.validate(_data(_tunnel()))["tunnels"][0]["proto"] == "wg"
+
+
+def test_неизвестный_протокол_отказ():
+    with pytest.raises(ValueError, match="протокол"):
+        tunnels.validate(_data(_tunnel(proto="hysteria")))
+
+
+def test_vless_активный_это_id_профиля():
+    pid = "p_0123456789abcdef"
+
+    saved = tunnels.validate(_data(_tunnel(proto="vless", active=pid)))
+
+    assert saved["tunnels"][0]["proto"] == "vless"
+    assert saved["tunnels"][0]["active"] == pid
+
+
+def test_vless_активный_не_имя_конфига():
+    with pytest.raises(ValueError, match="id профиля"):
+        tunnels.validate(_data(_tunnel(proto="vless", active="corp")))
+
+
+def test_vless_без_профилей_конфига_нет():
+    assert tunnels.active_conf(_tunnel(proto="vless")) is None
+
+
+def test_vless_единственный_профиль_активный():
+    profile = subscriptions.add_profile(_vless())
+
+    assert tunnels.active_conf(_tunnel(proto="vless")) == profile
+    assert tunnels.list_confs("work", "vless") == [profile["id"]]
+
+
+def test_vless_выбранный_профиль_активный():
+    profile = subscriptions.add_profile(_vless())
+    subscriptions.add_profile(_vless("other.example"))
+    tunnel = _tunnel(proto="vless", active=profile["id"])
+
+    assert tunnels.active_conf(tunnel) == profile
+
+
+def test_vless_несколько_без_выбора_отказ():
+    subscriptions.add_profile(_vless())
+    subscriptions.add_profile(_vless("other.example"))
+
+    with pytest.raises(ValueError, match="профилей несколько"):
+        tunnels.active_conf(_tunnel(proto="vless"))
+
+
+def test_vless_выбранный_профиль_пропал_отказ():
+    tunnel = _tunnel(proto="vless", active="p_0123456789abcdef")
+
+    with pytest.raises(ValueError, match="нет профиля"):
+        tunnels.active_conf(tunnel)

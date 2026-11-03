@@ -474,9 +474,9 @@ def test_есть_ли_конфиги_по_папкам_туннелей(monkeyp
     monkeypatch.setattr(service.tunnels, "load",
                         lambda: {"tunnels": [{"id": "a"}, {"id": "b"}]})
     monkeypatch.setattr(service.tunnels, "list_confs",
-                        lambda tid: ["x"] if tid == "b" else [])
+                        lambda tid, proto="wg": ["x"] if tid == "b" else [])
     assert service.Core._any_conf() is True
-    monkeypatch.setattr(service.tunnels, "list_confs", lambda tid: [])
+    monkeypatch.setattr(service.tunnels, "list_confs", lambda tid, proto="wg": [])
     assert service.Core._any_conf() is False
 
 
@@ -854,7 +854,7 @@ def _spare_confs(monkeypatch, core, answers, during=None):
 
     monkeypatch.setattr(core, "_spares", lambda tid: (HOME_T, list(answers)))
     monkeypatch.setattr(core, "_run_test", run_test)
-    monkeypatch.setattr(core, "_conf_stamp", lambda tid, name: None)
+    monkeypatch.setattr(core, "_conf_stamp", lambda tid, name, proto="wg": None)
     monkeypatch.setattr(core, "_set_active",
                         lambda name, tunnel="": made.append((tunnel, name)) or {"ok": True})
     return tried, made
@@ -941,7 +941,8 @@ def test_запасные_по_кругу_после_активного(monkeypa
     data = tunnels.validate({"tunnels": [{"id": "home", "name": "Личный", "mode": "all",
                                           "active": "b"}]})
     monkeypatch.setattr(service.tunnels, "load", lambda: data)
-    monkeypatch.setattr(service.tunnels, "list_confs", lambda tid: ["a", "b", "c"])
+    monkeypatch.setattr(service.tunnels, "list_confs",
+                        lambda tid, proto="wg": ["a", "b", "c"])
 
     t, names = service.Core._spares("home")
     assert t["id"] == "home" and names == ["c", "a"]

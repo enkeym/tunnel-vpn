@@ -124,7 +124,7 @@ def test_ipv6_через_туннель_по_конфигу_работающег
     _quiet(monkeypatch, core)
     asked = []
 
-    def facts(tid, name):
+    def facts(tid, name, proto="wg"):
         asked.append((tid, name))
         return {"full": True, "awg": False, "v6": name == "v6"}
     monkeypatch.setattr(service, "_conf_facts", facts)
@@ -151,14 +151,49 @@ def test_статус_отдаёт_туннели_без_их_правил(monke
                                 "active": "corp", "include": ["corp.example"],
                                 "enabled": False})
     monkeypatch.setattr(service.tunnels, "list_confs",
-                        lambda tid: ["corp", "old"] if tid == "work" else [])
+                        lambda tid, proto="wg": ["corp", "old"] if tid == "work" else [])
 
     assert core._status()["tunnels"] == [
-        {"id": "work", "name": "Работа", "mode": "list", "active": "corp",
+        {"id": "work", "name": "Работа", "mode": "list", "proto": "wg",
+         "active": "corp",
          "enabled": False, "confs": ["corp", "old"], "rules": 1, "full": False,
          "awg": {"corp": False, "old": False},
          "check": "", "answer": "", "seq": 0, "last": "", "checking": False,
          "tests": {}}]
+
+
+def test_статус_vless_отдаёт_имена_профилей(monkeypatch):
+    core = _core(monkeypatch, up=False)
+    _quiet(monkeypatch, core)
+    monkeypatch.setattr(service, "_conf_facts",
+                        lambda *_a: {"full": False, "awg": False, "v6": False})
+    _with_tunnels(monkeypatch, {"id": "v", "name": "VLESS", "mode": "all",
+                                "proto": "vless", "active": "p_0123456789abcdef"})
+    monkeypatch.setattr(service.tunnels, "list_confs",
+                        lambda tid, proto="wg": ["p_0123456789abcdef"] if tid == "v" else [])
+    monkeypatch.setattr(service.subscriptions, "list_profiles",
+                        lambda: [{"id": "p_0123456789abcdef", "name": "Токио"}])
+
+    t = core._status()["tunnels"][0]
+
+    # active у VLESS — id профиля; окну для карточки нужно имя.
+    assert t["active"] == "p_0123456789abcdef"
+    assert t["names"] == {"p_0123456789abcdef": "Токио"}
+
+
+def test_отпечаток_vless_профиля_читает_подписки_один_раз(monkeypatch):
+    """Два чтения подряд: между ними refresh заменит файл, и прошлый итог
+    пропадёт. Пустой список — тоже None, а не []."""
+    calls = []
+    monkeypatch.setattr(service.subscriptions, "load",
+                        lambda: calls.append(1) or {"profiles": []})
+
+    assert service.Core._conf_stamp("v", "p_1", "vless") is None
+    assert len(calls) == 1
+
+    monkeypatch.setattr(service.subscriptions, "load",
+                        lambda: {"profiles": [{"id": "p_2", "fingerprint": "f"}]})
+    assert service.Core._conf_stamp("v", "p_1", "vless") is None
 
 
 def test_основной_поднимается_на_лету_не_запасной_выход(monkeypatch):
@@ -168,7 +203,8 @@ def test_основной_поднимается_на_лету_не_запасн
     core = _core(monkeypatch, up=True)
     _quiet(monkeypatch, core)
     monkeypatch.setattr(service, "_conf_facts", lambda *_a: {"full": True, "awg": False, "v6": False})
-    monkeypatch.setattr(service.tunnels, "list_confs", lambda tid: [f"{tid}.conf"])
+    monkeypatch.setattr(service.tunnels, "list_confs",
+                        lambda tid, proto="wg": [f"{tid}.conf"])
     _with_tunnels(monkeypatch, {"id": "work", "name": "Работа", "mode": "list"},
                   {"id": "home", "name": "Личный", "mode": "all"})
     core.prober.set(out="direct", exit_state="direct")
@@ -218,10 +254,11 @@ def test_прошлый_итог_по_id_туннеля_до_замены_фай
     _with_tunnels(monkeypatch, {"id": "work", "name": "Работа", "mode": "list"},
                   {"id": "home", "name": "Личный", "mode": "all"},
                   {"id": "lab", "name": "Лаб", "mode": "list"})
-    monkeypatch.setattr(service.tunnels, "list_confs", lambda tid: [f"{tid}-1"])
+    monkeypatch.setattr(service.tunnels, "list_confs",
+                        lambda tid, proto="wg": [f"{tid}-1"])
     stamp = {"work-1": 1, "home-1": 1, "lab-1": 1}
     monkeypatch.setattr(service.Core, "_conf_stamp",
-                        staticmethod(lambda tid, name: stamp[name]))
+                        staticmethod(lambda tid, name, proto="wg": stamp[name]))
 
     core._remember_check({"tunnels": [{"id": "work", "check": "up"},
                                       {"id": "home", "check": "error"},
@@ -266,10 +303,10 @@ def test_howto_отдаёт_собранное_без_ключей(run_dir, monk
     reply = _core(monkeypatch, up=False).handle("howto", {}, True)
 
     assert reply == {"ok": True, "howto": {"endpoints": [
-        {"tag": "wg-work", "address": "10.8.0.2/32", "mtu": 1280, "awg": False,
+        {"tag": "wg-work", "tid": "work", "address": "10.8.0.2/32", "mtu": 1280, "awg": False,
          "peer": "203.0.113.9", "dns": "10.1.1.5",
          "nets": ["10.10.0.0/16"], "domains": ["corp.example"]},
-        {"tag": "wg-home", "address": "10.8.0.2/32", "mtu": 1280, "awg": True,
+        {"tag": "wg-home", "tid": "home", "address": "10.8.0.2/32", "mtu": 1280, "awg": True,
          "peer": "203.0.113.9", "dns": "", "nets": [], "domains": []}]}}
     assert "секрет" not in json.dumps(reply) and "ключ" not in json.dumps(reply)
 
