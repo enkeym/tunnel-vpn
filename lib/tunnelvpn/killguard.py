@@ -80,6 +80,7 @@ PROTOCOL = "3971ef2b-623e-4f9a-8cb1-6e79b806b9a7"
 PERMIT = 0x1002
 BLOCK = 0x1001
 PERSISTENT = 1
+MATCH_NOT_EQUAL = 10
 LOCK = threading.RLock()
 
 
@@ -236,7 +237,7 @@ def apply(data, tun_index=None):
                     net = ipaddress.IPv4Network(prefix)
                     mask = V4Mask(int(net.network_address), int(net.netmask))
                     engine.add(layer, PERMIT, _condition(REMOTE, 0x100, mask),
-                               _condition(PORT, 2, 53, match=9))
+                               _condition(PORT, 2, 53, match=MATCH_NOT_EQUAL))
             engine.add(layer, BLOCK)
 
 

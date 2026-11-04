@@ -77,7 +77,7 @@ def test_локальная_сеть_не_разрешает_обход_чере
     rules = _conditions(wfp, killguard.REMOTE)
     assert rules
     assert all(layer == killguard.LAYERS[0] for layer, _, _ in rules)
-    assert all(conds[1].match == 9 and conds[1].value.u16 == 53
+    assert all(conds[1].match == 10 and conds[1].value.u16 == 53
                for _, _, conds in rules)
 
 
