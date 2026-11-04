@@ -56,7 +56,10 @@ function Sign-Files([string[]]$Files) {
 
 # --- Бинарники должны быть на месте ДО сборки: PyInstaller кладёт их внутрь
 # сборки, и без них установщик соберётся, а приложение работать не будет.
-foreach ($f in 'sing-box.exe', 'wintun.dll') {
+if (-not (Test-Path (Join-Path $Bin 'happwn.dll'))) {
+    & (Join-Path $Root 'happ_bridge\build.ps1')
+}
+foreach ($f in 'sing-box.exe', 'wintun.dll', 'happwn.dll') {
     if (-not (Test-Path (Join-Path $Bin $f))) {
         Write-Host "нет lib\bin\$f - см. README, раздел «Из исходников»"
         exit 1
@@ -159,6 +162,7 @@ try {
     $Dist = Join-Path $Root 'dist\TunnelVPN'
     Copy-Item (Join-Path $Bin 'sing-box.exe') $Dist -Force
     Copy-Item (Join-Path $Bin 'wintun.dll') $Dist -Force
+    Copy-Item (Join-Path $Bin 'happwn.dll') $Dist -Force
 
     # До дымовых проверок: они гоняют уже подписанные exe.
     if ($SignTool) {

@@ -937,6 +937,9 @@ class Api:
 
     def _subscription_op(self, op, arg, apply=True):
         payload = {"id": arg.get("id", "")}
+        if op == "remove-profile" and arg.get("tunnel"):
+            payload["tunnel"] = arg.get("tunnel", "")
+            payload["drop_tunnel"] = arg.get("drop_tunnel") is True
         if op == "set-allow-private":
             payload["on"] = bool(arg.get("on"))
         reply = self._admin_call(op, **payload)

@@ -74,6 +74,7 @@ def ui_datas():
 
 datas = ui_datas() + [
     (os.path.join(ROOT, "VERSION"), "."),
+    (os.path.join(ROOT, "happ_bridge", "LICENSE-happwn"), "."),
 ]
 
 # Модули службы pywin32 подтягиваются через getattr, статический анализ их
@@ -140,6 +141,7 @@ COLLECT(
 portable_datas = datas + [
     (os.path.join(ROOT, "lib", "bin", "sing-box.exe"), "."),
     (os.path.join(ROOT, "lib", "bin", "wintun.dll"), "."),
+    (os.path.join(ROOT, "lib", "bin", "happwn.dll"), "."),
 ]
 
 portable_a = Analysis(

@@ -353,6 +353,11 @@ class Tunnel:
             if profile not in tunnels.list_confs(main["id"], main.get("proto", "wg")):
                 return f"нет профиля «{profile}» у туннеля «{main['name']}»"
         want = profile or (main["active"] if main else "")
+        running = (self.proc is not None and self.proc.poll() is None
+                   and want == self.profile
+                   and winnet.tun_index(paths.TUN_IP) is not None)
+        if not running and not winnet.default_route()[1]:
+            return "нет маршрута по умолчанию — сеть не поднята?"
         try:
             with tunnels.LOCK:
                 killguard.apply(tunnels.load(), winnet.tun_index(paths.TUN_IP))
@@ -363,9 +368,7 @@ class Tunnel:
         # Уже работает: второе «Включить» (двойной клик по значку, окно и
         # трей разом) раньше принимало свой же живой туннель за следы
         # прошлого запуска, сносило его и поднимало заново.
-        if (self.proc is not None and self.proc.poll() is None
-                and want == self.profile
-                and winnet.tun_index(paths.TUN_IP) is not None):
+        if running:
             self.log("→ уже работает")
             # Основной жив, а туннель упал: поднимаем только его, иначе
             # «Включить» отвечало бы «работает» при мёртвом туннеле.

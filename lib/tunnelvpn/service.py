@@ -376,6 +376,7 @@ class Core:
     def start(self):
         paths.ensure_dirs()
         self.log(f"=== служба запущена, версия {paths.version()} ===")
+        self._release_guard()
         # Запасного пути через PowerShell нет: каждый отказ WMI и COM — в журнал.
         winnet.on_error = lambda msg: self.log(f"!! {msg}")
         self._migrate()
@@ -406,6 +407,7 @@ class Core:
         with self.lock:
             self._flush_paths()
             self.tunnel.stop()
+            self._release_guard()
 
     # ----------------------------------------------------------- автозапуск
 
@@ -530,7 +532,8 @@ class Core:
         if op == "remove-subscription":
             return self._remove_subscription(payload.get("id", ""))
         if op == "remove-profile":
-            return self._remove_profile(payload.get("id", ""))
+            return self._remove_profile(payload.get("id", ""), tid,
+                                        payload.get("drop_tunnel") is True)
         if op == "set-allow-private":
             return self._set_allow_private(payload.get("id", ""),
                                            payload.get("on") is True)
@@ -1037,8 +1040,12 @@ class Core:
             if err == tunnel.CANCELLED:
                 self.log(f"→ включение отменено через {took:.1f} с — убираю")
                 self.tunnel.stop()
+                guard_err = self._release_guard()
                 if was:
                     self._restore_flags(was)
+                if guard_err:
+                    self.last_error = guard_err
+                    return {"ok": False, "error": guard_err}
                 return {"ok": True, "cancelled": True}
             self.last_error = err
             if err:
@@ -1048,8 +1055,12 @@ class Core:
                 # Наполовину поднятое состояние опаснее выключенного: маршруты
                 # уже могли встать. Убираем за собой сразу, а не ждём человека.
                 self.tunnel.stop()
+                guard_err = self._release_guard()
                 if was:
                     self._restore_flags(was)
+                if guard_err:
+                    self.last_error = guard_err
+                    return {"ok": False, "error": guard_err}
                 return {"ok": False, "error": err}
             self.log(f"→ туннель поднят за {took:.1f} с")
             # Туннель новый: таймауты и паузы перезапуска прошлого сеанса — от
@@ -1233,16 +1244,22 @@ class Core:
             self._flush_paths()
             self.tunnel.stop()
             if release_guard:
-                try:
-                    killguard.release()
-                except OSError as exc:
-                    self.log(f"!! системный kill-switch не снят: {exc}")
-                    return {"ok": False, "error": "Не удалось снять системную блокировку трафика"}
+                guard_err = self._release_guard()
+                if guard_err:
+                    return {"ok": False, "error": guard_err}
             self.last_error = ""
             return {"ok": True}
         finally:
             self._probe_now()
             self.busy = ""
+
+    def _release_guard(self):
+        try:
+            killguard.release()
+        except OSError as exc:
+            self.log(f"!! системный kill-switch не снят: {exc}")
+            return "Не удалось снять системную блокировку трафика"
+        return ""
 
     # ------------------------------------------------------------ сторож
 
@@ -2034,17 +2051,18 @@ class Core:
 
     def _add_link(self, link, tunnel="", place=""):
         try:
-            profile = subscriptions.add_profile(link)
+            profiles, added = subscriptions.add_profiles(link)
+            profile = profiles[0]
             data = tunnels.load()
             t = self._attach_profile(data, profile, tunnel, place)
             t["active"] = profile["id"]
             data = tunnels.save(data)
         except (OSError, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
-        self.log(f"→ добавлена ссылка VLESS: профиль {profile['id']} "
-                 f"в туннеле «{t['name']}»")
+        self.log(f"→ добавлены ссылки VLESS: {added} новых, "
+                 f"{len(profiles)} в наборе туннеля «{t['name']}»")
         return {"ok": True, "profile": profile["id"], "tunnel": t["id"],
-                "place": place or "to"}
+                "place": place or "to", "added": added, "profiles": len(profiles)}
 
     def _add_subscription(self, url, name="", allow_private=False, kind="auto"):
         try:
@@ -2067,11 +2085,12 @@ class Core:
     def _preview(self, link="", url="", name="", allow_private=False, kind="auto"):
         try:
             if link:
-                profile = vless.parse_link(link)
+                profiles = subscriptions.parse_body("auto", link)
+                profile = profiles[0]
                 fields = profile["vless"]
                 return {"ok": True, "type": "link", "name": profile["name"],
                         "host": fields["server"], "port": fields["server_port"],
-                        "profiles": 1}
+                        "profiles": len(profiles)}
             if not url:
                 raise ValueError("нужна ссылка vless:// или HTTPS-адрес подписки")
             sub = subscriptions.preview(url, name, allow_private, kind)
@@ -2126,10 +2145,16 @@ class Core:
         self.log(f"→ удалена подписка {sid}")
         return {"ok": True, "id": sid}
 
-    def _remove_profile(self, pid):
+    def _remove_profile(self, pid, tunnel="", drop_tunnel=False):
         try:
             subscriptions.remove_profile(pid)
             self._drop_profiles()
+            if drop_tunnel and tunnel and not subscriptions.list_profiles():
+                data, t = self._load_target(tunnel)
+                if t.get("proto") == "vless":
+                    result = self._remove_tunnel(tunnel)
+                    if not result["ok"]:
+                        return result
         except (OSError, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
         self.log(f"→ удалён профиль {pid}")

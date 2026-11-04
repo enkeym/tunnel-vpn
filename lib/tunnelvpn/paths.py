@@ -73,6 +73,7 @@ else:
     BIN = os.path.join(BASE, "lib", "bin")
 SINGBOX = os.path.join(BIN, "sing-box.exe")
 WINTUN = os.path.join(BIN, "wintun.dll")
+HAPPWN = os.path.join(BIN, "happwn.dll")
 
 # Вёрстка окна. В onedir-сборке PyInstaller 6+ данные (--add-data) лежат в
 # BUNDLE\tunnelvpn\ui — это подпапка _internal, а НЕ там же, где сам exe, и уж

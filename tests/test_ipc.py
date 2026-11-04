@@ -81,6 +81,20 @@ def test_ответ_больше_буфера_читается_целиком(wi
     assert ipc.call("log", lines=400)["lines"] == lines
 
 
+def test_запрос_больше_буфера_читается_целиком(win):
+    raw = json.dumps({"op": "add-link", "payload": {"link": "x" * 70000}}).encode() + b"\n"
+    win.reads.extend(raw[i:i + ipc._BUF] for i in range(0, len(raw), ipc._BUF))
+
+    assert ipc._read_request("h") == raw
+
+
+def test_слишком_большой_запрос_отклоняется(win):
+    win.reads.extend([b"x" * ipc._BUF] * (ipc._MAX_REQUEST // ipc._BUF + 1))
+
+    with pytest.raises(ValueError, match="запрос слишком большой"):
+        ipc._read_request("h")
+
+
 def test_закрытый_канал_после_ответа_не_ошибка(win):
     win.reads.extend([b'{"ok": true}', _WinError(109)])
     assert ipc.call("status") == {"ok": True}

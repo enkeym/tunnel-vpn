@@ -333,7 +333,7 @@ def test_поднялся_на_повторе_повторы_прекращаю�
     assert core._retry_left == 0
 
 
-def test_автоподключение_без_сети_ждёт_шлюз_и_повторяет(monkeypatch):
+def test_автоподключение_без_сети_ждёт_шлюз_и_повторяет(monkeypatch, wfp):
     """Служба стартует при загрузке раньше сети: 9 октября первая попытка упала
     на «нет маршрута по умолчанию», и VPN стоял выключенным до ручного включения."""
     core = _core(monkeypatch)
@@ -351,11 +351,17 @@ def test_автоподключение_без_сети_ждёт_шлюз_и_п�
     monkeypatch.setattr(service.winnet, "on_error", None)
     monkeypatch.setattr(core, "_migrate", lambda: None)
     monkeypatch.setattr(service.Core, "autostart_enabled", staticmethod(lambda: True))
+    wfp.rules = [("старое правило",)]
+    wfp.layer = True
     core.start()
+    assert wfp.rules == []
     target, kwargs = started[-1]
 
+    wfp.rules = [("правило после неудачного включения",)]
+    wfp.layer = True
     core.tunnel.fail = True
     target(**kwargs)
+    assert wfp.rules == []
     state = _rounds(core, service.UPLINK_SETTLE * 3)
     assert core.tunnel.starts == 1
 

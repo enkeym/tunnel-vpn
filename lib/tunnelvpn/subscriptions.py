@@ -9,7 +9,7 @@ import threading
 from datetime import datetime, timezone
 from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
-from . import netguard, paths, vless
+from . import happ, netguard, paths, vless
 
 VERSION = 1
 KINDS = ("uri-list", "base64", "singbox")
@@ -53,6 +53,8 @@ def _name(value, fallback=""):
 
 
 def _url_key(url):
+    if happ.is_link(url):
+        return happ.check_link(url)
     info = netguard.parse_url(url)
     return f"{info['host']}:{info['port']}{info['path']}"
 
@@ -89,7 +91,14 @@ def _check_sub(raw):
     if not isinstance(raw, dict):
         raise ValueError("подписка должна быть объектом")
     sid = _check_sub_id(raw.get("id"))
-    info = netguard.parse_url(raw.get("url"))
+    url = raw.get("url")
+    if happ.is_link(url):
+        url = happ.check_link(url)
+        host = "Happ"
+    else:
+        info = netguard.parse_url(url)
+        url = info["url"]
+        host = info["host"]
     kind = _check_kind(raw.get("kind", "uri-list"))
     allow_private = raw.get("allow_private", False)
     if not isinstance(allow_private, bool):
@@ -97,8 +106,8 @@ def _check_sub(raw):
     last_error = raw.get("last_error", "")
     if not isinstance(last_error, str):
         raise ValueError(f"подписка {sid}: last_error должен быть строкой")
-    return {"id": sid, "name": _name(raw.get("name"), info["host"]),
-            "url": info["url"], "kind": kind,
+    return {"id": sid, "name": _name(raw.get("name"), host),
+            "url": url, "kind": kind,
             "allow_private": allow_private,
             "updated_at": _check_time(raw.get("updated_at", ""), "updated_at"),
             "last_error": last_error}
@@ -288,21 +297,33 @@ def _record(profile, source, taken):
 
 
 def add_profile(link):
-    profile = vless.parse_link(link)
-    mark = vless.fingerprint(profile)
+    return add_profiles(link)[0][0]
+
+
+def add_profiles(text):
+    profiles = parse_body("auto", text)
     data = load()
-    existing = next((p for p in data["profiles"]
-                     if p["fingerprint"] == mark), None)
-    if existing is not None:
-        if existing["missing"]:
-            existing["missing"] = False
-            save(data)
-        return existing
     taken = {p["id"] for p in data["profiles"]}
-    record = _record(profile, {"manual": True}, taken)
-    data["profiles"].append(record)
-    save(data)
-    return record
+    known = {p["fingerprint"]: p for p in data["profiles"]}
+    records = []
+    added = 0
+    changed = False
+    for profile in profiles:
+        mark = vless.fingerprint(profile)
+        record = known.get(mark)
+        if record is None:
+            record = _record(profile, {"manual": True}, taken)
+            data["profiles"].append(record)
+            known[mark] = record
+            added += 1
+            changed = True
+        elif record["missing"]:
+            record["missing"] = False
+            changed = True
+        records.append(record)
+    if changed:
+        save(data)
+    return records, added
 
 
 def _check_full_url(info):
@@ -315,7 +336,8 @@ def _check_full_url(info):
 def add(url, name="", allow_private=False, kind="auto"):
     info, detected, profiles = fetch(url, allow_private, kind)
     data = load()
-    key = _url_key(info["url"])
+    source = url.strip()
+    key = _url_key(source)
     if any(_url_key(item["url"]) == key for item in data["subscriptions"]):
         raise ValueError("такая подписка уже добавлена")
     taken = {s["id"] for s in data["subscriptions"]}
@@ -329,7 +351,8 @@ def add(url, name="", allow_private=False, kind="auto"):
         known.add(mark)
         data["profiles"].append(
             _record(profile, {"subscription": sid}, profile_ids))
-    sub = {"id": sid, "name": _name(name, info["host"]), "url": info["url"],
+    sub = {"id": sid, "name": _name(name, "Happ" if happ.is_link(source) else info["host"]),
+           "url": source,
            "kind": detected, "allow_private": allow_private,
            "updated_at": _now(), "last_error": ""}
     data["subscriptions"].append(sub)
@@ -343,7 +366,8 @@ def fetch(url, allow_private=False, kind="auto"):
                          f"{', '.join(ADAPTIVE_KINDS)}")
     if not isinstance(allow_private, bool):
         raise ValueError("allow_private должен быть true или false")
-    info = netguard.parse_url(url)
+    source = happ.decrypt(url) if happ.is_link(url) else url
+    info = netguard.parse_url(source)
     _check_full_url(info)
     body = netguard.open_https(_fetch_url(info["url"]),
                                allow_private=allow_private)
@@ -353,7 +377,7 @@ def fetch(url, allow_private=False, kind="auto"):
 
 def preview(url, name="", allow_private=False, kind="auto"):
     info, detected, profiles = fetch(url, allow_private, kind)
-    return {"kind": detected, "name": _name(name, info["host"]),
+    return {"kind": detected, "name": _name(name, "Happ" if happ.is_link(url) else info["host"]),
             "host": info["host"], "port": info["port"],
             "profiles": len(profiles)}
 
@@ -365,9 +389,7 @@ def refresh(sub_id):
     if sub is None:
         raise ValueError(f"нет подписки {sub_id}")
     try:
-        body = netguard.open_https(_fetch_url(sub["url"]),
-                                   allow_private=sub["allow_private"])
-        profiles = parse_body(sub["kind"], body)
+        _, _, profiles = fetch(sub["url"], sub["allow_private"], sub["kind"])
     except ValueError as exc:
         sub["last_error"] = str(exc)
         save(data)

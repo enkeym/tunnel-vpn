@@ -237,6 +237,18 @@ def env(monkeypatch, tmp_path):
             fh.close()
 
 
+def test_нет_шлюза_не_ставит_системную_блокировку(env, monkeypatch, wfp):
+    tun, _build, seen = env
+    data = tunnels.load()
+    data["kill_switch"] = True
+    tunnels.save(data)
+    monkeypatch.setattr(seen["net"], "default_route", lambda: (None, ""))
+
+    assert tun.start() == "нет маршрута по умолчанию — сеть не поднята?"
+    assert wfp.rules == []
+    assert seen["started"] == []
+
+
 def test_адрес_спрашивается_пока_собирается_конфиг(env, monkeypatch):
     tun, build, seen = env
     ifconfig = FakeIfconfig("198.51.100.7")

@@ -90,6 +90,42 @@ def test_та_же_ссылка_не_плодит_профиль_и_туннел
     assert len(tunnels.load()["tunnels"]) == 1
 
 
+def test_массовая_вставка_создаёт_запасные_и_оставляет_первый_активным():
+    core = _core()
+    links = "\n".join((_link(), _link(uuid=UUID2, name="Second", path="/b"), _link()))
+
+    preview = core.handle("preview", {"link": links}, True)
+    reply = core.handle("add-link", {"link": links}, True)
+
+    assert preview["profiles"] == 2
+    assert reply["profiles"] == reply["added"] == 2
+    assert _tunnel(reply)["active"] == reply["profile"]
+    assert len(subscriptions.list_profiles()) == 2
+    assert service.Core._spares(reply["tunnel"])[1] == [subscriptions.list_profiles()[1]["id"]]
+
+
+def test_удаление_последнего_vless_профиля_может_сохранить_или_убрать_правила():
+    core = _core()
+    first = core.handle("add-link", {"link": _link()}, True)
+    data = tunnels.load()
+    data["tunnels"][0]["exclude"] = ["example.test"]
+    tunnels.save(data)
+
+    kept = core.handle("remove-profile", {"id": first["profile"],
+                                           "tunnel": first["tunnel"],
+                                           "drop_tunnel": False}, True)
+
+    assert kept["ok"] is True
+    assert _tunnel(first)["exclude"] == ["example.test"]
+    second = core.handle("add-link", {"link": _link()}, True)
+    dropped = core.handle("remove-profile", {"id": second["profile"],
+                                              "tunnel": second["tunnel"],
+                                              "drop_tunnel": True}, True)
+
+    assert dropped["ok"] is True
+    assert tunnels.load()["tunnels"] == []
+
+
 def test_place_new_заводит_второй_туннель_по_списку():
     core = _core()
     main = core.handle("add-link", {"link": _link()}, True)

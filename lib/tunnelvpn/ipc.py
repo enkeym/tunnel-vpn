@@ -54,6 +54,7 @@ def requires_admin(op):
     return op not in READ_OPS and op not in USER_OPS
 
 _BUF = 65536
+_MAX_REQUEST = 1024 * 1024
 
 
 class Server:
@@ -139,11 +140,8 @@ class Server:
                 pass
 
     def _exchange(self, pipe):
-        import win32file
-        import win32pipe
-
-        _, data = win32file.ReadFile(pipe, _BUF)
         try:
+            data = _read_request(pipe)
             req = json.loads(data.decode("utf-8"))
             op = str(req.get("op", ""))
             payload = req.get("payload") or {}
@@ -284,7 +282,7 @@ def call(op, **payload):
             raise NotRunning(
                 f"служба {paths.SERVICE_NAME} не отвечает: канал занят")
 
-        win32file.WriteFile(handle, req)
+        win32file.WriteFile(handle, req + b"\n")
         data = _read_reply(handle, STATUS_TIMEOUT if op == "status" else None)
     except pywintypes.error as exc:
         # Код Windows остаётся в __cause__: его пишет журнал трея (tray._heal).
@@ -356,6 +354,23 @@ def check_by_side(on_side, poll=CHECK_POLL, lock=None):
 
 # ERROR_BROKEN_PIPE: сервер закрыл свой конец — после ответа это нормальный конец.
 _ERROR_BROKEN_PIPE = 109
+
+
+def _read_request(handle):
+    import win32file
+
+    chunks = []
+    size = 0
+    while True:
+        _, chunk = win32file.ReadFile(handle, _BUF)
+        size += len(chunk)
+        if size > _MAX_REQUEST:
+            raise ValueError("запрос слишком большой")
+        if not chunk:
+            raise ValueError("неполный запрос")
+        chunks.append(chunk)
+        if chunk.endswith(b"\n"):
+            return b"".join(chunks)
 
 
 def _read_reply(handle, timeout=None):

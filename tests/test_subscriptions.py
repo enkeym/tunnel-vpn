@@ -5,7 +5,7 @@ from urllib.parse import quote, urlencode
 
 import pytest
 
-from tunnelvpn import netguard, paths, subscriptions, vless
+from tunnelvpn import happ, netguard, paths, subscriptions, vless
 
 UUID1 = "00000000-0000-4000-8000-000000000001"
 UUID2 = "00000000-0000-4000-8000-000000000002"
@@ -68,12 +68,73 @@ def _raw_sub():
             "allow_private": False, "updated_at": "", "last_error": ""}
 
 
+def test_happ_подписка_сохраняет_исходную_ссылку_и_обновляется(monkeypatch):
+    link = "happ://crypt5/AbCd1234="
+    decoded = "https://sub.example.test/sub"
+    calls = _fake_open(monkeypatch, _link())
+    decoded_links = []
+
+    def decrypt(value):
+        decoded_links.append(value)
+        return decoded
+
+    monkeypatch.setattr(happ, "decrypt", decrypt)
+
+    sub = subscriptions.add(link)
+    assert sub["url"] == link
+    assert sub["name"] == "Happ"
+    assert subscriptions.preview(link)["profiles"] == 1
+    assert subscriptions.refresh(sub["id"])["total"] == 1
+    assert decoded_links == [link, link, link]
+    assert [url for url, _ in calls] == [decoded, decoded, decoded]
+    with pytest.raises(ValueError, match="уже добавлена"):
+        subscriptions.add(link)
+
+
+def test_happ_расшифрованный_адрес_проверяется(monkeypatch):
+    monkeypatch.setattr(happ, "decrypt", lambda _: "http://127.0.0.1/sub")
+
+    with pytest.raises(ValueError, match="только по HTTPS"):
+        subscriptions.add("happ://crypt5/AbCd1234=")
+
+    assert subscriptions.load() == subscriptions.empty()
+
+
+@pytest.mark.parametrize("value", [
+    "happ://crypt5/", "happ://crypt6/AAAA", "happ://crypt5/AA BB",
+    "happ://crypt5/" + "a" * (happ.MAX_LINK + 1),
+])
+def test_happ_неверная_ссылка_отклоняется(value):
+    with pytest.raises(ValueError, match="ожидается ссылка"):
+        happ.check_link(value)
+
+
 def _raw_profile():
     profile = vless.parse_link(_link())
     return {"id": "p_0123456789abcdef", "name": profile["name"],
             "proto": "vless", "fingerprint": "ignored",
             "vless": profile["vless"], "source": {"manual": True},
             "missing": False}
+
+
+def test_массовый_импорт_отклоняет_неверную_строку_целиком():
+    text = _link() + "\nnot-a-vless-link"
+
+    with pytest.raises(ValueError, match="строка 2"):
+        subscriptions.add_profiles(text)
+
+    assert subscriptions.list_profiles() == []
+
+
+def test_массовый_импорт_пропускает_уже_известные_профили():
+    first = subscriptions.add_profile(_link())
+
+    records, added = subscriptions.add_profiles(
+        _link() + "\n" + _link(uuid=UUID2, name="Second"))
+
+    assert added == 1
+    assert records[0]["id"] == first["id"]
+    assert len(subscriptions.list_profiles()) == 2
 
 
 def test_пустое_хранилище():
