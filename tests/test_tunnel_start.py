@@ -886,8 +886,6 @@ def test_имена_пиров_резолвятся_разом(env, monkeypatch)
 
 
 def test_включение_vless_резолвит_сервер_и_ставит_маршрут(live):
-    """В боковом VLESS нет endpoints: адрес берётся из outbound, host-маршрут
-    к нему ставится тот же, что пиру WireGuard, — иначе петля через tun."""
     tun, seen = live
     side = tunnel.Side("v", "VLESS")
     cfg = {"inbounds": [{"type": "mixed", "tag": "socks-in",

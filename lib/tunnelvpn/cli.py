@@ -30,7 +30,6 @@
     tunnelvpn service start|stop|restart
     tunnelvpn service console     запустить логику службы прямо здесь, без установки
 
-Команды туннеля идут в службу через канал — сами они систему не трогают.
 """
 
 import os
@@ -245,7 +244,18 @@ def main(argv=None):
         return 0
 
     if cmd == "stop":
-        r = _call("stop")
+        try:
+            r = ipc.call("stop")
+        except ipc.NotRunning:
+            from . import killguard, tunnel
+            try:
+                tunnel.Tunnel(print).stop()
+                killguard.release()
+            except OSError:
+                r = {"ok": False, "error": "Не удалось убрать туннель и системную блокировку; "
+                     "повторите команду от администратора"}
+            else:
+                r = {"ok": True}
         print("→ выключено" if r.get("ok") else f"не вышло: {r.get('error')}")
         return 0 if r.get("ok") else 1
 

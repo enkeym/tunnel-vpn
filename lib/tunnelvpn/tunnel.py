@@ -29,7 +29,7 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-from . import buildconfig, paths, tunnels, vless, winnet
+from . import buildconfig, killguard, paths, tunnels, vless, winnet
 
 KEEP_LOGS = 10
 
@@ -350,9 +350,15 @@ class Tunnel:
             if main is None:
                 return (f"нет туннеля для всего остального трафика — "
                         f"профиль «{profile}» некуда поставить")
-            if profile not in tunnels.list_confs(main["id"]):
+            if profile not in tunnels.list_confs(main["id"], main.get("proto", "wg")):
                 return f"нет профиля «{profile}» у туннеля «{main['name']}»"
         want = profile or (main["active"] if main else "")
+        try:
+            with tunnels.LOCK:
+                killguard.apply(tunnels.load(), winnet.tun_index(paths.TUN_IP))
+        except OSError as exc:
+            self.log(f"!! системный kill-switch не установлен: {exc}")
+            return "Не удалось установить системную блокировку трафика"
 
         # Уже работает: второе «Включить» (двойной клик по значку, окно и
         # трей разом) раньше принимало свой же живой туннель за следы
@@ -537,6 +543,12 @@ class Tunnel:
         self.log(f"→ tun: интерфейс {tun_idx}")
         self.own("tun", tun_idx)
         self._tun_hint = tun_idx
+        try:
+            with tunnels.LOCK:
+                killguard.apply(tunnels.load(), tun_idx)
+        except OSError as exc:
+            self.log(f"!! системный kill-switch не обновлён: {exc}")
+            return "Не удалось разрешить трафик через VPN-интерфейс"
 
         # Маршруты ставит сам sing-box через auto_route: в обход пиров
         # (route_exclude_address) — дробными префиксами, иначе половинками.
@@ -773,11 +785,6 @@ class Tunnel:
 
     @contextlib.contextmanager
     def trial_vless(self, tid, profile):
-        """Временный sing-box с VLESS-профилем profile туннеля tid.
-
-        Сервер-имя резолвится до старта процесса и получает host-маршрут через
-        аплинк, как пир WireGuard: иначе при поднятом VPN пакеты к нему ушли бы
-        в tun петлёй."""
         tag = buildconfig.ep_tag(tid)
         try:
             peer = buildconfig.peer_host(profile["vless"]["server"], tag,
@@ -795,10 +802,6 @@ class Tunnel:
 
     @contextlib.contextmanager
     def _trial_run(self, tid, label, config, peer=""):
-        """Общий запуск временного sing-box: json config(link) в state\\run\\,
-        вход на loopback и host-маршрут к peer через аплинк. Отдаёт
-        (связь, '') или (None, причина); процесс, json и маршрут снимаются
-        на выходе."""
         if not os.path.isfile(paths.SINGBOX):
             yield None, "нет sing-box — переустановите приложение"
             return

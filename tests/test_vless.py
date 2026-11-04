@@ -159,12 +159,15 @@ def test_регистр_uuid_и_домена():
 
 
 def test_ipv6_адрес():
-    p = vless.parse_link(
-        f"vless://{UUID}@[2001:db8::1]:443?type=ws&security=tls"
-        "&path=/ws&host=example.com&sni=example.com&fp=chrome")
+    with pytest.raises(ValueError, match="IPv6-адрес сервера"):
+        vless.parse_link(
+            f"vless://{UUID}@[2001:db8::1]:443?type=ws&security=tls"
+            "&path=/ws&host=example.com&sni=example.com&fp=chrome")
 
-    assert p["vless"]["server"] == "2001:db8::1"
-    assert "[2001:db8::1]:443" in vless.canonical(p)
+
+def test_ipv6_сервер_в_json_отклоняется():
+    with pytest.raises(ValueError, match="IPv6-адрес сервера"):
+        vless.parse_singbox_json(_json(_outbound(server="2001:db8::1")))
 
 
 def test_отпечаток_это_sha256_канонической_ссылки():

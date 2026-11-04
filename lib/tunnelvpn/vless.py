@@ -157,6 +157,8 @@ def _check_header_type(value):
 def _profile(name, uuid_value, server, port, host, path, sni, fp):
     uuid_value = _check_uuid(uuid_value)
     server = _check_host(server, "адрес сервера")
+    if ":" in server:
+        raise ValueError("IPv6-адрес сервера пока не поддерживается: нужен IPv4 или домен с A-записью")
     port = _check_port(port)
     path = _check_path(path or "/")
     host = _check_host(host, "host") if host else ""

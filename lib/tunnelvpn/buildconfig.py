@@ -747,8 +747,6 @@ UPLINK_DNS_TAG = "uplink"
 # (UPLINK_DNS_TAG). Им служба резолвит имена пиров при поднятом VPN
 # (resolve_peer, net_dns): системный DNS тогда смотрит в основной туннель.
 PEER_DNS_IN = "peer-dns-in"
-# Боковой процесс VLESS: выход и его bootstrap-DNS. Тег выхода не зависит от
-# туннеля: в конфиге он один.
 VLESS_TAG = "vless-out"
 VLESS_DNS_TAG = "dns-bootstrap"
 
@@ -838,7 +836,6 @@ def side_config(ep, link, level="info"):
 
 
 def _is_ip(host):
-    """host — IP-литерал: резолвить и держать для него DNS нечего."""
     try:
         ipaddress.ip_address(host)
     except ValueError:
@@ -847,12 +844,6 @@ def _is_ip(host):
 
 
 def side_config_vless(profile, link, level="info", server=""):
-    """Боковой конфиг VLESS: вход на loopback и VLESS outbound.
-
-    server — адрес сервера профиля, уже резолвленный сборкой: имя в outbound
-    дожило бы до старта, когда системный DNS уже смотрит в tun, и пакеты к
-    серверу ушли бы петлёй. Осталось имя (туннель выключен) — резолвит сам
-    sing-box через bootstrap-DNS, как резерв до включения."""
     out = vless.to_outbound(profile, VLESS_TAG)
     if server:
         out["server"] = server
@@ -874,10 +865,6 @@ def side_config_vless(profile, link, level="info", server=""):
 
 
 def side_host(cfg):
-    """Адрес сервера бокового конфига: пир WireGuard или сервер VLESS.
-
-    В боковом VLESS нет endpoints — адрес лежит в outbound. По нему включение
-    ставит host-маршрут и переписывает его на резолвленный IP."""
     for ep in cfg.get("endpoints") or []:
         for peer in ep.get("peers") or []:
             host = (peer.get("address") or "").strip()
@@ -890,7 +877,6 @@ def side_host(cfg):
 
 
 def set_side_host(cfg, host):
-    """Ставит резолвленный адрес в боковой конфиг. False — заменять нечего."""
     for ep in cfg.get("endpoints") or []:
         for peer in ep.get("peers") or []:
             if (peer.get("address") or "").strip():
@@ -1185,7 +1171,6 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
                 log(f"  [{t['id']}] «{t['name']}»: конфига нет, туннель пропускаю")
             continue
         if t.get("proto") == "vless":
-            # path здесь — профиль из subscriptions.json, .conf у vless нет.
             conf, ep = path, None
             if not t["enabled"]:
                 log(f"  [{t['id']}] «{t['name']}»: выключен — процесс не "
@@ -1287,7 +1272,6 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
         rules.append({"rule_set": [rules_tag(t["id"])],
                       "outbound": via_tag(t["id"])})
         # DNS туннеля: из [Interface] DNS его .conf, иначе не поднимаем.
-        # У VLESS своего DNS нет — имя сервера резолвит боковой процесс.
         servers = conf_dns(conf) if ep else []
         if not (stubs or t["enabled"] or t["id"] in live_dns):
             # Выключенному DNS не нужен, а новый сервер меняет основной конфиг:
@@ -1427,8 +1411,6 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
             continue
         link = links[t["id"]][0]
         if t.get("proto") == "vless":
-            # Включённому сервер резолвим здесь, пока DNS ещё системный; у
-            # выключенного имя резолвит включение (_place_side).
             server = (peer_host(conf["vless"]["server"], ep_tag(t["id"]), log)
                       if resolve and t["enabled"] else "")
             sides[t["id"]] = side_config_vless(conf, link, level, server)

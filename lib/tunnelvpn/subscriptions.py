@@ -1,13 +1,3 @@
-"""Подписки и профили VLESS: conf\\subscriptions.json.
-
-Подписка — HTTPS-адрес, с которого приходит список ссылок vless://
-(uri-list, base64/base64url или sing-box JSON с VLESS outbounds). Профиль —
-разобранная ссылка: его id становится active VLESS-туннеля, а отпечаток
-канонической ссылки (vless.fingerprint) — признак «тот же сервер».
-
-Обновление никогда не удаляет профили: исчезнувший у источника помечается
-missing и остаётся, пока человек не удалит его сам.
-"""
 
 import base64
 import binascii
@@ -28,8 +18,6 @@ NAME_MAX_LEN = 80
 
 _SUB_ID = re.compile(r"^s_[0-9a-f]{16}$")
 _PROFILE_ID = re.compile(r"^p_[0-9a-f]{16}$")
-# Свой бот: /sub/<uuid>. Формат он выбирает по User-Agent, поэтому просим
-# base64 явно; чужие подписки не трогаем, даже если путь похож.
 _BOT_SUB = re.compile(
     r"^/sub/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/?$",
     re.IGNORECASE)
@@ -70,9 +58,6 @@ def _url_key(url):
 
 
 def _fetch_url(url):
-    """Адрес для скачивания: у своего бота явно просят base64, не надеясь на
-    User-Agent. Сохранённый адрес не меняется: учётные параметры остаются как
-    были, а чужие подписки запрашиваются ровно по тому адресу, что дал человек."""
     parts = urlsplit(url)
     if not _BOT_SUB.match(parts.path):
         return url
@@ -353,8 +338,6 @@ def add(url, name="", allow_private=False, kind="auto"):
 
 
 def fetch(url, allow_private=False, kind="auto"):
-    """Скачивает и разбирает источник, ничего не записывая: предпросмотр и
-    добавление видят один и тот же набор профилей и одинаково отклоняют /full."""
     if kind not in ADAPTIVE_KINDS:
         raise ValueError(f"вид подписки {kind!r}, ожидаю один из "
                          f"{', '.join(ADAPTIVE_KINDS)}")
@@ -369,8 +352,6 @@ def fetch(url, allow_private=False, kind="auto"):
 
 
 def preview(url, name="", allow_private=False, kind="auto"):
-    """Что даст подписка: формат, имя, адрес и число профилей. Без записи,
-    без сети при неверном адресе и без вывода UUID."""
     info, detected, profiles = fetch(url, allow_private, kind)
     return {"kind": detected, "name": _name(name, info["host"]),
             "host": info["host"], "port": info["port"],
@@ -397,13 +378,15 @@ def refresh(sub_id):
     existing = [p for p in data["profiles"]
                 if p["source"] == {"subscription": sub_id}]
     by_mark = {p["fingerprint"]: p for p in existing}
+    other_marks = {p["fingerprint"] for p in data["profiles"]
+                   if p["source"] != {"subscription": sub_id}}
     taken = {p["id"] for p in data["profiles"]}
     ordered = []
     seen = set()
     added = updated = 0
     for profile in profiles:
         mark = vless.fingerprint(profile)
-        if mark in seen:
+        if mark in seen or mark in other_marks:
             continue
         seen.add(mark)
         record = by_mark.get(mark)

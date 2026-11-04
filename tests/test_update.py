@@ -43,6 +43,7 @@ def _signed(subject="CN=Enkeym", status="Valid"):
 @pytest.fixture(autouse=True)
 def _empty_dir():
     update.clear()
+    os.makedirs(update.DIR, exist_ok=True)
     yield
     update.clear()
 

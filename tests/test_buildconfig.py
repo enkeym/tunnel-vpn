@@ -1411,7 +1411,6 @@ def test_распознавание_cidr(value, ok):
     assert buildconfig._is_cidr(value) is ok
 
 
-# --------------------------------------------------------------- vless
 
 VLESS_LINK = ("vless://11111111-1111-4111-8111-111111111111@example.com:443"
               "?encryption=none&security=tls&type=ws&path=%2Fws"
@@ -1420,7 +1419,6 @@ VLESS_LINK = ("vless://11111111-1111-4111-8111-111111111111@example.com:443"
 
 @pytest.fixture
 def vless_build(tmp_path, monkeypatch):
-    """VLESS-туннель без .conf: active — профиль из subscriptions.json."""
     monkeypatch.setattr(paths, "RUN", str(tmp_path))
     monkeypatch.setattr(paths, "CONF", str(tmp_path / "conf"))
     monkeypatch.setattr(paths, "SUBSCRIPTIONS_JSON",
@@ -1445,8 +1443,6 @@ def vless_build(tmp_path, monkeypatch):
 
 
 def test_min_конфиг_для_проверки_ядра_совпадает_со_сборкой():
-    """sing-box check на Windows идёт по этому файлу: он должен быть тем же
-    боковым конфигом, который собирает приложение."""
     path = os.path.join(os.path.dirname(__file__), "fixtures",
                         "singbox-vless-min.json")
     with open(path, encoding="utf-8") as fh:
@@ -1486,8 +1482,6 @@ def test_vless_домен_сервера_резолвит_свой_bootstrap_dns
 
 
 def test_vless_резолвленный_сервер_без_bootstrap_dns(vless_build, monkeypatch):
-    """Сервер резолвит сборка, пока DNS системный: в outbound уже IP, и
-    резолвить в боковом процессе нечего — ни DNS, ни domain_resolver."""
     monkeypatch.setattr(buildconfig, "peer_host",
                         lambda *_args, **_kw: "203.0.113.9")
 

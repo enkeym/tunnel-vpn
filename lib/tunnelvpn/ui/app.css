@@ -1456,7 +1456,6 @@ body.kbd :focus-visible {
   white-space: nowrap;
 }
 
-/* ------------------------------------------------ подписки и профили VLESS */
 .subs {
   display: grid;
   gap: var(--sp-3);

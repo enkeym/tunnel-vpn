@@ -302,10 +302,8 @@ class Api:
         elif name == "remove_profile":
             return self._subscription_op("remove-profile", arg or {})
         elif name == "set_allow_private":
-            # Флаг источника: профили не меняются, перезапускать туннели нечего.
             return self._subscription_op("set-allow-private", arg or {}, apply=False)
         elif name == "list_subscriptions":
-            # Ответ — возвратом send: лист подписок ждёт его промисом.
             return self._admin_call("list-subscriptions")
         elif name == "show_config":
             self._show_conf(arg["tunnel"], arg["name"])
@@ -798,7 +796,6 @@ class Api:
             self.js("failed", f"нет конфига «{name}»")
             return
         if t.get("proto") == "vless":
-            # У профиля нет файла: меняется он повторной вставкой ссылки.
             self.js("failed", "VLESS-профиль меняется повторной вставкой ссылки")
             return
         # Полный путь: с правами запускается то, что найдётся по имени, а
@@ -860,9 +857,6 @@ class Api:
             self.js("failed", str(exc))
 
     def _conf_details(self, tunnel, name, proto=""):
-        """«Подробности» конфига: поля файла без ключей. Читает служба, как и
-        «Показать», — каталог закрыт. У VLESS «файла» нет: из канонической
-        ссылки берём сервер и транспорт, UUID не отдаём."""
         reply = self._admin_call("read-config", tunnel=tunnel, name=name)
         if not reply.get("ok"):
             return {"ok": False, "error": reply.get("error") or "не прочитать конфиг"}
@@ -906,10 +900,8 @@ class Api:
             return
         self._apply()
 
-    # ------------------------------------------------- ссылки и подписки
 
     def _add_link(self, arg):
-        """Вставленная ссылка vless://: служба заводит профиль и VLESS-туннель."""
         reply = self._admin_call("add-link", link=arg.get("link", ""),
                                  tunnel=arg.get("tunnel", ""),
                                  place=arg.get("place", ""))
@@ -923,7 +915,6 @@ class Api:
         return reply
 
     def _add_subscription(self, arg):
-        """HTTPS-подписка: профили и первый из них — в VLESS-туннель."""
         reply = self._admin_call("add-subscription", url=arg.get("url", ""),
                                  name=arg.get("name", ""),
                                  allow_private=bool(arg.get("allow_private")))
@@ -937,7 +928,6 @@ class Api:
         return reply
 
     def _preview(self, arg):
-        """Предпросмотр ссылки или подписки: ничего не добавляет."""
         return self._admin_call("preview",
                                 link=arg.get("link", ""),
                                 url=arg.get("url", ""),
@@ -946,7 +936,6 @@ class Api:
                                 kind=arg.get("kind", "auto") or "auto")
 
     def _subscription_op(self, op, arg, apply=True):
-        """Обновление, удаление и флаг источника: меняется хранилище профилей."""
         payload = {"id": arg.get("id", "")}
         if op == "set-allow-private":
             payload["on"] = bool(arg.get("on"))

@@ -28,3 +28,59 @@ for _sub in ("conf", "state", os.path.join("state", "logs")):
     os.makedirs(os.path.join(_DATA, _sub), exist_ok=True)
 
 sys.path.insert(0, os.path.join(_ROOT, "lib"))
+
+
+import contextlib
+import pytest
+
+from tunnelvpn import killguard
+
+
+class FakeWFP:
+    def __init__(self):
+        self.rules = []
+        self.failure = False
+        self.layer = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        pass
+
+    @contextlib.contextmanager
+    def transaction(self):
+        before, layer = list(self.rules), self.layer
+        try:
+            yield
+        except BaseException:
+            self.rules, self.layer = before, layer
+            raise
+
+    def clear(self):
+        self.rules = []
+        self.layer = False
+
+    def sublayer(self):
+        self.layer = True
+
+    @contextlib.contextmanager
+    def app(self, filename):
+        condition = killguard._condition(killguard.APP, 12, killguard.Blob())
+        condition.filename = filename
+        yield condition
+
+    def luid(self, index):
+        return killguard.ct.c_uint64(index)
+
+    def add(self, layer, action, *conditions):
+        if self.failure:
+            raise OSError("WFP недоступен")
+        self.rules.append((layer, action, conditions))
+
+
+@pytest.fixture(autouse=True)
+def wfp(monkeypatch):
+    engine = FakeWFP()
+    monkeypatch.setattr(killguard, "Engine", lambda: engine)
+    return engine

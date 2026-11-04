@@ -960,7 +960,6 @@ def _conf_name(t):
     active = t.get("active") or (confs[0] if len(confs) == 1 else "")
     if active not in confs:
         return None
-    # У VLESS active — id профиля, а в подписи нужно его имя (names статуса).
     return (t.get("names") or {}).get(active, active)
 
 

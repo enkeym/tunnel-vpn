@@ -118,7 +118,6 @@ def test_имя_конфига_туннеля(t, name):
 
 
 def test_имя_профиля_vless_в_трее():
-    """active у VLESS — id профиля: в подписи нужно имя из names статуса."""
     t = {"confs": ["p_1"], "active": "p_1", "names": {"p_1": "Токио"}}
 
     assert tray._conf_name(t) == "Токио"

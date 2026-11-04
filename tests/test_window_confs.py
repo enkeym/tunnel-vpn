@@ -479,7 +479,6 @@ def test_профиль_и_флаг_источника_без_лишнего_п�
 
     assert admin == [("remove-profile", {"id": "p1"}),
                      ("set-allow-private", {"id": "s1", "on": True})]
-    # Профиль меняет набор туннеля — apply; флаг источника — только чтение статуса.
     assert applied == [True] and refreshed == [True]
 
 

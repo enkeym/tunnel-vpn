@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 
-from . import (buildconfig, ipc, paths, probe, routelist, subscriptions, tunnel,
+from . import (buildconfig, ipc, killguard, paths, probe, routelist, subscriptions, tunnel,
                tunnels, vless, winnet)
 
 AUTOSTART_FILE = os.path.join(paths.STATE, "autostart")
@@ -149,10 +149,6 @@ _NO_FACTS = {"full": False, "awg": False, "v6": False}
 
 
 def _conf_facts(tid, name, proto="wg"):
-    """{full, awg, v6} конфига туннеля: 0.0.0.0/0 в AllowedIPs, поля маскировки
-    AmneziaWG и v6-адрес в [Interface] Address; нет файла или не читается —
-    все False. VLESS-профиль несёт весь трафик (full), IPv6 прозрачен, а
-    маскировки AmneziaWG у него нет."""
     if not name:
         return _NO_FACTS
     if proto == "vless":
@@ -523,8 +519,6 @@ class Core:
                                           payload.get("allow_private") is True,
                                           payload.get("kind", "auto"))
         if op == "preview":
-            # Только чтение: ничего не пишет, но скачивание подписки идёт
-            # от имени службы, поэтому права те же, что у добавления.
             return self._preview(payload.get("link", ""), payload.get("url", ""),
                                  payload.get("name", ""),
                                  payload.get("allow_private") is True,
@@ -588,9 +582,6 @@ class Core:
                          for t in data["tunnels"]
                          for confs in [tunnels.list_confs(
                              t["id"], t.get("proto", "wg"))]]
-        # У VLESS active — id профиля, а не имя: окну для карточек и меню нужно
-        # человеческое имя. Читаем только когда такие туннели есть, и только для
-        # них: у WG состав статуса прежний.
         if any(t.get("proto") == "vless" for t in st["tunnels"]):
             try:
                 names = {p["id"]: p["name"] for p in subscriptions.list_profiles()}
@@ -681,7 +672,6 @@ class Core:
 
     @staticmethod
     def _conf_stamp(tid, name, proto="wg"):
-        """Отпечаток конфига: заменили файл или профиль — прошлый итог не про него."""
         if proto == "vless":
             try:
                 profiles = subscriptions.load()["profiles"]
@@ -889,12 +879,6 @@ class Core:
             return probe.trial_check(link, full, host, dns)
 
     def _run_test_vless(self, t, name, alone=False):
-        """(итог, ответ) профиля name VLESS-туннеля t.
-
-        Тот же профиль уже работает в боковом процессе — проверяем его
-        пробером: второй процесс с тем же сервером увёл бы у живого сессию.
-        Иначе — временный sing-box (Tunnel.trial_vless) и HTTP 204 через него.
-        """
         try:
             profile = subscriptions.find_profile(subscriptions.load(), name)
         except (OSError, ValueError) as exc:
@@ -914,7 +898,6 @@ class Core:
             return probe.trial_check(link, True, "", "")
 
     def _side_with_profile(self, profile):
-        """id работающего бокового процесса с тем же профилем VLESS, иначе None."""
         if self.tunnel.uplink is None:
             return None
         mark = vless.fingerprint(profile)
@@ -1196,6 +1179,12 @@ class Core:
         if plan is None and ask:
             self.pending_apply = True
             return {"ok": True, "applied": "ask"}
+        try:
+            with tunnels.LOCK:
+                killguard.apply(tunnels.load(), winnet.tun_index(paths.TUN_IP))
+        except (OSError, ValueError) as exc:
+            self.log(f"!! системный kill-switch не обновлён: {exc}")
+            return {"ok": False, "error": "Не удалось обновить системную блокировку трафика"}
         # Круг сторожа, начатый до правки, увидел бы перезапускаемый
         # процесс лежащим и перезапустил бы его сам.
         self._human += 1
@@ -1233,9 +1222,9 @@ class Core:
 
     def _do_stop(self):
         """«Выключить» человека: идущее включение отменяет (_command)."""
-        return self._command(("stop",), self._stop_locked)
+        return self._command(("stop",), lambda: self._stop_locked(release_guard=True))
 
-    def _stop_locked(self):
+    def _stop_locked(self, release_guard=False):
         """Снимает туннель; замок уже взят."""
         try:
             self._retry_left = 0
@@ -1243,6 +1232,12 @@ class Core:
             self.busy = "выключаю"
             self._flush_paths()
             self.tunnel.stop()
+            if release_guard:
+                try:
+                    killguard.release()
+                except OSError as exc:
+                    self.log(f"!! системный kill-switch не снят: {exc}")
+                    return {"ok": False, "error": "Не удалось снять системную блокировку трафика"}
             self.last_error = ""
             return {"ok": True}
         finally:
@@ -1787,7 +1782,6 @@ class Core:
 
     @staticmethod
     def _proto_of(data, tid):
-        """Протокол туннеля tid: в tunnels.json до VLESS поля не было — wg."""
         t = tunnels.find(data, tid) if data and tid else None
         return t.get("proto", "wg") if t else "wg"
 
@@ -2015,15 +2009,6 @@ class Core:
         return {"ok": True, "name": name, "tunnel": t["id"], "place": where}
 
     def _attach_profile(self, data, profile, tunnel="", place=""):
-        """VLESS-туннель профиля: указанный tunnel, первый VLESS или новый.
-
-        Новый туннель — основным, если основного ещё нет. Если основной уже
-        есть, ссылка становится основным выходом, а его правила («не пускать»,
-        программы мимо VPN и «пускать») переходят к ней: маршрутизация
-        действующего конфига продолжает работать. Прежний основной — «по
-        списку»: вернуться к нему можно сменой роли туннеля. place "new" —
-        отдельный туннель «по списку» со своими правилами.
-        """
         if tunnel:
             t = self._target(data, tunnel)
             if t.get("proto", "wg") != "vless":
@@ -2048,11 +2033,6 @@ class Core:
         return t
 
     def _add_link(self, link, tunnel="", place=""):
-        """Ссылка vless:// — профиль и VLESS-туннель, где он активный.
-
-        Та же ссылка второй раз не дублируется (subscriptions.add_profile),
-        повтор команды идемпотентен. place "new" — новый туннель.
-        """
         try:
             profile = subscriptions.add_profile(link)
             data = tunnels.load()
@@ -2067,7 +2047,6 @@ class Core:
                 "place": place or "to"}
 
     def _add_subscription(self, url, name="", allow_private=False, kind="auto"):
-        """HTTPS-подписка и её первый профиль — активным в VLESS-туннель."""
         try:
             sub = subscriptions.add(url, name, allow_private, kind)
             profiles = subscriptions.list_profiles(sub["id"])
@@ -2086,8 +2065,6 @@ class Core:
                 "tunnel": tid, "profile": pid}
 
     def _preview(self, link="", url="", name="", allow_private=False, kind="auto"):
-        """Что будет добавлено: вид, имя, адрес и число профилей. Ничего не
-        пишет; UUID и параметры ссылки в ответ не попадают."""
         try:
             if link:
                 profile = vless.parse_link(link)
@@ -2105,7 +2082,6 @@ class Core:
                 "profiles": sub["profiles"]}
 
     def _update_subscription(self, sid):
-        """Перечитывает подписку: новые профили, изменённые, пропавшие (missing)."""
         try:
             r = subscriptions.refresh(sid)
         except (OSError, ValueError) as exc:
@@ -2115,7 +2091,6 @@ class Core:
         return {"ok": True, **r}
 
     def _list_subscriptions(self):
-        """Подписки, профили и VLESS-туннели для окна."""
         try:
             subs = subscriptions.list_subscriptions()
             profiles = subscriptions.list_profiles()
@@ -2129,7 +2104,6 @@ class Core:
                 "tunnels": vless}
 
     def _drop_profiles(self):
-        """Активный профиль VLESS-туннеля пропал: берём первый оставшийся."""
         data = tunnels.load()
         changed = False
         for t in data["tunnels"]:
@@ -2143,7 +2117,6 @@ class Core:
             tunnels.save(data)
 
     def _remove_subscription(self, sid):
-        """Подписка и её профили; активные ссылки на них снимаются."""
         try:
             if not subscriptions.delete(sid):
                 raise ValueError(f"нет подписки {sid}")
@@ -2154,7 +2127,6 @@ class Core:
         return {"ok": True, "id": sid}
 
     def _remove_profile(self, pid):
-        """Один профиль; активная ссылка VLESS-туннеля на него снимается."""
         try:
             subscriptions.remove_profile(pid)
             self._drop_profiles()
@@ -2164,7 +2136,6 @@ class Core:
         return {"ok": True, "id": pid}
 
     def _set_allow_private(self, sid, on):
-        """Частные адреса источников этой подписки: разрешить (RFC1918) или нет."""
         try:
             sub = subscriptions.set_allow_private(sid, on)
         except (OSError, ValueError) as exc:
@@ -2662,9 +2633,6 @@ class Core:
         return self._save_tunnels(data, f"уровень журнала sing-box: {level}")
 
     def _set_kill_switch(self, on):
-        """kill_switch в tunnels.json и сразу на живой VPN: выход уже мимо
-        основного — из direct в block или обратно. Это выбор selector, не
-        перезапуск: apply не нужен."""
         if not isinstance(on, bool):
             return {"ok": False, "error": "kill-switch: ожидаю true или false"}
         try:
@@ -2672,7 +2640,20 @@ class Core:
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
         data["kill_switch"] = on
+        proc = self.tunnel.proc
+        if on and proc is not None and proc.poll() is None:
+            try:
+                killguard.apply(data, winnet.tun_index(paths.TUN_IP))
+            except OSError as exc:
+                self.log(f"!! системный kill-switch не изменён: {exc}")
+                return {"ok": False, "error": "Не удалось изменить системную блокировку трафика"}
         reply = self._save_tunnels(data, f"kill-switch {'включён' if on else 'выключен'}")
+        if reply["ok"] and not on:
+            try:
+                killguard.apply(data, winnet.tun_index(paths.TUN_IP))
+            except OSError as exc:
+                self.log(f"!! системный kill-switch не снят: {exc}")
+                return {"ok": False, "error": "Не удалось снять системную блокировку трафика"}
         proc = self.tunnel.proc
         if not reply["ok"] or proc is None or proc.poll() is not None:
             return reply

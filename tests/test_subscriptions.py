@@ -136,7 +136,6 @@ def test_uri_list_отклоняет_чужую_ссылку():
 
 
 def test_uri_list_больше_потолка_профилей_отклоняется(monkeypatch):
-    """Потолок общий для форматов: иначе 1 МиБ тела дал бы тысячи профилей."""
     monkeypatch.setattr(vless, "MAX_PROFILES", 2)
     body = "\n".join(_link(name=f"N{i}", path=f"/{i}") for i in range(3))
 
@@ -375,6 +374,26 @@ def test_refresh_запоминает_ошибку(monkeypatch):
 def test_refresh_неизвестной_подписки():
     with pytest.raises(ValueError, match="нет подписки"):
         subscriptions.refresh("s_0123456789abcdef")
+
+
+@pytest.mark.parametrize("manual", [True, False])
+def test_refresh_не_дублирует_профиль_другого_источника(monkeypatch, manual):
+    if manual:
+        owner = subscriptions.add_profile(_link())
+    else:
+        _add_subscription(monkeypatch, _link())
+        owner = subscriptions.load()["profiles"][0]
+    _fake_open(monkeypatch, _link() + "\n" + _link(uuid=UUID2))
+    sub = subscriptions.add("https://another.example.test/sub")
+    before = subscriptions.load()["profiles"]
+
+    result = subscriptions.refresh(sub["id"])
+
+    after = subscriptions.load()["profiles"]
+    assert result == {"id": sub["id"], "added": 0, "updated": 1,
+                      "missing": 0, "total": 1}
+    assert after == before
+    assert after[0] == owner
 
 
 def test_delete_удаляет_профили_подписки(monkeypatch):

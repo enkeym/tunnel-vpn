@@ -1293,6 +1293,30 @@ def test_kill_switch_не_трогает_выход_через_основной(
     assert outs == []
 
 
+def test_ошибка_записи_не_снимает_системный_kill_switch(core, monkeypatch, wfp):
+    _live_out(core, monkeypatch, buildconfig.via_tag("home"))
+    assert core._set_kill_switch(True)["ok"]
+    before = list(wfp.rules)
+
+    def denied(*args):
+        raise PermissionError("файл занят")
+
+    monkeypatch.setattr(tunnels.os, "replace", denied)
+
+    assert not core._set_kill_switch(False)["ok"]
+    assert tunnels.load()["kill_switch"] is True
+    assert wfp.rules == before
+
+
+def test_ошибка_wfp_не_включает_галочку_без_защиты(core, monkeypatch, wfp):
+    _live_out(core, monkeypatch, buildconfig.via_tag("home"))
+    wfp.failure = True
+
+    assert not core._set_kill_switch(True)["ok"]
+    assert tunnels.load()["kill_switch"] is False
+    assert wfp.rules == []
+
+
 def test_туннели_со_списками_и_конфигами(core):
     _put("home", "nl-1.conf")
     core._set_tunnel("work", {"exclude": "198.51.100.7"})

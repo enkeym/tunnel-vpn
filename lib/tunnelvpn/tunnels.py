@@ -115,7 +115,6 @@ def conf_path(tid, name):
 
 
 def list_confs(tid, proto="wg"):
-    """Имена конфигов туннеля, без .conf; для vless — id профилей."""
     if proto == "vless":
         return [p["id"] for p in subscriptions.list_profiles()]
     try:
@@ -292,12 +291,6 @@ def _active_profile(tunnel):
 
 
 def active_conf(tunnel):
-    """Путь к активному .conf или профиль VLESS; None — конфигов нет.
-
-    Не выбран, а конфиг один — берём его, как раньше брали единственный
-    личный. Несколько без выбора или выбранный пропал — ValueError: собрать
-    «какой-нибудь» значило бы молча включить не тот сервер.
-    """
     if tunnel.get("proto") == "vless":
         return _active_profile(tunnel)
     have = list_confs(tunnel["id"])

@@ -1,12 +1,12 @@
 """Командная строка: что уходит в канал и что видит человек.
 
-Служба здесь — подменённый ipc.call: CLI сам систему не трогает, его дело —
-собрать команду канала и показать ответ.
 """
+
+import types
 
 import pytest
 
-from tunnelvpn import cli
+from tunnelvpn import cli, killguard, paths, tunnel
 
 STATUS = {"tunnels": [
     {"id": "work", "name": "Работа", "mode": "list", "active": "corp",
@@ -32,6 +32,34 @@ def sent(monkeypatch):
 
     monkeypatch.setattr(cli.ipc, "call", call)
     return calls
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_stop_без_службы_снимает_оставшуюся_блокировку(monkeypatch, tmp_path, wfp, fail):
+    cfg = tmp_path / "config.json"
+    cfg.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(paths, "CONFIG_JSON", str(cfg))
+    monkeypatch.setattr(paths, "OWNED_FILE", str(tmp_path / "owned"))
+    monkeypatch.setattr(tunnel, "winnet", types.SimpleNamespace(
+        tun_index=lambda ip: None, pids_of=lambda exe: [], routes_for=lambda prefix: [],
+        v6_unblock=lambda: None, nrpt_clear=lambda: None, flush_dns=lambda: None,
+        default_route=lambda: (18, "192.168.0.1")))
+    monkeypatch.setattr(tunnel.ctypes.windll.kernel32, "SetThreadExecutionState", lambda flags: 1)
+    killguard.apply({"kill_switch": True, "tunnels": [
+        {"id": "home", "mode": "all", "enabled": True, "exclude_apps": []}]}, 42)
+    before = list(wfp.rules)
+
+    def unavailable(*args, **kwargs):
+        raise cli.ipc.NotRunning("служба не запущена")
+
+    monkeypatch.setattr(cli.ipc, "call", unavailable)
+    if fail:
+        def denied():
+            raise PermissionError("нет прав")
+        monkeypatch.setattr(wfp, "clear", denied)
+
+    assert cli.main(["stop"]) == (1 if fail else 0)
+    assert wfp.rules == (before if fail else [])
 
 
 def test_use_выбирает_конфиг_туннеля(sent, capsys):

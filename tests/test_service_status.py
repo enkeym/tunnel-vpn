@@ -7,7 +7,7 @@ import types
 
 import pytest
 
-from tunnelvpn import buildconfig, paths, probe, service, tunnels
+from tunnelvpn import buildconfig, killguard, paths, probe, service, tunnels
 
 
 class _Tunnel:
@@ -57,6 +57,18 @@ def test_после_выключения_снимок_уже_без_туннел
     snap = core.prober.snapshot()
     assert snap["tun"] is None and not snap["r_low"]
     assert core.busy == ""
+
+
+def test_внутренний_stop_сохраняет_блокировку_явный_снимает(monkeypatch, wfp):
+    core = _core(monkeypatch, up=True)
+    killguard.apply({"kill_switch": True, "tunnels": [
+        {"id": "home", "mode": "all", "enabled": True, "exclude_apps": []}]}, 42)
+    before = list(wfp.rules)
+
+    assert core._stop_locked()["ok"]
+    assert wfp.rules == before
+    assert core._do_stop()["ok"]
+    assert wfp.rules == []
 
 
 def _quiet(monkeypatch, core):
@@ -176,14 +188,11 @@ def test_статус_vless_отдаёт_имена_профилей(monkeypatch
 
     t = core._status()["tunnels"][0]
 
-    # active у VLESS — id профиля; окну для карточки нужно имя.
     assert t["active"] == "p_0123456789abcdef"
     assert t["names"] == {"p_0123456789abcdef": "Токио"}
 
 
 def test_отпечаток_vless_профиля_читает_подписки_один_раз(monkeypatch):
-    """Два чтения подряд: между ними refresh заменит файл, и прошлый итог
-    пропадёт. Пустой список — тоже None, а не []."""
     calls = []
     monkeypatch.setattr(service.subscriptions, "load",
                         lambda: calls.append(1) or {"profiles": []})
