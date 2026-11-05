@@ -1907,6 +1907,12 @@ class Core:
                for t in data["tunnels"] if t["mode"] == "list" and in_use[t["id"]]]
         return [(t, c) for t, c in out if c]
 
+    @staticmethod
+    def _proto_main(data, proto):
+        same = [t for t in data["tunnels"]
+                if t["mode"] == "all" and t.get("proto", "wg") == proto]
+        return next((t for t in same if t.get("enabled", True)), same[0] if same else None)
+
     def _place(self, conf, data):
         """Куда «Добавить конфиг…» без туннеля кладёт conf, по его AllowedIPs:
 
@@ -1917,10 +1923,7 @@ class Core:
         Сравнивается с выбранным конфигом каждого туннеля. Иначе ValueError.
         """
         if buildconfig.is_full(conf):
-            main = tunnels.main_tunnel(data)
-            if main is not None and main.get("proto") == "vless":
-                return "all", None
-            return "all", main
+            return "all", self._proto_main(data, "wg")
         nets = [ipaddress.ip_network(n) for n in buildconfig.allowed_nets(conf)]
         if not nets:
             raise ValueError("в AllowedIPs конфига ни 0.0.0.0/0, ни подсетей — "
@@ -2278,8 +2281,9 @@ class Core:
             return {"ok": False, "error": str(exc)}
         rest = [c for c in tunnels.list_confs(src["id"]) if c != name]
         drop = drop_tunnel and not rest
-        dst = tunnels.main_tunnel(data) if to == "all" else None
-        if dst is not None and name in tunnels.list_confs(dst["id"]):
+        proto = src.get("proto", "wg")
+        dst = self._proto_main(data, proto) if to == "all" else None
+        if dst is not None and name in tunnels.list_confs(dst["id"], proto):
             return {"ok": False, "error": f"в «{dst['name']}» уже есть {name}.conf"}
         if dst is None and len(data["tunnels"]) - drop >= tunnels.MAX_TUNNELS:
             return {"ok": False, "error": f"туннелей уже {tunnels.MAX_TUNNELS}, больше нельзя"}
@@ -2288,9 +2292,14 @@ class Core:
         elif src["active"] == name:
             src["active"] = rest[0] if rest else ""
         if dst is None:
+            main = tunnels.main_tunnel(data)
             dst = {"id": self._new_tid(data), "name": name,
-                   "mode": "list" if to == "new" else "all",
-                   "active": "", "include": [], "exclude": []}
+                   "mode": "list" if to == "new" else "all", "proto": proto,
+                   "active": "", "include": [], "exclude": [],
+                   "enabled": main is None or to == "new"}
+            if to == "all" and main is not None:
+                for key in ("include", "exclude", "exclude_apps"):
+                    dst[key] = list(main.get(key) or [])
             data["tunnels"].append(dst)
         self._keep_active(dst, tunnels.list_confs(dst["id"]), name)
         # Ушёл последний конфиг основного вместе с ним. Сам перенесённый в dst
@@ -2525,8 +2534,12 @@ class Core:
             p = self._plan_tunnel(tunnel, lists)
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
+        dst = self._proto_main(p["data"], p["t"].get("proto", "wg"))
         fate = ({"to": "main"} if p["promoted"]
-                else {"to": "spare", "main": p["main"]["name"]} if p["spare"] else {})
+                else {"to": "spare",
+                      "main": dst["name"] if dst is not None
+                      else self._in_use(p["data"])[p["t"]["id"]]}
+                if p["spare"] else {})
         return {"ok": True, "include": p["t"]["include"], "exclude": p["t"]["exclude"],
                 "rejected": p["rejected"], "problems": p["problems"], "fate": fate}
 
@@ -2538,8 +2551,11 @@ class Core:
         out = [{"field": k, "text": f"Не распознано: {', '.join(bad)} → подробности под полем"}
                for k, bad in rejected.items() if bad]
         texts = []
+        target = (f"запасным к «{main['name']}»"
+                  if main.get("proto", "wg") == t.get("proto", "wg")
+                  else "запасным к основному своего протокола")
         if t["exclude"]:
-            texts.append(f"без «пускать» конфиг станет запасным к «{main['name']}», а у "
+            texts.append(f"без «пускать» конфиг станет {target}, а у "
                        f"запасного своих списков нет — очистите и «не пускать» или "
                        f"впишите, что пускать через него")
         # Поля программ у туннеля «по списку» на листе нет — указываем, где его очистить.
@@ -2560,8 +2576,9 @@ class Core:
         r = self._move_config(t["id"], name, "all", drop_tunnel=True)
         if not r["ok"]:
             return r
+        dst = tunnels.find(tunnels.load(), r["tunnel"])
         return {"ok": True, "moved": {"tunnel": r["tunnel"], "name": name,
-                                      "main": main["name"]}}
+                                      "main": dst["name"] if dst is not None else main["name"]}}
 
     def _idle_full(self, data, t):
         """Полный конфиг «по списку» с пустым «пускать»: такой не везёт ничего."""

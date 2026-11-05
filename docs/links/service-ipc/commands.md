@@ -76,12 +76,14 @@ paths:
   установке. Заголовок «Добавьте конфиг» рисует `lib/tunnelvpn/ui/js/model.js` (`missing` по `hasConf`), значок
   трея — `off` (`tray._tray_state` по `last_error`). Поставить тут `last_error` — снова «Не запускается» и красный значок.
 - `add-config` без `tunnel`/`kind` — авто: `lib/tunnelvpn/service.py:_place` по `buildconfig.is_full`/`allowed_nets`
-  и частному `[Interface] DNS` (`_private_dns`) → `place` в ответе: `all` (запасным в основной, active прежний),
+  и частному `[Interface] DNS` (`_private_dns`) → `place` в ответе: `all` (запасным в основной того же
+  протокола; такого нет — новый основной своего протокола, active прежний),
   `list` (новый туннель `t<N>`, `name` = имя файла), `replace` (молча), иначе `{ok: False, ask: {id, name, conf}}`
   без записи — окно повторяет с `place: "replace"` + `tunnel` или `place: "new"`. Замена (и старый `kind=corp`)
   переименовывает туннель в имя файла. У основного (`mode all`) замена убирает только выбранный конфиг, запасные
   остаются; новый обязан быть полным (`is_full`) и не совпадать именем с запасным — иначе `ok: False`. `remove-config` с `drop_tunnel` убирает туннель без конфигов.
-  `move-config` {`tunnel`, `name`, `to`: `new`|`all`, `drop_tunnel`} — только полный конфиг; не в
-  `READ_OPS/USER_OPS` → администратору. Отправитель авто, `place`, `drop_tunnel`, `move-config` —
+  `move-config` {`tunnel`, `name`, `to`: `new`|`all`, `drop_tunnel`} — только полный конфиг; `all` — основной
+  того же протокола, что источник: такого нет — создаётся, чужой не смешивается (`.conf` не уходит в VLESS-основной);
+  не в `READ_OPS/USER_OPS` → администратору. Отправитель авто, `place`, `drop_tunnel`, `move-config` —
   `lib/tunnelvpn/window.py:_send_config`/`_place_config` и `_dispatch` (`del_config`, `move_config`); `set-active` —
   ещё и `use_config` окна.

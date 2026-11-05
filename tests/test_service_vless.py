@@ -432,6 +432,54 @@ def test_частичный_wg_конфиг_идёт_своим_туннелем
     assert _tunnel(reply)["mode"] == "list"
 
 
+def test_перенос_wg_конфига_в_основной_при_основном_vless_берёт_свой_протокол():
+    core = _core()
+    vless = core.handle("add-link", {"link": _link()}, True)
+    core.handle("set-enabled", {"tunnel": vless["tunnel"], "on": True}, True)
+    data = tunnels.load()
+    tunnels.find(data, vless["tunnel"])["exclude"] = ["example.test"]
+    tunnels.save(data)
+    wg = core._add_config("nl", WG_FULL)
+    listed = core._move_config(wg["tunnel"], "nl", "new", drop_tunnel=True)
+    assert _tunnel(listed)["mode"] == "list"
+
+    moved = core.handle("move-config",
+                        {"tunnel": listed["tunnel"], "name": "nl",
+                         "to": "all", "drop_tunnel": True}, True)
+
+    assert moved["ok"] is True
+    assert moved["tunnel"] != vless["tunnel"]
+    main = _tunnel(moved)
+    assert (main["proto"], main["mode"], main["enabled"]) == ("wg", "all", False)
+    assert main["exclude"] == ["example.test"]
+    assert tunnels.list_confs(moved["tunnel"], "wg") == ["nl"]
+    assert tunnels.list_confs(vless["tunnel"], "wg") == []
+    assert tunnels.find(tunnels.load(), listed["tunnel"]) is None
+    assert tunnels.main_on(tunnels.load())["id"] == vless["tunnel"]
+
+
+def test_vless_при_основном_wg_становится_своим_основным_с_правилами():
+    core = _core()
+    wg = core._add_config("nl", WG_FULL)
+    core.handle("set-enabled", {"tunnel": wg["tunnel"], "on": True}, True)
+    data = tunnels.load()
+    tunnels.find(data, wg["tunnel"])["include"] = ["corp.test"]
+    tunnels.find(data, wg["tunnel"])["exclude"] = ["example.test"]
+    tunnels.save(data)
+
+    added = core.handle("add-link", {"link": _link()}, True)
+
+    assert added["tunnel"] != wg["tunnel"]
+    vless = _tunnel(added)
+    assert (vless["proto"], vless["mode"], vless["enabled"]) == (
+        "vless", "all", False)
+    assert (vless["include"], vless["exclude"]) == (
+        ["corp.test"], ["example.test"])
+    assert _tunnel(wg)["enabled"] is True
+    assert tunnels.main_on(tunnels.load())["id"] == wg["tunnel"]
+    assert tunnels.list_confs(added["tunnel"], "vless") == [added["profile"]]
+
+
 def test_предпросмотр_ссылки_ничего_не_пишет():
     core = _core()
 
