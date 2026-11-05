@@ -1330,6 +1330,9 @@ class Core:
             if had:                       # туннель уже подняли — повторы не нужны
                 self._retry_left = 0
             elif cur[1] and time.monotonic() >= retry_at:
+                iface, gateway = winnet.default_route()
+                if not gateway or not winnet.passes_traffic(iface):
+                    return None, 0, retry_at
                 # Не ниже нуля: «Выключить» между проверкой и уменьшением обнуляет
                 # счётчик, и -1 взводил бы повторы без конца.
                 self._retry_left = max(self._retry_left - 1, 0)

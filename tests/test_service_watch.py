@@ -132,6 +132,8 @@ def _core(monkeypatch):
     monkeypatch.setattr(core.prober, "probe_fast", lambda: None)
     monkeypatch.setattr(probe.Prober, "current_profile", staticmethod(lambda: "p"))
     monkeypatch.setattr(service, "RECONNECT_GAP", 0.0)
+    monkeypatch.setattr(service.winnet, "default_route", lambda: (
+        core.prober.snapshot()["iface"], core.prober.snapshot()["gw"]))
     # Новая сеть пропускает трафик, пока тест не скажет иначе: без сокетов наружу.
     monkeypatch.setattr(service.winnet, "passes_traffic", lambda _idx: True)
     _net(core, OFFICE)
@@ -315,6 +317,33 @@ def test_повторы_после_неудачи_конечны(monkeypatch):
     _rounds(core, service.UPLINK_SETTLE + service.RECONNECT_TRIES * 3)
 
     assert core.tunnel.starts == 1 + service.RECONNECT_TRIES
+    assert core._retry_left == 0
+
+
+def test_повторы_ждут_рабочую_сеть(monkeypatch):
+    core = _core(monkeypatch)
+    core.tunnel.uplink = None
+    core._retry_left = service.RECONNECT_TRIES
+    _net(core, HOME)
+    monkeypatch.setattr(service.winnet, "default_route", lambda: (None, ""))
+
+    state = _rounds(core, service.RECONNECT_TRIES + 1)
+
+    assert core.tunnel.starts == 0
+    assert core._retry_left == service.RECONNECT_TRIES
+
+    monkeypatch.setattr(service.winnet, "default_route", lambda: HOME)
+    monkeypatch.setattr(service.winnet, "passes_traffic", lambda _idx: False)
+    state = _rounds(core, service.RECONNECT_TRIES + 1, state)
+
+    assert core.tunnel.starts == 0
+    assert core._retry_left == service.RECONNECT_TRIES
+
+    monkeypatch.setattr(service.winnet, "passes_traffic", lambda _idx: True)
+    _rounds(core, 2, state)
+
+    assert core.tunnel.starts == 1
+    assert core.tunnel.uplink == HOME
     assert core._retry_left == 0
 
 
