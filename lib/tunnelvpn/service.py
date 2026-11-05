@@ -2129,7 +2129,10 @@ class Core:
 
     def _update_subscription(self, sid):
         try:
-            r = subscriptions.refresh(sid)
+            data = tunnels.load()
+            keep = [t["active"] for t in data["tunnels"]
+                    if t.get("proto") == "vless" and t["active"]]
+            r = subscriptions.refresh(sid, keep)
         except (OSError, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
         self.log(f"→ подписка {sid} обновлена: +{r['added']}, "

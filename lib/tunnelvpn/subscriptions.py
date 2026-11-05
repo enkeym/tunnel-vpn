@@ -382,8 +382,19 @@ def preview(url, name="", allow_private=False, kind="auto"):
             "profiles": len(profiles)}
 
 
-def refresh(sub_id):
+def _alias_mark(profile):
+    normalized = proxy.normalize(profile)
+    fields = dict(proxy.fields(normalized))
+    if normalized["proto"] != vless.PROTO or fields.get("security") != "reality":
+        return None
+    fields["short_id"] = ""
+    return proxy.fingerprint({"proto": normalized["proto"],
+                              normalized["proto"]: fields})
+
+
+def refresh(sub_id, keep=()):
     sub_id = _check_sub_id(sub_id)
+    keep = set(keep)
     data = load()
     sub = find(data, sub_id)
     if sub is None:
@@ -400,31 +411,59 @@ def refresh(sub_id):
     existing = [p for p in data["profiles"]
                 if p["source"] == {"subscription": sub_id}]
     by_mark = {p["fingerprint"]: p for p in existing}
+    by_alias = {}
+    for record in existing:
+        alias = _alias_mark(record)
+        if alias is not None:
+            by_alias.setdefault(alias, []).append(record)
     other_marks = {p["fingerprint"] for p in data["profiles"]
                    if p["source"] != {"subscription": sub_id}}
     taken = {p["id"] for p in data["profiles"]}
     ordered = []
     seen = set()
+    live_aliases = set()
+    used = set()
     added = updated = 0
     for profile in profiles:
         mark = proxy.fingerprint(profile)
         if mark in seen or mark in other_marks:
             continue
         seen.add(mark)
-        record = by_mark.get(mark)
+        alias = _alias_mark(profile)
+        if alias is not None:
+            live_aliases.add(alias)
+        same = []
+        record = None
+        if alias is not None:
+            same = [p for p in by_alias.get(alias, [])
+                    if p["id"] not in used]
+            record = next((p for p in same if p["id"] in keep), None)
+        if record is None:
+            record = by_mark.get(mark)
+            if record is not None and record["id"] in used:
+                record = None
+        if record is None and same:
+            record = (next((p for p in same if not p["missing"]), None)
+                      or same[0])
         if record is None:
             record = _record(profile, {"subscription": sub_id}, taken)
             added += 1
         else:
+            record["fingerprint"] = mark
             record["name"] = profile["name"]
             record[profile["proto"]] = proxy.fields(profile)
             record["missing"] = False
             updated += 1
+        used.add(record["id"])
         ordered.append(record)
 
     missing = 0
     for record in existing:
-        if record["fingerprint"] in seen:
+        if record["id"] in used:
+            continue
+        alias = _alias_mark(record)
+        if alias in live_aliases and record["id"] not in keep:
+            missing += 1
             continue
         record["missing"] = True
         missing += 1

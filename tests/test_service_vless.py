@@ -1,4 +1,5 @@
 
+import base64
 import os
 import shutil
 import types
@@ -27,6 +28,13 @@ def _link(uuid=UUID1, name="Node", path="/ws"):
              "path": path, "host": HOST, "sni": HOST, "fp": "chrome"}
     return (f"vless://{uuid}@{HOST}:443?{urlencode(query)}"
             f"#{quote(name)}")
+
+
+def _reality(sid="a1b2"):
+    key = base64.urlsafe_b64encode(bytes([1] * 32)).decode("ascii").rstrip("=")
+    query = {"encryption": "none", "security": "reality", "type": "tcp",
+             "sni": HOST, "fp": "chrome", "pbk": key, "sid": sid}
+    return f"vless://{UUID1}@{HOST}:443?{urlencode(query)}#Reality"
 
 
 def _clean():
@@ -248,6 +256,23 @@ def test_обновление_помечает_пропавший_профиль
                      "updated": 1, "missing": 1, "total": 2}
     gone = next(p for p in subscriptions.list_profiles() if p["name"] == "Gone")
     assert gone["missing"] is True
+    assert _tunnel(added)["active"] == added["profile"]
+
+
+def test_обновление_reality_сохраняет_выбранный_профиль(monkeypatch):
+    _serve(monkeypatch, _reality("a1b2"))
+    core = _core()
+    added = core.handle("add-subscription", {"url": SUB}, True)
+
+    _serve(monkeypatch, _reality("c3d4"))
+    reply = core.handle("update-subscription",
+                        {"id": added["subscription"]}, True)
+
+    assert reply["added"] == 0
+    assert reply["missing"] == 0
+    profiles = subscriptions.list_profiles()
+    assert [p["id"] for p in profiles] == [added["profile"]]
+    assert profiles[0]["vless"]["short_id"] == "c3d4"
     assert _tunnel(added)["active"] == added["profile"]
 
 

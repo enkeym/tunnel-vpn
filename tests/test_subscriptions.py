@@ -30,10 +30,10 @@ def _b64(text):
     return base64.b64encode(text.encode("utf-8")).decode("ascii")
 
 
-def _reality_link():
+def _reality_link(sid="a1b2"):
     key = base64.urlsafe_b64encode(bytes([1] * 32)).decode("ascii").rstrip("=")
     query = {"encryption": "none", "security": "reality", "type": "tcp",
-             "sni": HOST, "fp": "chrome", "pbk": key, "sid": "a1b2",
+             "sni": HOST, "fp": "chrome", "pbk": key, "sid": sid,
              "spx": "/random-path", "support-x25519mlkem768": "true"}
     return f"vless://{UUID2}@{HOST}:443?{urlencode(query)}#Reality"
 
@@ -448,6 +448,73 @@ def test_refresh_возвращает_профиль(monkeypatch):
     assert result["missing"] == 0
     by_name = {item["name"]: item for item in subscriptions.load()["profiles"]}
     assert by_name["B"]["missing"] is False
+
+
+def test_refresh_обновляет_reality_при_смене_short_id(monkeypatch):
+    sub = _add_subscription(monkeypatch, _reality_link("a1b2"))
+    before = subscriptions.load()["profiles"]
+
+    _fake_open(monkeypatch, _reality_link("c3d4"))
+    result = subscriptions.refresh(sub["id"])
+
+    after = subscriptions.load()["profiles"]
+    assert result["added"] == 0
+    assert result["updated"] == 1
+    assert result["missing"] == 0
+    assert [p["id"] for p in after] == [p["id"] for p in before]
+    assert after[0]["vless"]["short_id"] == "c3d4"
+    assert after[0]["missing"] is False
+
+
+def test_refresh_убирает_неиспользуемые_дубли_reality(monkeypatch):
+    sub = _add_subscription(monkeypatch, _reality_link("a1b2"))
+    data = subscriptions.load()
+    base = data["profiles"][0]
+    base["missing"] = True
+    for pid, sid in (("p_0000000000000001", "c3d4"),
+                     ("p_0000000000000002", "e5f6")):
+        duplicate = json.loads(json.dumps(base))
+        duplicate["id"] = pid
+        duplicate["vless"]["short_id"] = sid
+        duplicate["missing"] = True
+        duplicate["fingerprint"] = proxy.fingerprint(duplicate)
+        data["profiles"].append(duplicate)
+    subscriptions.save(data)
+
+    _fake_open(monkeypatch, _reality_link("1122"))
+    result = subscriptions.refresh(sub["id"], keep=[base["id"]])
+
+    after = subscriptions.load()["profiles"]
+    assert result["added"] == 0
+    assert result["updated"] == 1
+    assert result["missing"] == 2
+    assert [p["id"] for p in after] == [base["id"]]
+    assert after[0]["vless"]["short_id"] == "1122"
+    assert after[0]["missing"] is False
+
+
+def test_refresh_предпочитает_используемый_профиль_совпавшему_дублю(monkeypatch):
+    sub = _add_subscription(monkeypatch, _reality_link("a1b2"))
+    data = subscriptions.load()
+    base = data["profiles"][0]
+    base["missing"] = True
+    duplicate = json.loads(json.dumps(base))
+    duplicate["id"] = "p_0000000000000003"
+    duplicate["vless"]["short_id"] = "c3d4"
+    duplicate["missing"] = False
+    duplicate["fingerprint"] = proxy.fingerprint(duplicate)
+    data["profiles"].append(duplicate)
+    subscriptions.save(data)
+
+    _fake_open(monkeypatch, _reality_link("c3d4"))
+    result = subscriptions.refresh(sub["id"], keep=[base["id"]])
+
+    after = subscriptions.load()["profiles"]
+    assert result["added"] == 0
+    assert result["updated"] == 1
+    assert [p["id"] for p in after] == [base["id"]]
+    assert after[0]["vless"]["short_id"] == "c3d4"
+    assert after[0]["missing"] is False
 
 
 def test_refresh_запоминает_ошибку(monkeypatch):
