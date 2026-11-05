@@ -354,6 +354,18 @@ def test_wg_конфиг_на_весь_трафик_не_лезет_в_осно�
     assert len(tunnels.load()["tunnels"]) == 1
 
 
+def test_полный_wg_конфиг_добавляется_запасным_в_существующий_wg_туннель():
+    core = _core()
+    core.handle("add-link", {"link": _link()}, True)
+    existing = core._add_config("old", WG_PART)
+
+    reply = core._add_config("new", WG_FULL)
+
+    assert reply["ok"] is True and reply["tunnel"] == existing["tunnel"]
+    assert _tunnel(reply)["active"] == "old"
+    assert tunnels.list_confs(reply["tunnel"]) == ["new", "old"]
+
+
 def test_частичный_wg_конфиг_идёт_своим_туннелем_при_основном_vless():
     core = _core()
     main = core.handle("add-link", {"link": _link()}, True)

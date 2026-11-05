@@ -1900,6 +1900,10 @@ class Core:
         if buildconfig.is_full(conf):
             main = tunnels.main_tunnel(data)
             if main is not None and main.get("proto") == "vless":
+                wg = [t for t in data["tunnels"]
+                      if t.get("proto", "wg") == "wg" and t["mode"] == "list"]
+                if len(wg) == 1:
+                    return "all", wg[0]
                 raise ValueError(f"«{main['name']}» — основной VLESS-туннель: "
                                  f"WG-конфиг на весь трафик некуда добавить")
             return "all", main
