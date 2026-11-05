@@ -296,6 +296,13 @@ def test_старый_тип_без_подходящего_туннеля():
     assert tunnels.by_kind([], "corp") is None
 
 
+def test_основной_из_нескольких_выбирается_включённый():
+    items = [_tunnel(id="old", mode="all", enabled=False),
+             _tunnel(id="new", mode="all", enabled=True)]
+
+    assert tunnels.by_kind(items, "personal")["id"] == "new"
+
+
 # ------------------------------------------------------------------ переезд
 
 SITE_ENV = """\

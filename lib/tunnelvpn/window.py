@@ -902,7 +902,10 @@ class Api:
         if not reply.get("ok"):
             self.js("failed", reply.get("error") or "не удалось добавить")
             return
-        self._apply()
+        if reply.get("place") == "replace":
+            self._apply()
+        else:
+            self.refresh(full=True)
 
 
     def _add_link(self, arg):
@@ -912,10 +915,7 @@ class Api:
         if not reply.get("ok"):
             return reply
         self.js("closeSheet")
-        try:
-            self._apply()
-        except Exception as exc:                       # noqa: BLE001
-            return {"ok": False, "error": str(exc)}
+        self.refresh(full=True)
         return reply
 
     def _add_subscription(self, arg):
@@ -925,10 +925,7 @@ class Api:
         if not reply.get("ok"):
             return reply
         self.js("closeSheet")
-        try:
-            self._apply()
-        except Exception as exc:                       # noqa: BLE001
-            return {"ok": False, "error": str(exc)}
+        self.refresh(full=True)
         return reply
 
     def _preview(self, arg):

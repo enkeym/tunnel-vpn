@@ -156,6 +156,34 @@ def test_ipv6_через_туннель_по_конфигу_работающег
     assert core._status()["main_v6"] is False
 
 
+def test_статус_говорит_что_туннель_ничего_не_несёт(monkeypatch):
+    core = _core(monkeypatch, up=True)
+    _quiet(monkeypatch, core)
+    monkeypatch.setattr(service.tunnels, "list_confs",
+                        lambda tid, proto="wg": ["corp"] if tid == "t" else [])
+    monkeypatch.setattr(service, "_read_conf", lambda tid, name: buildconfig.parse_text(
+        "[Interface]\nPrivateKey = x\n[Peer]\nPublicKey = y\n"))
+    base = {"id": "t", "name": "Т", "active": "corp"}
+
+    _with_tunnels(monkeypatch, {**base, "mode": "list"})
+    assert core._status()["tunnels"][0]["carries"] is False
+
+    _with_tunnels(monkeypatch, {**base, "mode": "list", "include": ["corp.example"]})
+    assert core._status()["tunnels"][0]["carries"] is True
+
+    monkeypatch.setattr(service, "_read_conf", lambda tid, name: buildconfig.parse_text(
+        "[Interface]\nPrivateKey = x\n[Peer]\nPublicKey = y\nAllowedIPs = 10.0.0.0/8\n"))
+    _with_tunnels(monkeypatch, {**base, "mode": "list"})
+    assert core._status()["tunnels"][0]["carries"] is True
+
+    _with_tunnels(monkeypatch, {**base, "mode": "list", "proto": "vless",
+                                "active": "p_0123456789abcdef"})
+    assert core._status()["tunnels"][0]["carries"] is False
+
+    _with_tunnels(monkeypatch, {**base, "mode": "all"})
+    assert core._status()["tunnels"][0]["carries"] is True
+
+
 def test_статус_отдаёт_туннели_без_их_правил(monkeypatch):
     core = _core(monkeypatch, up=False)
     _quiet(monkeypatch, core)
@@ -168,7 +196,8 @@ def test_статус_отдаёт_туннели_без_их_правил(monke
     assert core._status()["tunnels"] == [
         {"id": "work", "name": "Работа", "mode": "list", "proto": "wg",
          "active": "corp",
-         "enabled": False, "confs": ["corp", "old"], "rules": 1, "full": False,
+         "enabled": False, "confs": ["corp", "old"], "rules": 1, "carries": True,
+         "full": False,
          "awg": {"corp": False, "old": False},
          "check": "", "answer": "", "seq": 0, "last": "", "checking": False,
          "tests": {}}]

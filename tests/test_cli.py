@@ -147,6 +147,18 @@ def test_status_работающий_основной_на_direct_запасно
     assert "запасной, напрямую: личный не работает" in text
 
 
+def test_status_берёт_включённый_основной_из_нескольких():
+    old = {**STATUS["tunnels"][1], "enabled": False}
+    active = {**STATUS["tunnels"][1], "id": "new", "active": "su", "enabled": True}
+
+    text = _status_text(tunnels=[old, active], profile="su", out="tunnel",
+                        exit_state="tunnel")
+
+    assert "профиль  : su" in text
+    assert "через туннель" in text
+    assert "основной выключен" not in text
+
+
 def test_status_kill_switch_закрыл_выход():
     text = _status_text(tunnels=STATUS["tunnels"], out="block", exit_state="blocked",
                         exit_ip="", kill_switch=True)

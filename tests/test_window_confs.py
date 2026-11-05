@@ -54,6 +54,24 @@ def test_брошенный_conf_идёт_службе_как_добавлени
     assert "failed" not in [fn for fn, _ in shown]
 
 
+def test_добавление_конфига_и_ссылок_не_применяет_vpn(monkeypatch):
+    api, admin, _ = _api(monkeypatch, [
+        {"ok": True, "place": "to"},
+        {"ok": True, "place": "to"},
+        {"ok": True, "place": "to"},
+    ])
+    calls = []
+    monkeypatch.setattr(ipc, "call", lambda op, **kw: calls.append(op) or
+                        {"ok": True, "status": {}})
+
+    api._send_config("new", WG, "", "")
+    assert api._add_link({"link": "vless://example"})["ok"]
+    assert api._add_subscription({"url": "https://example.test/sub"})["ok"]
+
+    assert [op for op, _ in admin] == ["add-config", "add-link", "add-subscription"]
+    assert "apply" not in calls
+
+
 def test_брошенный_не_conf_объясняется_и_не_шлётся(monkeypatch, tmp_path):
     api, admin, shown = _api(monkeypatch, [])
 
@@ -409,7 +427,9 @@ def test_вставленная_ссылка_уходит_службе_и_зак
 
     assert got == {"ok": True, "tunnel": "v"}
     assert admin == [("add-link", {"link": VLESS, "tunnel": "", "place": ""})]
-    assert shown == [("closeSheet", None), ("apply", None)]
+    assert ("closeSheet", None) in shown
+    assert "render" in [fn for fn, _ in shown]
+    assert "apply" not in [fn for fn, _ in shown]
 
 
 def test_отказ_ссылки_возвращается_и_лист_остаётся(monkeypatch):
@@ -434,7 +454,9 @@ def test_подписка_уходит_службе_с_флагом_частны
     assert got == {"ok": True, "added": 2}
     assert admin == [("add-subscription", {"url": "https://example.com/sub",
                                            "name": "Токио", "allow_private": True})]
-    assert shown == [("closeSheet", None), ("apply", None)]
+    assert ("closeSheet", None) in shown
+    assert "render" in [fn for fn, _ in shown]
+    assert "apply" not in [fn for fn, _ in shown]
 
 
 def test_подробности_vless_без_uuid(monkeypatch):

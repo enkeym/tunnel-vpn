@@ -209,7 +209,7 @@ def validate(data):
     dup = sorted({i for i in ids if ids.count(i) > 1})
     if dup:
         raise ValueError(f"повторяются id туннелей: {', '.join(dup)}")
-    alls = [t["id"] for t in tunnels if t["mode"] == "all"]
+    alls = [t["id"] for t in tunnels if t["mode"] == "all" and t["enabled"]]
     if len(alls) > 1:
         raise ValueError(f"«весь остальной трафик» может забирать только один "
                          f"туннель, а не {', '.join(alls)}")
@@ -253,7 +253,8 @@ def find(data, tid):
 
 def main_tunnel(data):
     """Слот основного — туннель в режиме all, включённый или нет, иначе None."""
-    return next((t for t in data["tunnels"] if t["mode"] == "all"), None)
+    return next((t for t in data["tunnels"] if t["mode"] == "all" and t.get("enabled", True)),
+                next((t for t in data["tunnels"] if t["mode"] == "all"), None))
 
 
 def main_on(data):
@@ -268,8 +269,11 @@ def by_kind(items, kind):
     items — список туннелей: data["tunnels"] или st["tunnels"] статуса.
     Окно и трей до шага окна знают только эти два типа. Иначе None.
     """
-    mode = {"corp": "list", "personal": "all"}.get(kind)
-    return next((t for t in items if mode and t.get("mode") == mode), None)
+    if kind == "personal":
+        return main_tunnel({"tunnels": items})
+    if kind == "corp":
+        return next((t for t in items if t.get("mode") == "list"), None)
+    return None
 
 
 def _active_profile(tunnel):

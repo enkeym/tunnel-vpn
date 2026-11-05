@@ -75,7 +75,19 @@ def test_ссылка_делает_основной_vless_туннель():
     tunnel = _tunnel(reply)
     assert (tunnel["proto"], tunnel["mode"], tunnel["active"]) == (
         "vless", "all", reply["profile"])
+    assert tunnel["enabled"] is False
     assert [p["id"] for p in subscriptions.list_profiles()] == [reply["profile"]]
+
+
+def test_ссылка_не_включает_пустой_туннель():
+    tunnels.save({"tunnels": [{"id": "proxy", "name": "Proxy", "mode": "all",
+                               "proto": "vless", "enabled": True}]})
+
+    reply = _core().handle("add-link", {"link": _link(), "tunnel": "proxy"}, True)
+
+    assert reply["ok"] is True
+    assert _tunnel(reply)["active"] == reply["profile"]
+    assert _tunnel(reply)["enabled"] is False
 
 
 def test_та_же_ссылка_не_плодит_профиль_и_туннель():
@@ -164,8 +176,7 @@ def test_ссылка_берёт_маршрутизацию_действующе
     data = tunnels.load()
     vless = tunnels.find(data, reply["tunnel"])
     wg = tunnels.find(data, "home")
-    assert [t["id"] for t in data["tunnels"] if t["mode"] == "all"] == [reply["tunnel"]]
-    assert (vless["mode"], wg["mode"]) == ("all", "list")
+    assert (vless["mode"], vless["enabled"], wg["mode"]) == ("all", False, "all")
     for key in ("include", "exclude", "exclude_apps"):
         assert vless[key] == wg[key]
 
@@ -183,9 +194,9 @@ def test_вторая_ссылка_не_трогает_основной_и_ег�
     assert second["ok"] is True and second["tunnel"] == first["tunnel"]
     assert len(data["tunnels"]) == 2
     main = tunnels.find(data, second["tunnel"])
-    assert (main["mode"], main["exclude"], main["active"]) == (
-        "all", ["bank.example"], second["profile"])
-    assert tunnels.find(data, "home")["mode"] == "list"
+    assert (main["mode"], main["enabled"], main["exclude"], main["active"]) == (
+        "all", False, ["bank.example"], first["profile"])
+    assert tunnels.find(data, "home")["mode"] == "all"
 
 
 def test_подписка_делает_первый_профиль_активным(monkeypatch):
@@ -197,11 +208,24 @@ def test_подписка_делает_первый_профиль_активн�
     assert reply["ok"] is True and reply["profiles"] == 2
     tunnel = _tunnel(reply)
     assert tunnel["proto"] == "vless"
+    assert tunnel["enabled"] is False
     assert tunnel["active"] == reply["profile"]
     sub = subscriptions.list_subscriptions()[0]
     assert sub["id"] == reply["subscription"]
     assert sub["name"] == "Моя"
     assert sub["allow_private"] is False
+
+
+def test_новая_подписка_не_переключает_выбранный_профиль(monkeypatch):
+    core = _core()
+    first = core.handle("add-link", {"link": _link()}, True)
+    _serve(monkeypatch, _link(uuid=UUID2, name="Second", path="/b"))
+
+    added = core.handle("add-subscription", {"url": SUB}, True)
+
+    assert added["ok"] is True
+    assert added["tunnel"] == first["tunnel"]
+    assert _tunnel(first)["active"] == first["profile"]
 
 
 def test_подписка_только_по_https():
@@ -315,7 +339,7 @@ def test_статус_показывает_профиль_вместо_файл�
     assert tunnel["active"] == added["profile"]
     assert tunnel["full"] is True
     assert tunnel["awg"] == {added["profile"]: False}
-    assert status["main_v6"] is True
+    assert status["main_v6"] is False
 
 
 def test_чтение_конфига_vless_отдаёт_каноническую_ссылку():
@@ -344,26 +368,56 @@ def test_перенос_и_удаление_conf_для_vless_отклоняют
     assert removed["ok"] is False and "remove-profile" in removed["error"]
 
 
-def test_wg_конфиг_на_весь_трафик_не_лезет_в_основной_vless():
+def test_wg_конфиг_на_весь_трафик_ожидает_включения_после_vless():
     core = _core()
-    core.handle("add-link", {"link": _link()}, True)
+    vless = core.handle("add-link", {"link": _link()}, True)
+    core.handle("set-enabled", {"tunnel": vless["tunnel"], "on": True}, True)
+    data = tunnels.load()
+    data["tunnels"][0]["exclude"] = ["example.test"]
+    tunnels.save(data)
 
-    reply = core.handle("add-config", {"name": "nl", "text": WG_FULL}, True)
+    reply = core._add_config("nl", WG_FULL)
 
-    assert reply["ok"] is False and "VLESS" in reply["error"]
-    assert len(tunnels.load()["tunnels"]) == 1
+    assert reply["ok"] is True and reply["place"] == "all"
+    assert reply["tunnel"] != vless["tunnel"]
+    assert _tunnel(reply)["mode"] == "all"
+    assert _tunnel(reply)["enabled"] is False
+    assert _tunnel(reply)["exclude"] == ["example.test"]
+    assert _tunnel(vless)["mode"] == "all"
+    assert tunnels.main_on(tunnels.load())["id"] == vless["tunnel"]
+
+    switched = core.handle("set-enabled", {"tunnel": reply["tunnel"], "on": True}, True)
+
+    assert switched["ok"] is True
+    assert tunnels.main_on(tunnels.load())["id"] == reply["tunnel"]
+    assert _tunnel(vless)["enabled"] is False
 
 
-def test_полный_wg_конфиг_добавляется_запасным_в_существующий_wg_туннель():
+def test_общее_включение_не_поднимает_два_основных_туннеля():
+    core = _core()
+    vless = core.handle("add-link", {"link": _link()}, True)
+    wg = core._add_config("nl", WG_FULL)
+    core.handle("set-enabled", {"tunnel": vless["tunnel"], "on": False}, True)
+
+    result = core._wake_all()
+
+    assert result == ""
+    assert tunnels.main_on(tunnels.load())["id"] == vless["tunnel"]
+    assert _tunnel(wg)["enabled"] is False
+
+
+def test_полный_wg_конфиг_не_становится_запасным_в_частичном_wg_туннеле():
     core = _core()
     core.handle("add-link", {"link": _link()}, True)
     existing = core._add_config("old", WG_PART)
 
     reply = core._add_config("new", WG_FULL)
 
-    assert reply["ok"] is True and reply["tunnel"] == existing["tunnel"]
-    assert _tunnel(reply)["active"] == "old"
-    assert tunnels.list_confs(reply["tunnel"]) == ["new", "old"]
+    assert reply["ok"] is True and reply["tunnel"] != existing["tunnel"]
+    assert _tunnel(reply)["active"] == "new"
+    assert _tunnel(reply)["mode"] == "all"
+    assert _tunnel(reply)["enabled"] is False
+    assert _tunnel(existing)["mode"] == "list"
 
 
 def test_частичный_wg_конфиг_идёт_своим_туннелем_при_основном_vless():

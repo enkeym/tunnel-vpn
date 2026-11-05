@@ -104,6 +104,17 @@ def _main_on(st):
     return main if main and main.get("enabled") is not False else None
 
 
+def _carries(t):
+    return t.get("carries") is not False
+
+
+def _stray(st):
+    if not st.get("up") or _main_on(st):
+        return False
+    on = [t for t in st.get("tunnels") or [] if t.get("enabled") is not False]
+    return bool(on) and not any(_carries(t) for t in on)
+
+
 def _away(st):
     """Куда ушёл выход мимо работающего основного: 'block' (kill-switch),
     'direct' (запасной) или ''. out служба переключает раньше, чем проверка
@@ -154,6 +165,8 @@ def _tray_state(st):
         return "fallback"
     if st.get("exit_state") == "leak":
         return "leak"
+    if _stray(st):
+        return "fallback"
     if _silent(st):
         return "side"
     return "up"
@@ -399,7 +412,9 @@ class Tray:
         if state == "blocked":
             return f"TunnelVPN — «{name}» не работает, kill-switch закрыл интернет"
         if state == "fallback":
-            return f"TunnelVPN — запасной выход напрямую: «{name}» не работает"
+            if main:
+                return f"TunnelVPN — запасной выход напрямую: «{name}» не работает"
+            return "TunnelVPN — VPN включён, но трафик идёт напрямую"
         if st.get("exit_state") == "leak":
             return f"TunnelVPN — УТЕЧКА, виден адрес провайдера ({exit_ip})"
         if state == "side":
@@ -992,6 +1007,8 @@ def _state_word(t, st, checking):
         return "не работает · интернет напрямую"
     if t.get("mode") == "all" and st.get("out") == "block":
         return "не работает · интернет закрыт"
+    if t.get("mode") == "list" and not _carries(t):
+        return "пускать нечего · трафик мимо"
     return {"up": "работает", "error": "не отвечает", "rules": "домен не открывается",
             "none": "нечем проверить"}.get(check, "не проверен")
 
@@ -1051,7 +1068,8 @@ def _conf_colors(st, checking):
         elif t.get("mode") == "all" and (st.get("out") == "block"
                                           or (check == "up" and st.get("out") == "direct")):
             out[t["id"]] = "error"
-        elif check == "rules":
+        elif check == "rules" or (t.get("mode") == "list"
+                                   and not _carries(t)):
             out[t["id"]] = "busy"
         else:
             out[t["id"]] = check if check in ("up", "error") else "off"

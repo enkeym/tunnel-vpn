@@ -92,6 +92,15 @@ def test_без_основного_подсказка_всё_остальное_
     assert app._title() == "TunnelVPN — работает · всё остальное напрямую"
 
 
+def test_трей_берёт_включённый_основной_из_нескольких():
+    app = tray.Tray.__new__(tray.Tray)
+    app.installing = False
+    app.status = _up(_home(enabled=False), _home(id="new", name="SU", enabled=True))
+
+    assert tray._main_on(app.status)["id"] == "new"
+    assert "SU" in app._title()
+
+
 def test_выключенный_основной_подсказка_всё_остальное_напрямую():
     """Выключенный основной остаётся основным, но не везёт ничего: выход
     напрямую — так задумано, это не запасной выход."""
@@ -103,6 +112,29 @@ def test_выключенный_основной_подсказка_всё_ос�
     assert app._title() == "TunnelVPN — работает · всё остальное напрямую"
     assert tray._conf_colors(app.status, NONE) == {"work": "up", "home": "off"}
     assert tray._state_word(_home(enabled=False, confs=["nl-1"]), app.status, NONE) == "выключен"
+
+
+def test_vpn_включён_но_трафик_идёт_напрямую():
+    app = tray.Tray.__new__(tray.Tray)
+    app.installing = False
+    app.status = _up(_work(carries=False, confs=["corp"]),
+                     _home(enabled=False, check=""), out="direct", exit_state="direct")
+
+    assert tray._tray_state(app.status) == "fallback"
+    assert app._title() == "TunnelVPN — VPN включён, но трафик идёт напрямую"
+    assert tray._conf_colors(app.status, NONE) == {"work": "busy", "home": "off"}
+    assert (tray._state_word(app.status["tunnels"][0], app.status, NONE)
+            == "пускать нечего · трафик мимо")
+
+
+def test_основной_выключен_но_список_везёт_трафик():
+    app = tray.Tray.__new__(tray.Tray)
+    app.installing = False
+    app.status = _up(_work(carries=True, confs=["corp"]),
+                     _home(enabled=False, check=""))
+
+    assert tray._tray_state(app.status) == "up"
+    assert app._title() == "TunnelVPN — работает · всё остальное напрямую"
 
 
 @pytest.mark.parametrize("t, name", [

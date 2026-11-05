@@ -35,8 +35,11 @@ paths:
   пишет `_remember_check` из `st["tunnels"][i]["check"]`) → `st["tunnels"][i]["last"]` →
   `lib/tunnelvpn/tray.py:_conf_colors` и `lib/tunnelvpn/ui/js/cards.js:cardState` («раньше работал»); старый `st["last"]` по
   `corp`/`personal` убран. Кружки при выключенном VPN.
-- `tunnels` — `lib/tunnelvpn/service.py:_status` (`[{id, name, mode, active, confs, rules, full, awg, check, answer,
-  seq, last, checking}]`, без списков правил: `rules` — их число, `full` — у конфига из `_in_use` есть
+- `tunnels` — `lib/tunnelvpn/service.py:_status` (`[{id, name, mode, active, confs, rules, carries, full, awg, check, answer,
+  seq, last, checking}]`, без списков правил: `rules` — их число, `carries` — туннель что-то везёт
+  (`lib/tunnelvpn/service.py:_carries`: у `mode list` есть записи в «пускать» или AllowedIPs активного
+  конфига, у vless — только записи; `false` — пускать нечего, сборка `buildconfig` пропустит туннель),
+  `full` — у конфига из `_in_use` есть
   0.0.0.0/0, `awg` — `{конфиг: bool}` по `lib/tunnelvpn/buildconfig.py:is_awg` (`AWG_KEYS`); оба —
   `_conf_facts` с кэшем `_conf_cache` по `(путь, mtime_ns)`) → `lib/tunnelvpn/window.py:_edit_conf`,
   карточки окна (`paintCard`, `cardMenu`, бейдж `badge` в `lib/tunnelvpn/ui/js/cards.js`), трей (пункты меню по id —
@@ -84,6 +87,13 @@ paths:
   всё остальное — напрямую, без VPN», `lib/tunnelvpn/tray.py:_title` — «всё остальное напрямую»,
   `lib/tunnelvpn/cli.py:status_lines` — «основного нет» / «основной туннель выключен»; работающий основной
   (`mode all` и `enabled`) они проверяют раньше `out`, иначе это читалось бы как запасной выход.
+- `carries === false` у включённого туннеля, а основного нет или он выключен — «VPN включён, но трафик идёт
+  напрямую»: `lib/tunnelvpn/service.py:_carries` → `lib/tunnelvpn/tray.py:_stray` (`_carries`, `_tray_state`
+  → `fallback`, `_title`, `_state_word` «пускать нечего · трафик мимо», `_conf_colors` — `busy`) и
+  `lib/tunnelvpn/ui/js/model.js:model` (`stray`) → `headOf`, `problemsOf`, `lib/tunnelvpn/ui/js/cards.js:cardState`.
+  Без этой ветки `main` ищется только среди `mode all`, и окно писало «Всё работает», хотя ни один туннель
+  трафик не везёт. `tray._stray` и `model.js` считают одно и то же по статусу: расхождение — разные ответы
+  окна и трея.
 - Основной включён в `tunnels.json`, а `lib/tunnelvpn/tunnel.py:main_id` ещё прежний (подъём на лету в
   `lib/tunnelvpn/service.py:_apply_locked`) — `lib/tunnelvpn/service.py:_status` отдаёт `out = ''`,
   `exit_state = 'unknown'` и `checking` у основного: иначе те же читатели показали бы `direct` прежней раскладки

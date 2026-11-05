@@ -174,6 +174,20 @@ def _conf_full(tid, name, proto="wg"):
     return _conf_facts(tid, name, proto)["full"]
 
 
+def _carries(t, name, v6):
+    if t.get("mode") != "list":
+        return True
+    if not name:
+        return False
+    inc_nets, domains = buildconfig.split_entries(t["include"], v6)
+    if inc_nets or domains:
+        return True
+    if t.get("proto") == "vless":
+        return False
+    conf = _read_conf(t["id"], name)
+    return bool(conf and buildconfig.allowed_nets(conf, v6))
+
+
 def _private_dns(conf):
     """Частные адреса из [Interface] DNS. Публичный (1.1.1.1) общий у разных
     провайдеров — о том, куда ведёт конфиг, он ничего не говорит."""
@@ -571,12 +585,16 @@ class Core:
         # такой туннель «по списку» можно вернуть в основной (move-config).
         # awg — бейдж WG/AWG у каждого конфига, запасные тоже.
         in_use = self._in_use(data)
+        main = tunnels.main_on(data)
+        st["main_v6"] = bool(main) and _conf_facts(
+            main["id"], in_use[main["id"]], main.get("proto", "wg"))["v6"]
         st["tunnels"] = [{"id": t["id"], "name": t["name"], "mode": t["mode"],
                           "proto": t.get("proto", "wg"),
                           "active": t["active"], "enabled": t["enabled"],
                           "confs": confs,
                           "rules": (len(t["include"]) + len(t["exclude"])
                                     + len(t["exclude_apps"])),
+                          "carries": _carries(t, in_use[t["id"]], st["main_v6"]),
                           "full": _conf_full(t["id"], in_use[t["id"]],
                                              t.get("proto", "wg")),
                           "awg": {c: _conf_facts(t["id"], c,
@@ -603,12 +621,6 @@ class Core:
                      seq=seq, last=last.get(t["id"], ""),
                      checking=st["checking"] and seq < st.get("check_seq", 0),
                      tests=self._tests_of(t["id"], t["confs"], t.get("proto", "wg")))
-        # IPv6 через туннель — по v6-адресу в конфиге работающего основного
-        # (как v6 в buildconfig.assemble). Правило брандмауэра (v6_off) этого
-        # не скажет: оно закрывает физический адаптер всегда, пока VPN включён.
-        main = tunnels.main_on(data)
-        st["main_v6"] = bool(main) and _conf_facts(
-            main["id"], in_use[main["id"]], main.get("proto", "wg"))["v6"]
         # Основной включили или сменили на живом VPN (_apply): пока его процесс
         # поднимается, выход и его замер — от прежней раскладки, без основного
         # это direct. Окно и трей прочли бы его как запасной выход нового
@@ -1140,9 +1152,16 @@ class Core:
         off = [t for t in data["tunnels"] if not t["enabled"]]
         if not off:
             return ""
+        main_woken = any(t["mode"] == "all" and t["enabled"] for t in data["tunnels"])
+        first_main = next((t for t in off if t["mode"] == "all" and
+                           tunnels.list_confs(t["id"], t.get("proto", "wg"))), None)
         for t in off:
             # Пересекающиеся — только первый по файлу: второй — заменой из окна.
-            t["enabled"] = t["mode"] != "list" or not self._clashing(data, t)
+            if t["mode"] == "all":
+                t["enabled"] = not main_woken and (first_main is None or t is first_main)
+                main_woken = main_woken or t["enabled"]
+            else:
+                t["enabled"] = not self._clashing(data, t)
         woke = [t["id"] for t in off if t["enabled"]]
         if not woke:
             return ""
@@ -1900,12 +1919,7 @@ class Core:
         if buildconfig.is_full(conf):
             main = tunnels.main_tunnel(data)
             if main is not None and main.get("proto") == "vless":
-                wg = [t for t in data["tunnels"]
-                      if t.get("proto", "wg") == "wg" and t["mode"] == "list"]
-                if len(wg) == 1:
-                    return "all", wg[0]
-                raise ValueError(f"«{main['name']}» — основной VLESS-туннель: "
-                                 f"WG-конфиг на весь трафик некуда добавить")
+                return "all", None
             return "all", main
         nets = [ipaddress.ip_network(n) for n in buildconfig.allowed_nets(conf)]
         if not nets:
@@ -1992,8 +2006,13 @@ class Core:
                                                f"больше нельзя"}
             t = {"id": self._new_tid(data), "name": name,
                  "mode": "all" if where == "all" else "list",
-                 "active": "", "include": [], "exclude": []}
+                 "active": "", "enabled": False, "include": [], "exclude": []}
             data["tunnels"].append(t)
+            if where == "all":
+                main = tunnels.main_tunnel(data)
+                if main is not t and main is not None:
+                    for key in ("include", "exclude", "exclude_apps"):
+                        t[key] = list(main.get(key) or [])
         before = tunnels.list_confs(t["id"])
         try:
             self._write_conf(t["id"], name, text)
@@ -2002,20 +2021,15 @@ class Core:
         self.log(f"→ в туннель «{t['name']}» ({t['id']}) добавлен конфиг {name}.conf")
         if where == "all":
             self._keep_active(t, before, name)
-        else:
-            # Добавленный — сразу активный: его и добавляли, чтобы включить.
+        elif where == "replace":
             t["active"] = name
+        else:
+            self._keep_active(t, before, name)
+        if not before:
+            t["enabled"] = False
         if where == "replace":
             # В окне туннель зовётся своим конфигом (решение #12).
             t["name"] = name
-        if new and t["mode"] == "list":
-            # «Отдельным туннелем» в те же сети: включённым он делил бы их с
-            # прежним по порядку в файле. Выключенный включается заменой (_set_enabled).
-            clash = self._clashing(data, t)
-            t["enabled"] = not clash
-            if clash:
-                names = ", ".join(f"«{o['name']}»" for o in clash)
-                self.log(f"→ «{t['name']}» ведёт в сети {names} — добавлен выключенным")
         try:
             data = tunnels.save(data)
         except (OSError, ValueError) as exc:
@@ -2048,12 +2062,11 @@ class Core:
         t = {"id": self._new_tid(data), "name": profile["name"],
              "mode": "list" if place == "new" and main is not None else "all",
              "proto": "vless", "active": "", "include": [], "exclude": [],
-             "exclude_apps": []}
+             "exclude_apps": [], "enabled": False}
+        data["tunnels"].append(t)
         if main is not None and t["mode"] == "all":
             for key in ("include", "exclude", "exclude_apps"):
                 t[key] = list(main.get(key) or [])
-            main["mode"] = "list"
-        data["tunnels"].append(t)
         return t
 
     def _add_link(self, link, tunnel="", place=""):
@@ -2062,7 +2075,9 @@ class Core:
             profile = profiles[0]
             data = tunnels.load()
             t = self._attach_profile(data, profile, tunnel, place)
-            t["active"] = profile["id"]
+            if not t["active"]:
+                t["enabled"] = False
+            t["active"] = t["active"] or profile["id"]
             data = tunnels.save(data)
         except (OSError, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
@@ -2079,7 +2094,9 @@ class Core:
             if profiles:
                 data = tunnels.load()
                 t = self._attach_profile(data, profiles[0])
-                t["active"] = profiles[0]["id"]
+                if not t["active"]:
+                    t["enabled"] = False
+                t["active"] = t["active"] or profiles[0]["id"]
                 tunnels.save(data)
                 tid, pid = t["id"], profiles[0]["id"]
         except (OSError, ValueError) as exc:
@@ -2339,6 +2356,11 @@ class Core:
             return {"ok": False, "error": str(exc)}
         if t["enabled"] == on:
             return {"ok": True, "tunnel": t["id"], "enabled": on}
+        if on and t["mode"] == "all":
+            main = tunnels.main_tunnel(data)
+            if main is not None and main is not t:
+                main["mode"] = "list"
+                main["enabled"] = False
         # Основной забирает оставшееся после «по списку»: его 0.0.0.0/0 им не мешает.
         off = self._clashing(data, t) if on and t["mode"] == "list" else []
         if off and not replace:

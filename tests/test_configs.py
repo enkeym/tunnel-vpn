@@ -164,7 +164,7 @@ def test_добавленный_личный_ложится_рядом_и_выб
     core._add_config("nl-2", WG, kind="personal")
 
     assert _files("home") == ["nl-1.conf", "nl-2.conf"]
-    assert _active("home") == "nl-2"
+    assert _active("home") == "nl-1"
     # Профиль больше не в state\profile, а в tunnels.json.
     assert not os.path.exists(paths.PROFILE_FILE)
 
@@ -382,7 +382,7 @@ def test_конфиг_ложится_в_туннель_по_id_и_выбирае
     assert r["ok"] and r["tunnel"] == "work"
     # По id прежние не убираются: «один рабочий» — правило старого пункта.
     assert _files("work") == ["old.conf", "vpn-2.conf"]
-    assert _active("work") == "vpn-2"
+    assert _active("work") == "old"
 
 
 def test_туннель_находится_по_имени_без_учёта_регистра(core):
@@ -865,12 +865,22 @@ def test_отдельный_туннель_в_те_же_сети_ложится_
     assert _tunnel("work")["enabled"] is True
 
 
-def test_отдельный_туннель_в_свои_сети_включён(core):
+def test_отдельный_туннель_в_свои_сети_остаётся_выключенным(core):
     _put("work", "corp.conf", _wg("10.53.0.0/16"))
 
     r = core._add_config("lab", _wg("10.60.0.0/16"), place="new")
 
-    assert r["ok"] and _tunnel(r["tunnel"])["enabled"] is True
+    assert r["ok"] and _tunnel(r["tunnel"])["enabled"] is False
+
+
+def test_добавление_конфига_не_меняет_выбранный_в_работающей_группе(core):
+    _put("work", "corp.conf", _wg("10.53.0.0/16"))
+
+    added = core._add_config("lab", _wg("10.60.0.0/16"), tunnel="work")
+
+    assert added["ok"] is True
+    assert _tunnel("work")["enabled"] is True
+    assert _tunnel("work")["active"] == "corp"
 
 
 def test_включить_всё_не_включает_пересекающиеся(core):
@@ -1511,7 +1521,7 @@ def test_в_туннель_без_общего_частного_dns_кладёт
 
     assert r["ok"] and r["place"] == "to"
     assert _files("work") == ["corp.conf", "wg-new.conf"]
-    assert _active("work") == "wg-new"
+    assert _active("work") == "corp"
 
 
 def test_в_основной_с_тем_же_dns_кладёт_рядом(core):
