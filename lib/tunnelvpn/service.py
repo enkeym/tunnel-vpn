@@ -22,8 +22,8 @@ import sys
 import threading
 import time
 
-from . import (buildconfig, ipc, killguard, paths, probe, routelist, subscriptions, tunnel,
-               tunnels, vless, winnet)
+from . import (buildconfig, ipc, killguard, paths, probe, proxy, routelist,
+               subscriptions, tunnel, tunnels, winnet)
 
 AUTOSTART_FILE = os.path.join(paths.STATE, "autostart")
 # Ответ «Включить», когда ни у одного туннеля нет .conf: не сбой, last_error не ставится.
@@ -657,13 +657,13 @@ class Core:
                     "domains": buildconfig.tunnel_domains(main_cfg, tid) if is_admin else [],
                 })
             for ob in side.get("outbounds", []):
-                if ob.get("type") != "vless":
+                if ob.get("type") not in proxy.PROTOS:
                     continue
                 endpoints.append({
                     "tag": ob.get("tag", ""),
                     "tid": tid,
                     "address": f"{ob.get('server', '')}:{ob.get('server_port', '')}",
-                    "proto": "vless",
+                    "proto": ob["type"],
                     "mtu": None,
                     "awg": False,
                     "peer": "",
@@ -893,8 +893,8 @@ class Core:
         if twin:
             self.log(what + f"тот же профиль у работающего процесса {twin} — спрашиваю его")
             return self.prober.check_one(twin, self.tunnel.delay)
-        v = profile["vless"]
-        self.log(what + f"временный sing-box, VLESS {v['server']}:{v['server_port']}")
+        v = proxy.fields(profile)
+        self.log(what + f"временный sing-box, {profile['proto']} {v['server']}:{v['server_port']}")
         with self.tunnel.trial_vless(t["id"], profile) as (link, err):
             if err:
                 return "error", err
@@ -903,16 +903,16 @@ class Core:
     def _side_with_profile(self, profile):
         if self.tunnel.uplink is None:
             return None
-        mark = vless.fingerprint(profile)
+        mark = proxy.fingerprint(profile)
         for side in self.tunnel.sides:
             if not side.alive():
                 continue
             cfg = buildconfig.read_json(buildconfig.side_json(side.tid))
             for ob in cfg.get("outbounds") or []:
-                if ob.get("type") != "vless":
+                if ob.get("type") not in proxy.PROTOS:
                     continue
                 try:
-                    if vless.fingerprint(vless.from_outbound(ob)) == mark:
+                    if proxy.fingerprint(proxy.from_outbound(ob)) == mark:
                         return side.tid
                 except ValueError:
                     continue
@@ -2032,7 +2032,7 @@ class Core:
         if tunnel:
             t = self._target(data, tunnel)
             if t.get("proto", "wg") != "vless":
-                raise ValueError(f"«{t['name']}» — не VLESS-туннель")
+                raise ValueError(f"«{t['name']}» — не туннель с подписками")
             return t
         if place != "new":
             t = next((x for x in data["tunnels"] if x.get("proto") == "vless"), None)
@@ -2062,7 +2062,7 @@ class Core:
             data = tunnels.save(data)
         except (OSError, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
-        self.log(f"→ добавлены ссылки VLESS: {added} новых, "
+        self.log(f"→ добавлены ссылки VPN: {added} новых, "
                  f"{len(profiles)} в наборе туннеля «{t['name']}»")
         return {"ok": True, "profile": profile["id"], "tunnel": t["id"],
                 "place": place or "to", "added": added, "profiles": len(profiles)}
@@ -2090,12 +2090,12 @@ class Core:
             if link:
                 profiles = subscriptions.parse_body("auto", link)
                 profile = profiles[0]
-                fields = profile["vless"]
+                fields = proxy.fields(profile)
                 return {"ok": True, "type": "link", "name": profile["name"],
                         "host": fields["server"], "port": fields["server_port"],
                         "profiles": len(profiles)}
             if not url:
-                raise ValueError("нужна ссылка vless:// или HTTPS-адрес подписки")
+                raise ValueError("нужна ссылка vless://, hysteria2:// или HTTPS-адрес подписки")
             sub = subscriptions.preview(url, name, allow_private, kind)
         except (OSError, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
@@ -2185,7 +2185,7 @@ class Core:
                 profile = subscriptions.find_profile(subscriptions.load(), name)
                 if profile is None:
                     raise ValueError(f"нет профиля {name} в туннеле «{t['name']}»")
-                return {"ok": True, "text": vless.canonical(profile)}
+                return {"ok": True, "text": proxy.canonical(profile)}
             path = tunnels.conf_path(t["id"], name)
             with open(path, encoding="utf-8", errors="replace") as fh:
                 return {"ok": True, "text": fh.read()}

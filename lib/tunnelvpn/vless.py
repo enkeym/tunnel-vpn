@@ -16,7 +16,8 @@ FP_VALUES = frozenset({
 
 _LINK_KEYS = frozenset({
     "encryption", "security", "type", "host", "sni", "path", "fp",
-    "allowinsecure", "headertype", "flow",
+    "allowinsecure", "headertype", "flow", "pbk", "sid", "spx",
+    "support-x25519mlkem768",
 })
 _TOP_KEYS = frozenset({"outbounds", "log", "dns", "route"})
 _TOP_BLOCKED = ("inbounds", "endpoints", "experimental",
@@ -26,7 +27,7 @@ _OUT_KEYS = frozenset({
     "type", "tag", "server", "server_port", "uuid", "flow", "network",
     "tls", "transport", "domain_resolver",
 })
-_TLS_KEYS = frozenset({"enabled", "server_name", "utls", "insecure", "alpn"})
+_TLS_KEYS = frozenset({"enabled", "server_name", "utls", "insecure", "alpn", "reality"})
 _UTLS_KEYS = frozenset({"enabled", "fingerprint"})
 _WS_KEYS = frozenset({
     "type", "path", "headers", "max_early_data", "early_data_header_name",
@@ -135,7 +136,7 @@ def _check_flow(value):
         raise ValueError("flow: ожидаю строку")
     if not value.strip():
         return ""
-    raise ValueError("flow не поддерживается: нужен обычный VLESS без Vision/Reality")
+    raise ValueError("flow не поддерживается")
 
 
 def _check_allow_insecure(value):
@@ -154,7 +155,8 @@ def _check_header_type(value):
     return ""
 
 
-def _profile(name, uuid_value, server, port, host, path, sni, fp):
+def _profile(name, uuid_value, server, port, host, path, sni, fp,
+             security="tls", kind="ws", public_key="", short_id=""):
     uuid_value = _check_uuid(uuid_value)
     server = _check_host(server, "адрес сервера")
     if ":" in server:
@@ -164,6 +166,19 @@ def _profile(name, uuid_value, server, port, host, path, sni, fp):
     host = _check_host(host, "host") if host else ""
     sni = _check_host(sni, "sni") if sni else ""
     fp = _check_fp(fp)
+    if (security, kind) not in (("tls", "ws"), ("reality", "tcp")):
+        raise ValueError("поддерживается VLESS WebSocket/TLS или Reality/TCP")
+    if security == "reality":
+        if not isinstance(public_key, str) or not re.fullmatch(
+                r"[A-Za-z0-9_-]{43}", public_key):
+            raise ValueError("Reality public key имеет неверный формат")
+        if not isinstance(short_id, str) or not re.fullmatch(
+                r"(?:[0-9a-fA-F]{2}){0,8}", short_id):
+            raise ValueError("Reality short id имеет неверный формат")
+        if not sni:
+            raise ValueError("Reality требует sni")
+    elif public_key or short_id:
+        raise ValueError("ключ Reality задан для обычного TLS")
     name = _text(name if isinstance(name, str) else "",
                  f"VLESS · {server}")
     return {
@@ -180,6 +195,10 @@ def _profile(name, uuid_value, server, port, host, path, sni, fp):
             "path": path,
             "sni": sni,
             "fp": fp,
+            "security": security,
+            "type": kind,
+            "public_key": public_key,
+            "short_id": short_id.lower(),
             "allow_insecure": False,
         },
     }
@@ -235,13 +254,19 @@ def parse_link(text):
     if encryption not in ("", "none"):
         raise ValueError("поддерживается только encryption=none")
     security = values.get("security", "").strip().lower()
-    if security == "reality":
-        raise ValueError("Reality не поддерживается: нужен обычный TLS")
-    if security != "tls":
-        raise ValueError("нужен TLS (security=tls)")
+    if security not in ("tls", "reality"):
+        raise ValueError("нужен TLS или Reality")
     kind = values.get("type", "").strip().lower()
-    if kind != "ws":
-        raise ValueError("поддерживается только WebSocket (type=ws)")
+    if (security, kind) not in (("tls", "ws"), ("reality", "tcp")):
+        raise ValueError("поддерживается WebSocket/TLS или Reality/TCP")
+    if security == "reality":
+        if "spx" in values:
+            _check_path(values["spx"] or "/")
+        if values.get("support-x25519mlkem768", "").lower() not in (
+                "", "0", "1", "false", "true"):
+            raise ValueError("неверный support-x25519mlkem768")
+    elif any(key in values for key in ("pbk", "sid", "spx", "support-x25519mlkem768")):
+        raise ValueError("параметры Reality заданы для обычного TLS")
     _check_header_type(values.get("headertype", ""))
     _check_flow(values.get("flow", ""))
     _check_allow_insecure(values.get("allowinsecure", ""))
@@ -256,6 +281,10 @@ def parse_link(text):
         path,
         values.get("sni", ""),
         values.get("fp", ""),
+        security,
+        kind,
+        values.get("pbk", ""),
+        values.get("sid", ""),
     )
 
 
@@ -271,6 +300,10 @@ def normalize(profile):
         fields.get("path") or "/",
         fields.get("sni") or "",
         fields.get("fp") or "",
+        fields.get("security") or "tls",
+        fields.get("type") or "ws",
+        fields.get("public_key") or "",
+        fields.get("short_id") or "",
     )
 
 
@@ -299,6 +332,10 @@ def _normalized_fields(profile):
         fields.get("path") or "/",
         _check_host(sni, "sni") if sni else "",
         fields.get("fp") or "",
+        fields.get("security") or "tls",
+        fields.get("type") or "ws",
+        fields.get("public_key") or "",
+        fields.get("short_id") or "",
     )["vless"]
 
 
@@ -308,14 +345,16 @@ def canonical(profile):
     authority = f"[{server}]" if ":" in server else server
     values = (
         ("encryption", "none"),
-        ("security", "tls"),
-        ("type", "ws"),
-        ("host", fields["host"]),
-        ("sni", fields["sni"]),
-        ("path", fields["path"]),
-        ("fp", fields["fp"]),
-        ("allowInsecure", "0"),
+        ("security", fields["security"]),
+        ("type", fields["type"]),
     )
+    if fields["security"] == "reality":
+        values += (("sni", fields["sni"]), ("fp", fields["fp"]),
+                   ("pbk", fields["public_key"]), ("sid", fields["short_id"]))
+    else:
+        values += (("host", fields["host"]), ("sni", fields["sni"]),
+                   ("path", fields["path"]), ("fp", fields["fp"]),
+                   ("allowInsecure", "0"))
     query = "&".join(f"{key}={quote(value, safe='')}" for key, value in values)
     return (f"vless://{fields['uuid']}@{authority}:"
             f"{fields['server_port']}?{query}")
@@ -335,18 +374,24 @@ def to_outbound(profile, tag):
     }
     if fields["fp"]:
         tls["utls"] = {"enabled": True, "fingerprint": fields["fp"]}
-    transport = {"type": "ws", "path": fields["path"]}
-    if fields["host"]:
-        transport["headers"] = {"Host": fields["host"]}
-    return {
+    if fields["security"] == "reality":
+        tls["reality"] = {"enabled": True,
+                          "public_key": fields["public_key"],
+                          "short_id": fields["short_id"]}
+    out = {
         "type": "vless",
         "tag": tag,
         "server": fields["server"],
         "server_port": fields["server_port"],
         "uuid": fields["uuid"],
         "tls": tls,
-        "transport": transport,
     }
+    if fields["type"] == "ws":
+        transport = {"type": "ws", "path": fields["path"]}
+        if fields["host"]:
+            transport["headers"] = {"Host": fields["host"]}
+        out["transport"] = transport
+    return out
 
 
 def from_outbound(outbound):
@@ -366,8 +411,6 @@ def from_outbound(outbound):
         raise ValueError("у VLESS outbound нет TLS")
     for key in tls:
         if key not in _TLS_KEYS:
-            if key == "reality":
-                raise ValueError("Reality не поддерживается")
             if key in ("certificate", "certificate_path"):
                 raise ValueError("сертификаты и локальные пути в JSON "
                                  "не импортируются")
@@ -398,27 +441,37 @@ def from_outbound(outbound):
             raise ValueError("uTLS выключен, но fingerprint задан")
         if enabled is True and not fp:
             raise ValueError("uTLS включён без fingerprint")
+    reality = tls.get("reality")
+    security, kind, public_key, short_id = "tls", "ws", "", ""
     transport = outbound.get("transport")
-    if not isinstance(transport, dict):
+    if reality is not None:
+        if not isinstance(reality, dict) or set(reality) - {"enabled", "public_key", "short_id"}:
+            raise ValueError("неверные параметры Reality")
+        if reality.get("enabled") is not True or transport is not None:
+            raise ValueError("Reality требует TCP без транспорта")
+        security, kind = "reality", "tcp"
+        public_key, short_id = reality.get("public_key", ""), reality.get("short_id", "")
+    elif not isinstance(transport, dict):
         raise ValueError("нужен WebSocket transport")
-    for key in transport:
-        if key not in _WS_KEYS:
-            raise ValueError(f"поле transport.{key} не поддерживается")
-    if transport.get("type") != "ws":
-        raise ValueError("поддерживается только WebSocket transport")
-    path = transport.get("path") or "/"
-    host = ""
-    headers = transport.get("headers")
-    if headers is not None:
-        if not isinstance(headers, dict):
-            raise ValueError("transport.headers: ожидаю объект")
-        for key, value in headers.items():
-            if key.lower() != "host":
-                raise ValueError(f"заголовок {key} в транспорте "
-                                 f"не поддерживается")
-            if not isinstance(value, str):
-                raise ValueError("Host: ожидаю строку")
-            host = value
+    path, host = "/", ""
+    if transport is not None:
+        for key in transport:
+            if key not in _WS_KEYS:
+                raise ValueError(f"поле transport.{key} не поддерживается")
+        if transport.get("type") != "ws":
+            raise ValueError("поддерживается только WebSocket transport")
+        path = transport.get("path") or "/"
+        headers = transport.get("headers")
+        if headers is not None:
+            if not isinstance(headers, dict):
+                raise ValueError("transport.headers: ожидаю объект")
+            for key, value in headers.items():
+                if key.lower() != "host":
+                    raise ValueError(f"заголовок {key} в транспорте "
+                                     f"не поддерживается")
+                if not isinstance(value, str):
+                    raise ValueError("Host: ожидаю строку")
+                host = value
     return _profile(
         outbound.get("tag") or "",
         outbound.get("uuid"),
@@ -428,6 +481,10 @@ def from_outbound(outbound):
         path,
         sni,
         fp,
+        security,
+        kind,
+        public_key,
+        short_id,
     )
 
 

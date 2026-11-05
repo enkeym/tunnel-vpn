@@ -5,6 +5,7 @@
 не падает, а тихо собирает туннель не туда.
 """
 
+import base64
 import json
 import os
 import socket
@@ -1468,6 +1469,26 @@ def test_vless_боковой_это_mixed_и_vless_outbound(vless_build):
                                 "headers": {"Host": "example.com"}}
     assert out["tls"]["utls"]["fingerprint"] == "chrome"
     assert side["route"]["final"] == buildconfig.VLESS_TAG
+
+
+def test_reality_и_hysteria2_собираются_в_боковые_конфиги(vless_build):
+    key = base64.urlsafe_b64encode(bytes([1] * 32)).decode("ascii").rstrip("=")
+    reality = (f"vless://11111111-1111-4111-8111-111111111111@example.com:443"
+               f"?encryption=none&security=reality&type=tcp&sni=example.com"
+               f"&fp=chrome&pbk={key}&sid=a1b2")
+    hysteria = ("hysteria2://secret@example.com:443?security=tls&sni=example.com"
+                "&alpn=h3&fp=chrome&obfs=salamander&obfs-password=mask")
+
+    _, sides, _, _, _ = vless_build(link=reality)
+    [out] = sides["home"]["outbounds"]
+    assert out["tls"]["reality"]["public_key"] == key
+    assert "transport" not in out
+
+    _, sides, _, _, _ = vless_build(link=hysteria)
+    [out] = sides["home"]["outbounds"]
+    assert out["type"] == "hysteria2"
+    assert out["password"] == "secret"
+    assert out["obfs"] == {"type": "salamander", "password": "mask"}
 
 
 def test_vless_домен_сервера_резолвит_свой_bootstrap_dns(vless_build):

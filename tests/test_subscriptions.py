@@ -5,7 +5,7 @@ from urllib.parse import quote, urlencode
 
 import pytest
 
-from tunnelvpn import happ, netguard, paths, subscriptions, vless
+from tunnelvpn import happ, netguard, paths, proxy, subscriptions, vless
 
 UUID1 = "00000000-0000-4000-8000-000000000001"
 UUID2 = "00000000-0000-4000-8000-000000000002"
@@ -28,6 +28,41 @@ def _link(uuid=UUID1, name="Node", path="/ws", host=HOST):
 
 def _b64(text):
     return base64.b64encode(text.encode("utf-8")).decode("ascii")
+
+
+def _reality_link():
+    key = base64.urlsafe_b64encode(bytes([1] * 32)).decode("ascii").rstrip("=")
+    query = {"encryption": "none", "security": "reality", "type": "tcp",
+             "sni": HOST, "fp": "chrome", "pbk": key, "sid": "a1b2",
+             "spx": "/random-path", "support-x25519mlkem768": "true"}
+    return f"vless://{UUID2}@{HOST}:443?{urlencode(query)}#Reality"
+
+
+def _hysteria2_link():
+    query = {"security": "tls", "sni": HOST, "alpn": "h3", "fp": "chrome",
+             "obfs": "salamander", "obfs-password": "obfs-secret"}
+    return f"hysteria2://pass%40word@{HOST}:443?{urlencode(query)}#Hysteria2"
+
+
+def test_смешанная_base64_подписка_сохраняет_оба_протокола(monkeypatch):
+    body = _b64("\n".join((_reality_link(), _hysteria2_link())))
+    _fake_open(monkeypatch, body)
+
+    sub = subscriptions.add("https://sub.example.test/sub")
+    profiles = subscriptions.load()["profiles"]
+
+    assert sub["kind"] == "base64"
+    assert [p["proto"] for p in profiles] == ["vless", "hysteria2"]
+    assert profiles[0]["vless"]["security"] == "reality"
+    assert profiles[1]["hysteria2"]["password"] == "pass@word"
+    assert subscriptions.refresh(sub["id"])["total"] == 2
+    assert [proxy.parse_link(proxy.canonical(p))["proto"] for p in profiles] == [
+        "vless", "hysteria2"]
+
+
+def test_неверный_reality_ключ_отклоняется():
+    with pytest.raises(ValueError, match="public key"):
+        subscriptions.parse_body("uri-list", _reality_link().replace("pbk=", "pbk=x"))
 
 
 def _b64url(text):

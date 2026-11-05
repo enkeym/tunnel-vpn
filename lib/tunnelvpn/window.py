@@ -18,7 +18,7 @@ import tempfile
 import threading
 import time
 
-from . import instance, ipc, paths, portable, routelist, settings, tunnels, update, vless
+from . import instance, ipc, paths, portable, proxy, routelist, settings, tunnels, update
 
 POLL_EVERY = 2.0
 # Ход скачивания обновления — не чаще: куски по 256 КБ идут десятками в
@@ -862,16 +862,20 @@ class Api:
             return {"ok": False, "error": reply.get("error") or "не прочитать конфиг"}
         if proto == "vless":
             try:
-                v = vless.parse_link(reply.get("text", ""))["vless"]
+                profile = proxy.parse_link(reply.get("text", ""))
+                v = proxy.fields(profile)
             except ValueError as exc:
                 return {"ok": False, "error": str(exc)}
             server = v["server"]
-            return {"ok": True, "proto": "vless", "path": "ссылка VLESS",
+            return {"ok": True, "proto": profile["proto"], "path": "ссылка " + profile["proto"],
                     "endpoint": f"[{server}]:{v['server_port']}" if ":" in server
                     else f"{server}:{v['server_port']}",
-                    "security": "TLS", "transport": "WebSocket",
+                    "security": "Reality" if v.get("security") == "reality" else "TLS",
+                    "transport": "TCP" if v.get("type") == "tcp" else
+                                 "QUIC" if profile["proto"] == "hysteria2" else "WebSocket",
                     "host": v.get("host", ""), "ws_path": v.get("path", ""),
                     "sni": v.get("sni", ""), "fp": v.get("fp", ""),
+                    "alpn": v.get("alpn", ""), "obfs": v.get("obfs", ""),
                     "problem": ""}
         try:
             facts = _conf_summary(reply.get("text", ""))

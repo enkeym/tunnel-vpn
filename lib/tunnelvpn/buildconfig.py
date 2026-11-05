@@ -27,7 +27,7 @@ import sys
 import threading
 
 # Раскладку знает paths.py — здесь только имена.
-from . import paths, tunnels, vless, winnet
+from . import paths, proxy, tunnels, winnet
 from .tunnels import NAME_MAX, check_name, safe_name  # их зовут и через buildconfig
 
 BASE = paths.BASE
@@ -844,7 +844,7 @@ def _is_ip(host):
 
 
 def side_config_vless(profile, link, level="info", server=""):
-    out = vless.to_outbound(profile, VLESS_TAG)
+    out = proxy.to_outbound(profile, VLESS_TAG)
     if server:
         out["server"] = server
     config = {
@@ -871,7 +871,7 @@ def side_host(cfg):
             if host:
                 return host
     for ob in cfg.get("outbounds") or []:
-        if ob.get("type") == "vless":
+        if ob.get("type") in proxy.PROTOS:
             return (ob.get("server") or "").strip()
     return ""
 
@@ -883,7 +883,7 @@ def set_side_host(cfg, host):
                 peer["address"] = host
                 return True
     for ob in cfg.get("outbounds") or []:
-        if ob.get("type") == "vless":
+        if ob.get("type") in proxy.PROTOS:
             ob["server"] = host
             return True
     return False
@@ -1071,11 +1071,14 @@ def _summary(t, ep, nets, domains, dns, conf_name=""):
 
 
 def _summary_vless(t, profile, nets, domains, conf_name=""):
-    v = profile["vless"]
+    v = proxy.fields(profile)
+    label = ("vless ws+tls" if profile["proto"] == "vless" and
+             v.get("security", "tls") == "tls" else
+             "vless reality+tcp" if profile["proto"] == "vless" else "hysteria2")
     head = (f"  [{t['id']}] «{t['name']}»: "
             f"{'весь остальной трафик' if t['mode'] == 'all' else 'по списку'}, "
             f"{'' if t['enabled'] else 'выключен, '}{conf_name or 'профиль'}, "
-            f"сервер {v['server']}:{v['server_port']} (vless ws+tls)")
+            f"сервер {v['server']}:{v['server_port']} ({label})")
     return _summary_lines(t, head, nets, domains, None)
 
 
@@ -1411,7 +1414,7 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
             continue
         link = links[t["id"]][0]
         if t.get("proto") == "vless":
-            server = (peer_host(conf["vless"]["server"], ep_tag(t["id"]), log)
+            server = (peer_host(proxy.fields(conf)["server"], ep_tag(t["id"]), log)
                       if resolve and t["enabled"] else "")
             sides[t["id"]] = side_config_vless(conf, link, level, server)
         elif ep:
@@ -1432,7 +1435,7 @@ def peer_excludes(built):
     known, out = _known_peer_ips(), set()
     for t, conf, ep in built:
         if t.get("proto") == "vless":
-            host = conf["vless"]["server"] if conf else ""
+            host = proxy.fields(conf)["server"] if conf else ""
         elif ep:
             host = ep["peers"][0]["address"]
         else:

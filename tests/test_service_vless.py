@@ -146,7 +146,7 @@ def test_ссылка_в_wg_туннель_отклоняется():
 
     reply = _core().handle("add-link", {"link": _link(), "tunnel": "home"}, True)
 
-    assert reply["ok"] is False and "не VLESS" in reply["error"]
+    assert reply["ok"] is False and "не туннель с подписками" in reply["error"]
     assert tunnels.find(tunnels.load(), "home")["active"] == ""
 
 

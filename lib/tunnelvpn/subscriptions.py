@@ -9,7 +9,7 @@ import threading
 from datetime import datetime, timezone
 from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
-from . import happ, netguard, paths, vless
+from . import happ, netguard, paths, proxy, vless
 
 VERSION = 1
 KINDS = ("uri-list", "base64", "singbox")
@@ -132,15 +132,13 @@ def _check_profile(raw, sub_ids):
     if not isinstance(raw, dict):
         raise ValueError("профиль должен быть объектом")
     pid = check_profile_id(raw.get("id"))
-    if raw.get("proto") != vless.PROTO:
-        raise ValueError(f"профиль {pid}: ожидаю proto=vless")
-    profile = vless.normalize(raw)
+    profile = proxy.normalize(raw)
     missing = raw.get("missing", False)
     if not isinstance(missing, bool):
         raise ValueError(f"профиль {pid}: missing должен быть true или false")
-    return {"id": pid, "name": profile["name"], "proto": vless.PROTO,
-            "fingerprint": vless.fingerprint(profile),
-            "vless": profile["vless"],
+    return {"id": pid, "name": profile["name"], "proto": profile["proto"],
+            "fingerprint": proxy.fingerprint(profile),
+            profile["proto"]: proxy.fields(profile),
             "source": _source(raw, sub_ids, pid), "missing": missing}
 
 
@@ -244,10 +242,11 @@ def detect_kind(body):
         raise ValueError("пустая подписка")
     if stripped.startswith("{"):
         return "singbox"
-    if "vless://" in stripped.lower():
+    if any(f"{proto}://" in stripped.lower() for proto in proxy.PROTOS):
         return "uri-list"
     decoded = _decode_base64(stripped)
-    if decoded.strip().startswith("{") or "vless://" in decoded.lower():
+    if decoded.strip().startswith("{") or any(
+            f"{proto}://" in decoded.lower() for proto in proxy.PROTOS):
         return "base64"
     raise ValueError("неизвестный формат подписки")
 
@@ -260,16 +259,16 @@ def _parse_uri(text):
         if not line or line.startswith("#"):
             continue
         try:
-            profile = vless.parse_link(line)
+            profile = proxy.parse_link(line)
         except ValueError as exc:
             raise ValueError(f"строка {number}: {exc}") from None
-        mark = vless.fingerprint(profile)
+        mark = proxy.fingerprint(profile)
         if mark in seen:
             continue
         seen.add(mark)
         profiles.append(profile)
     if not profiles:
-        raise ValueError("в подписке нет ссылок vless://")
+        raise ValueError("в подписке нет ссылок vless:// или hysteria2://")
     return profiles
 
 
@@ -292,8 +291,9 @@ def parse_body(kind, body):
 
 def _record(profile, source, taken):
     return {"id": _new_id("p_", taken), "name": profile["name"],
-            "proto": vless.PROTO, "fingerprint": vless.fingerprint(profile),
-            "vless": profile["vless"], "source": source, "missing": False}
+            "proto": profile["proto"], "fingerprint": proxy.fingerprint(profile),
+            profile["proto"]: proxy.fields(profile), "source": source,
+            "missing": False}
 
 
 def add_profile(link):
@@ -309,7 +309,7 @@ def add_profiles(text):
     added = 0
     changed = False
     for profile in profiles:
-        mark = vless.fingerprint(profile)
+        mark = proxy.fingerprint(profile)
         record = known.get(mark)
         if record is None:
             record = _record(profile, {"manual": True}, taken)
@@ -345,7 +345,7 @@ def add(url, name="", allow_private=False, kind="auto"):
     profile_ids = {p["id"] for p in data["profiles"]}
     known = {p["fingerprint"] for p in data["profiles"]}
     for profile in profiles:
-        mark = vless.fingerprint(profile)
+        mark = proxy.fingerprint(profile)
         if mark in known:
             continue
         known.add(mark)
@@ -407,7 +407,7 @@ def refresh(sub_id):
     seen = set()
     added = updated = 0
     for profile in profiles:
-        mark = vless.fingerprint(profile)
+        mark = proxy.fingerprint(profile)
         if mark in seen or mark in other_marks:
             continue
         seen.add(mark)
@@ -417,7 +417,7 @@ def refresh(sub_id):
             added += 1
         else:
             record["name"] = profile["name"]
-            record["vless"] = profile["vless"]
+            record[profile["proto"]] = proxy.fields(profile)
             record["missing"] = False
             updated += 1
         ordered.append(record)

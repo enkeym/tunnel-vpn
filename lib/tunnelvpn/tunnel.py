@@ -29,7 +29,7 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-from . import buildconfig, killguard, paths, tunnels, vless, winnet
+from . import buildconfig, killguard, paths, proxy, tunnels, winnet
 
 KEEP_LOGS = 10
 
@@ -790,7 +790,7 @@ class Tunnel:
     def trial_vless(self, tid, profile):
         tag = buildconfig.ep_tag(tid)
         try:
-            peer = buildconfig.peer_host(profile["vless"]["server"], tag,
+            peer = buildconfig.peer_host(proxy.fields(profile)["server"], tag,
                                          self.log, self._net_dns())
         except SystemExit as exc:
             self.log(f"!! проверка [{tag}]: {exc}")
