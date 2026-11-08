@@ -2365,6 +2365,7 @@ class Core:
             if main is not None and main is not t:
                 main["mode"] = "list"
                 main["enabled"] = False
+                main["pinned"] = True
         # Основной забирает оставшееся после «по списку»: его 0.0.0.0/0 им не мешает.
         off = self._clashing(data, t) if on and t["mode"] == "list" else []
         if off and not replace:

@@ -1188,6 +1188,22 @@ def test_вкладка_выключенного_не_переводит_раб�
 
     assert core._set_enabled("work", True)["ok"]
     assert _tunnel("home")["mode"] == "list" and _tunnel("home")["enabled"] is False
+    assert _tunnel("home")["pinned"] is True
+
+
+def test_правка_списков_у_выключенного_основного_не_уводит_конфиг(core):
+    """Прежний основной стал «по списку» и выключен: сохранение списков у
+    него не уводит конфиг запасным к новому основному."""
+    tunnels.save({"tunnels": [*_off(WORK), HOME]})
+    _put("work", "nl.conf", FULL)
+    _put("home", "de.conf", FULL)
+    core._set_tunnel("work", {"mode": "all", "keep_enabled": True})
+    assert core._set_enabled("work", True)["ok"]
+
+    r = core._set_tunnel("home", {"include": "", "include_apps": "", "exclude": ""})
+
+    assert r["ok"] and "moved" not in r
+    assert _ids() == ["work", "home"] and tunnels.list_confs("home") == ["de"]
 
 
 def test_лист_знает_где_вкладки_режима(core):
