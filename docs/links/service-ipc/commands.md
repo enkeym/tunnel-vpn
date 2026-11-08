@@ -60,7 +60,8 @@ paths:
   CLI `_apply` печатает «конфигов не осталось», мок `ui/dev/mock-api.js:emptied` гасит `st.up`. `sides` — уже после того, как sing-box
   принял rule-set (`Tunnel._write_sets`), `ask` ставит `Core.pending_apply` (статус `pending_apply`, снимает
   следующий `apply` и `_stop_locked`). `lib/tunnelvpn/window.py:_save_rules` шлёт `rulesSaved` с `applied` (у
-  отказа — `failed`) только по ответу `apply` и до `askFull` — тост «Сохранено» в `ui/js/rules.js`. Занятый `lock` ждёт до `APPLY_WAIT`, а не
+  отказа — `failed`, у выключенного туннеля — `off`: `apply` не зовётся, правка берётся при включении) только
+  по ответу `apply` и до `askFull` — тост «Сохранено» в `ui/js/rules.js`. Занятый `lock` ждёт до `APPLY_WAIT`, а не
   отвечает «уже идёт»: правка уже на диске (`set-enabled` пишет без замка). Канал — поток на клиента
   (`ipc.Server._serve_one`), статус ожидание не держит. Под `lock` без `busy` — трей не сереет, а
   `_watch_once` пропускает круг по `lock.locked()`; `_human += 1` гасит начатый круг (`_mind_sides` выходит).

@@ -45,7 +45,8 @@ paths:
   active, switchable, pinned, include, exclude, include_apps, exclude_apps})` (`_RULE_KEYS`); `switchable` считает служба:
   `mode == "all"` или `pinned` или полный конфиг без основного своего протокола — только тогда `rules.js:modeBar`
   показывает вкладки «Исключать / Только выбранные» и в режиме «по списку»; `_save_rules` (`set-tunnel`) →
-  `rulesSaved({include, exclude, include_apps, exclude_apps, rejected, mode})`,
+  `rulesSaved({include, exclude, include_apps, exclude_apps, rejected, mode, applied})` (`applied: off` —
+  туннель выключен, `_apply` не зовётся, правка берётся при включении),
   `rulesMoved({tunnel, name, main})` (ушёл запасным: лист закрыт, затем `_apply`)
   или `rulesFailed({error, problems})` (`problems[] {field, text, line, token}` — `_locate` по `entry` службы;
   `field` — ключ поля `rules-<field>` в `lib/tunnelvpn/ui/js/rules.js`); `validate_rules` — возвратом `send` (`request`):
