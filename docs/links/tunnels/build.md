@@ -52,7 +52,9 @@ paths:
   (`BYPASS_NAMES_TAG`, только `domain_suffix`) для DNS-правила на сервер `uplink` (`UPLINK_DNS_TAG`, `type: dhcp` —
   DNS аплинка напрямую; тег без `dns-`, иначе `tunnel_dns` и NRPT взяли бы его за туннель); его `exclude_apps` — там же отдельным
   правилом (`app_rule`, `process_path_regex` с экранированием `_RE2_SPECIAL`): внутри одного правила адрес и
-  процесс sing-box складывает через «и». `route.find_process` — только пока у основного есть программы:
+  процесс sing-box складывает через «и». `rules-<id>` туннеля «по списку» — `rule_set([tunnel_rule(...), app_rule(include_apps)])`:
+  правила rule-set объединяются через «или», так что туннель забирает сайты/сети или программы. `route.find_process` —
+  пока есть программы у основного (`exclude_apps`) или у любого включённого туннеля «по списку» (`include_apps`):
   первая программа и снятие последней меняют основной конфиг (`tunnel._fixed` → полный перезапуск),
   остальные правки списка — rule-set на лету. Selector `out` есть всегда: в нём `via-<id>`
   всех туннелей, `direct` и `block` (kill-switch; outbound `block` в конфиге всегда, `kill_switch` из

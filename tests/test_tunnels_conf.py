@@ -34,7 +34,7 @@ def clean_conf():
 def _tunnel(**over):
     t = {"id": "work", "name": "Работа", "mode": "list", "proto": "wg",
          "active": "", "enabled": True, "include": [], "exclude": [],
-         "exclude_apps": []}
+         "include_apps": [], "exclude_apps": []}
     t.update(over)
     return t
 
@@ -108,6 +108,34 @@ def test_не_путь_к_программе_отказ_с_его_именем(b
 def test_программы_не_списком_отказ():
     with pytest.raises(ValueError, match="списком"):
         tunnels.validate(_data(_tunnel(exclude_apps="C:\\a.exe")))
+
+
+def test_файл_без_включаемых_программ_читается_с_пустым_списком():
+    """tunnels.json прежних версий поля include_apps не знает."""
+    old = _tunnel()
+    del old["include_apps"]
+
+    assert tunnels.validate(_data(old))["tunnels"][0]["include_apps"] == []
+
+
+def test_включаемые_программы_нормализуются_повтор_без_регистра_выпадает():
+    saved = tunnels.save(_data(_tunnel(include_apps=[
+        '"C:\\Games\\Steam\\steam.exe"', "c:\\games\\steam\\STEAM.EXE",
+        "D:\\Tools\\..\\App\\app.exe"])))
+
+    assert saved["tunnels"][0]["include_apps"] == ["C:\\Games\\Steam\\steam.exe",
+                                                  "D:\\App\\app.exe"]
+
+
+@pytest.mark.parametrize("bad", ["steam.exe", "C:\\Games\\notes.txt", "C:\\a?.exe"])
+def test_не_путь_к_включаемой_программе_отказ_с_её_именем(bad):
+    with pytest.raises(ValueError, match="include_apps"):
+        tunnels.validate(_data(_tunnel(include_apps=[bad])))
+
+
+def test_включаемые_программы_не_списком_отказ():
+    with pytest.raises(ValueError, match="списком"):
+        tunnels.validate(_data(_tunnel(include_apps="C:\\a.exe")))
 
 
 def test_непонятная_запись_в_списке_отказ_с_её_именем():
@@ -329,10 +357,11 @@ def test_переезд_нынешней_установки():
         "tunnels": [
             {"id": "work", "name": "Работа", "mode": "list", "proto": "wg",
              "active": "corp", "enabled": True, "include": ["corp.example"],
-             "exclude": ["198.51.100.7/32", "203.0.113.9/32"], "exclude_apps": []},
+             "exclude": ["198.51.100.7/32", "203.0.113.9/32"],
+             "include_apps": [], "exclude_apps": []},
             {"id": "home", "name": "Личный", "mode": "all", "proto": "wg",
              "active": "nl-1", "enabled": True, "include": [], "exclude": [],
-             "exclude_apps": []},
+             "include_apps": [], "exclude_apps": []},
         ],
     }
     assert tunnels.load() == data

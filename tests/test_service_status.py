@@ -196,11 +196,28 @@ def test_статус_отдаёт_туннели_без_их_правил(monke
     assert core._status()["tunnels"] == [
         {"id": "work", "name": "Работа", "mode": "list", "proto": "wg",
          "active": "corp",
-         "enabled": False, "confs": ["corp", "old"], "rules": 1, "carries": True,
-         "full": False,
+         "enabled": False, "confs": ["corp", "old"], "rules": 1, "records": 1, "apps": 0,
+         "carries": True, "full": False,
          "awg": {"corp": False, "old": False},
          "check": "", "answer": "", "seq": 0, "last": "", "checking": False,
          "tests": {}}]
+
+
+def test_статус_считает_записи_и_программы_активного_режима(monkeypatch):
+    core = _core(monkeypatch, up=False)
+    _quiet(monkeypatch, core)
+    monkeypatch.setattr(service.tunnels, "list_confs", lambda *_a, **_k: ["corp"])
+    base = {"id": "work", "name": "Работа", "active": "corp", "enabled": True,
+            "include": ["a.ru", "b.ru"], "exclude": ["c.ru"],
+            "include_apps": ["C:\\a.exe"], "exclude_apps": ["D:\\b.exe"]}
+
+    _with_tunnels(monkeypatch, {**base, "mode": "list"})
+    t = core._status()["tunnels"][0]
+    assert (t["records"], t["apps"], t["rules"]) == (2, 1, 5)
+
+    _with_tunnels(monkeypatch, {**base, "mode": "all"})
+    t = core._status()["tunnels"][0]
+    assert (t["records"], t["apps"], t["rules"]) == (1, 1, 5)
 
 
 def test_статус_vless_отдаёт_имена_профилей(monkeypatch):

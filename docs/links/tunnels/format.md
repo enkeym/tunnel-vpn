@@ -8,8 +8,10 @@ paths:
 ## Формат и переезд (`conf\tunnels.json`)
 - Формат пишет и проверяет только `lib/tunnelvpn/tunnels.py:validate` (`load`, `save`); записи списков
   `include`/`exclude` нормализует `lib/tunnelvpn/routelist.py:parse` (`1.2.3.4` → `1.2.3.4/32`, `*.x.su`
-  оставляет звёздочку), `exclude_apps` — `lib/tunnelvpn/routelist.py:parse_apps` (полный путь к `.exe`,
-  повторы без регистра). Сборка, которая будет читать записи, обязана понимать ровно эти формы.
+  оставляет звёздочку), `include_apps`/`exclude_apps` — `lib/tunnelvpn/routelist.py:parse_apps` (полный путь к `.exe`,
+  повторы без регистра; `tunnels._check_apps` параметризован ключом). Сборка, которая будет читать записи,
+  обязана понимать ровно эти формы. `version` файла остаётся `1`: поле `include_apps` аддитивное, старому
+  файлу без него `validate` подставляет пустой список.
 - Файловый ввод-вывод `load`/`save` — под `lib/tunnelvpn/tunnels.py:LOCK` (RLock). Правка вне канала
   (`lib/tunnelvpn/tunnel.py:start` пишет профиль) берёт его сама вокруг свежего `load` → `save`, а не
   пишет `data`, прочитанный до долгого шага: иначе затрёт правку из окна.
@@ -29,12 +31,15 @@ paths:
 - Файл `site.env` читают только `lib/tunnelvpn/paths.py:site_env` → `tunnels.migrate` (переезд). Команд
   `get-site`/`set-site` больше нет.
 - Правка `tunnels.json` через канал — `lib/tunnelvpn/service.py:_add_tunnel` (id `t<N>`, мимо занятых папок
-  `conf\tunnels\`), `_set_tunnel` (списки текстом через `routelist.parse`, потолок `service.MAX_RULES`),
+  `conf\tunnels\`), `_set_tunnel` (списки текстом через `routelist.parse`, программы через `parse_apps`,
+  потолок `service.MAX_RULES`),
   `_remove_tunnel` (папка конфигов удаляется после записи), `_set_tunnel` ещё меняет `mode` (all →
   `_make_main`: нужен конфиг с `0.0.0.0/0`, прежний основной → list) и отказывает на дубль записи между
   включёнными туннелями «по списку» (выключенный не сверяется — его включение идёт заменой,
   `_set_enabled`/`_clashing`) (`_clash_of`/`_clash`: та же запись в «пускать» или пересечение с AllowedIPs/«пускать»
   другого, не вынесенное в «не пускать» ни одного из двух; текст называет туннель и его активный конфиг из
   `Core._in_use`); порядок в файле на маршрут не влияет (решение #16),
-  `move-tunnel` убран; `_set_log_level`, `_set_active`. Туннель команды —
+  `move-tunnel` убран; `_set_log_level`, `_set_active`. Смена режима с листа
+  (`set_mode`) шлёт только `mode`: `_idle_full` (пустые `include` и `include_apps`) тогда не срабатывает,
+  авто-`spare`/`promoted` не запускаются — «Только выбранные» с пустыми списками легально. Туннель команды —
   `Core._target`: id, затем имя без регистра, без них — `kind`.

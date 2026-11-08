@@ -82,9 +82,10 @@ _FILE_TYPES = ("Config files (*.conf)", "All files (*.*)")
 _RULES_TYPES = ("Rules (*.json;*.txt)", "All files (*.*)")
 # «Добавить программу…» в листе основного.
 _APP_TYPES = ("Programs (*.exe)",)
-# Поля листа «Туннелирование»: списки туннеля в tunnels.json. exclude_apps — только у
-# основного, пути по одному на строку (routelist.parse_apps).
-_RULE_KEYS = ("include", "exclude", "exclude_apps")
+# Поля листа «Туннелирование»: списки туннеля в tunnels.json. include_apps —
+# программы через VPN у «по списку», exclude_apps — мимо VPN у основного, пути
+# по одному на строку (routelist.parse_apps).
+_RULE_KEYS = ("include", "exclude", "include_apps", "exclude_apps")
 
 
 def _is_admin():
@@ -323,9 +324,15 @@ class Api:
         elif name == "set_mode":
             # «Всё остальное через этот туннель» (all) или напрямую (list у
             # основного): прежний основной служба сама переводит в list.
-            self._guard(self._admin_call("set-tunnel", tunnel=arg["tunnel"],
-                                         mode=arg["mode"]))
-            self._apply()
+            reply = self._admin_call("set-tunnel", tunnel=arg["tunnel"],
+                                     mode=arg["mode"])
+            if not reply.get("ok"):
+                return {"ok": False, "error": reply.get("error") or "служба отказала"}
+            try:
+                self._apply()
+            except Exception as exc:                   # noqa: BLE001
+                return {"ok": False, "error": str(exc)}
+            return reply
         elif name == "tunnel_rules":
             self._tunnel_rules(arg)
         elif name == "save_rules":
@@ -336,7 +343,7 @@ class Api:
         elif name == "load_rules":
             self._load_rules()
         elif name == "pick_app":
-            self._pick_app()
+            self._pick_app((arg or {}).get("field", ""))
         elif name == "export_rules":
             self._export_rules(arg)
         elif name == "log_level":
@@ -990,6 +997,7 @@ class Api:
         # действовали; applied — чем кончилось (failed — списки записаны, VPN отказал).
         lists = {"include": reply.get("include", []),
                  "exclude": reply.get("exclude", []),
+                 "include_apps": reply.get("include_apps", []),
                  "exclude_apps": reply.get("exclude_apps", []),
                  "rejected": reply.get("rejected", {}),
                  "mode": reply.get("mode", "")}
@@ -1004,9 +1012,10 @@ class Api:
         без «пускать» (Core._check_rules)."""
         texts = {k: str(arg.get(k) or "") for k in ("include", "exclude") if k in arg}
         fields = {k: routelist.check(v) for k, v in texts.items()}
-        if "exclude_apps" in arg:
-            # Программы с другими туннелями не сверяются: check-rules им не нужен.
-            fields["exclude_apps"] = routelist.check_apps(str(arg["exclude_apps"] or ""))
+        for k in ("include_apps", "exclude_apps"):
+            if k in arg:
+                # Программы с другими туннелями не сверяются: check-rules им не нужен.
+                fields[k] = routelist.check_apps(str(arg[k] or ""))
         out = {"ok": True, "fields": fields, "max": routelist.MAX_RULES,
                "max_apps": routelist.MAX_APPS, "fate": {}}
         if not texts or not _is_admin() or any(f["problems"] for f in fields.values()):
@@ -1029,12 +1038,15 @@ class Api:
         out["fate"] = reply.get("fate") or {}
         return out
 
-    def _pick_app(self):
+    def _pick_app(self, field=""):
         """«Добавить программу…»: путь к .exe из проводника — в поле листа.
-        Записывает не он, а «Сохранить»: выбор — такая же правка поля, как ввод."""
+        Записывает не он, а «Сохранить»: выбор — такая же правка поля, как ввод.
+        field — какое из полей программ листа пополнить."""
         path = self._pick(_APP_TYPES)
         if path:
-            self.js("appPicked", routelist.app(path) or path)
+            self.js("appPicked", {
+                "path": routelist.app(path) or path,
+                "field": field if field in _RULE_KEYS else "exclude_apps"})
 
     def _load_rules(self):
         path = self._pick(_RULES_TYPES)
@@ -1127,10 +1139,10 @@ def _conf_summary(text):
 
 
 def _rules_from_file(text):
-    """Поля листа «Туннелирование» из файла: JSON экспорта {include, exclude}
-    раскладывается по полям, любой другой текст — {text}: страница кладёт его
-    в первое поле («пускать», у основного — «мимо VPN»). exclude_apps — только
-    если есть в файле: экспорт туннеля «по списку» его не пишет."""
+    """Поля листа «Туннелирование» из файла: JSON экспорта {include, exclude,
+    include_apps, exclude_apps} раскладывается по полям, любой другой текст —
+    {text}: страница кладёт его в первое поле («пускать», у основного — «мимо
+    VPN»). Программ в файле может не быть: экспорт пишет только поля листа."""
     try:
         data = json.loads(text.lstrip("﻿"))
     except ValueError:
@@ -1138,8 +1150,14 @@ def _rules_from_file(text):
     if not isinstance(data, dict) or not ({"include", "exclude"} & data.keys()):
         return {"text": text}
     out = {}
-    for key in ("include", "exclude", *(("exclude_apps",) if "exclude_apps" in data else ())):
+    for key in ("include", "exclude"):
         val = data.get(key)
+        out[key] = ("\n".join(str(x) for x in val) if isinstance(val, list)
+                    else val if isinstance(val, str) else "")
+    for key in ("include_apps", "exclude_apps"):
+        if key not in data:
+            continue
+        val = data[key]
         out[key] = ("\n".join(str(x) for x in val) if isinstance(val, list)
                     else val if isinstance(val, str) else "")
     return out

@@ -930,8 +930,8 @@ def test_вкл_выкл_основного_меняет_только_rule_set_�
 APP = "C:\\Program Files\\App (x86)\\a.exe"
 
 
-def _with_apps(items, tid, apps):
-    return [dict(t, exclude_apps=apps) if t["id"] == tid else t for t in items]
+def _with_apps(items, tid, apps, key="exclude_apps"):
+    return [dict(t, **{key: apps}) if t["id"] == tid else t for t in items]
 
 
 def test_программы_основного_отдельным_правилом_в_bypass(build, tmp_path):
@@ -961,6 +961,36 @@ def test_программы_туннеля_по_списку_не_действу
     assert main["route"]["find_process"] is False
     assert all("process_path_regex" not in r
                for r in _load(tmp_path / "bypass.json")["rules"])
+
+
+def test_программы_туннеля_по_списку_пускаются_через_него(build, tmp_path):
+    """«Только выбранные»: сайты из include и программы из include_apps — в
+    одном rule-set, sing-box объединяет правила через «или»."""
+    main, _ = build(_with_apps(THREE, "lab", [APP], "include_apps"))
+
+    rules = _load(tmp_path / "rules-lab.json")["rules"]
+    assert rules[-1] == {"process_path_regex":
+                         ["(?i)^C:\\\\Program Files\\\\App \\(x86\\)\\\\a\\.exe$"]}
+    assert rules[0] == {"ip_cidr": ["172.20.0.0/16", "203.0.113.9/32"]}
+    assert main["route"]["find_process"] is True
+
+
+def test_пустые_программы_туннеля_по_списку_правила_не_дают(build, tmp_path):
+    build(_with_apps(THREE, "lab", [], "include_apps"))
+
+    rules = _load(tmp_path / "rules-lab.json")["rules"]
+    assert rules == [{"ip_cidr": ["172.20.0.0/16", "203.0.113.9/32"]}]
+
+
+def test_включённые_программы_только_у_включённого_туннеля(build, tmp_path):
+    """Выключенный туннель ничего не забирает — и процесс искать незачем."""
+    items = _with_apps([*THREE[:2], THREE[2]], "lab", [APP], "include_apps")
+    items[1] = dict(items[1], enabled=False)
+
+    main, _ = build(items)
+
+    assert main["route"]["find_process"] is False
+    assert _load(tmp_path / "rules-lab.json") == {"version": 3, "rules": []}
 
 
 def test_первая_программа_полный_перезапуск_следующая_на_лету(build, tmp_path):

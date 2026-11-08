@@ -593,7 +593,11 @@ class Core:
                           "active": t["active"], "enabled": t["enabled"],
                           "confs": confs,
                           "rules": (len(t["include"]) + len(t["exclude"])
+                                    + len(t["include_apps"])
                                     + len(t["exclude_apps"])),
+                          "records": len(t["exclude"] if t["mode"] == "all" else t["include"]),
+                          "apps": len(t["exclude_apps"] if t["mode"] == "all"
+                                      else t["include_apps"]),
                           "carries": _carries(t, in_use[t["id"]], st["main_v6"]),
                           "full": _conf_full(t["id"], in_use[t["id"]],
                                              t.get("proto", "wg")),
@@ -2014,7 +2018,7 @@ class Core:
             if where == "all":
                 main = tunnels.main_tunnel(data)
                 if main is not t and main is not None:
-                    for key in ("include", "exclude", "exclude_apps"):
+                    for key in ("include", "exclude", "include_apps", "exclude_apps"):
                         t[key] = list(main.get(key) or [])
         before = tunnels.list_confs(t["id"])
         try:
@@ -2068,7 +2072,7 @@ class Core:
              "exclude_apps": [], "enabled": False}
         data["tunnels"].append(t)
         if main is not None and t["mode"] == "all":
-            for key in ("include", "exclude", "exclude_apps"):
+            for key in ("include", "exclude", "include_apps", "exclude_apps"):
                 t[key] = list(main.get(key) or [])
         return t
 
@@ -2301,7 +2305,7 @@ class Core:
                    "active": "", "include": [], "exclude": [],
                    "enabled": main is None or to == "new"}
             if to == "all" and main is not None:
-                for key in ("include", "exclude", "exclude_apps"):
+                for key in ("include", "exclude", "include_apps", "exclude_apps"):
                     dst[key] = list(main.get(key) or [])
             data["tunnels"].append(dst)
         self._keep_active(dst, tunnels.list_confs(dst["id"]), name)
@@ -2457,7 +2461,8 @@ class Core:
         return {**r, "id": tid} if r["ok"] else r
 
     def _set_tunnel(self, tunnel, payload):
-        """Меняет у туннеля то, что пришло: name, mode, include, exclude, exclude_apps.
+        """Меняет у туннеля то, что пришло: name, mode, include, exclude,
+        include_apps, exclude_apps.
 
         Списки — текстом поля, как его ввёл человек (routelist.parse,
         программы — routelist.parse_apps).
@@ -2493,7 +2498,8 @@ class Core:
         # Сохранённые списки — окну: поля показывают записи в том виде, как
         # их понял routelist, рядом с непонятыми; mode — туннель мог стать основным.
         return ({**r, "rejected": p["rejected"], "include": t["include"],
-                 "exclude": t["exclude"], "exclude_apps": t["exclude_apps"],
+                 "exclude": t["exclude"], "include_apps": t["include_apps"],
+                 "exclude_apps": t["exclude_apps"],
                  "mode": t["mode"]} if r["ok"] else r)
 
     def _plan_tunnel(self, tunnel, payload):
@@ -2508,6 +2514,8 @@ class Core:
                 t[key], rejected[key] = self._rules(payload[key])
         if "exclude_apps" in payload:
             t["exclude_apps"], rejected["exclude_apps"] = self._apps(payload["exclude_apps"])
+        if "include_apps" in payload:
+            t["include_apps"], rejected["include_apps"] = self._apps(payload["include_apps"])
         changed = [t]
         if payload.get("mode") == "all" and t["mode"] != "all":
             changed += self._make_main(data, t)
@@ -2517,7 +2525,8 @@ class Core:
             if key in payload:
                 t[key] = payload[key]
         main = tunnels.main_tunnel(data)
-        idle = "include" in payload and self._idle_full(data, t)
+        idle = (("include" in payload or "include_apps" in payload)
+                and self._idle_full(data, t))
         if idle and main is None:
             t["mode"] = "all"
             t["enabled"] = True
@@ -2532,7 +2541,9 @@ class Core:
         """check-rules: что set-tunnel сказал бы о списках, ничего не записывая, —
         лист окна проверяет дубли с другими туннелями на лету. fate — куда
         туннель уйдёт без «пускать»: {to: main} или {to: spare, main: имя}."""
-        lists = {k: payload[k] for k in ("include", "exclude") if k in payload}
+        lists = {k: payload[k]
+                 for k in ("include", "exclude", "include_apps", "exclude_apps")
+                 if k in payload}
         try:
             p = self._plan_tunnel(tunnel, lists)
         except ValueError as exc:
@@ -2544,6 +2555,7 @@ class Core:
                       else self._in_use(p["data"])[p["t"]["id"]]}
                 if p["spare"] else {})
         return {"ok": True, "include": p["t"]["include"], "exclude": p["t"]["exclude"],
+                "include_apps": p["t"]["include_apps"],
                 "rejected": p["rejected"], "problems": p["problems"], "fate": fate}
 
     @staticmethod
@@ -2584,8 +2596,10 @@ class Core:
                                       "main": dst["name"] if dst is not None else main["name"]}}
 
     def _idle_full(self, data, t):
-        """Полный конфиг «по списку» с пустым «пускать»: такой не везёт ничего."""
+        """Полный конфиг «по списку» с пустыми «пускать» и программами через
+        VPN: такой не везёт ничего."""
         return (t["mode"] == "list" and not t["include"]
+                and not t["include_apps"]
                 and _conf_full(t["id"], self._in_use(data)[t["id"]],
                                t.get("proto", "wg")))
 

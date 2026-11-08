@@ -1090,6 +1090,8 @@ def _summary_lines(t, head, nets, domains, dns):
         lines.append(f"      мимо  : {_few(t['exclude'])}")
     if t["mode"] == "all" and t["exclude_apps"]:
         lines.append(f"      программы мимо: {_few(t['exclude_apps'])}")
+    if t["mode"] == "list" and t["include_apps"]:
+        lines.append(f"      программы через VPN: {_few(t['include_apps'])}")
     if dns:
         lines.append(f"      DNS   : {dns[1]} для {_few(dns[2]) or '(доменов нет)'}")
     return lines
@@ -1254,7 +1256,7 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
             ep["peers"][0]["allowed_ips"] = (["0.0.0.0/0"]
                                              + (["::/0"] if v6 else []))
         listed = t["mode"] == "list"
-        nets, domains, rule, dns = [], [], None, None
+        nets, domains, rule, apps, dns = [], [], None, None, None
         if listed:
             if ep:
                 corp_diagnostics(ep)
@@ -1264,14 +1266,16 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
             rule = tunnel_rule(nets, domains, ex_nets, ex_domains)
             if not t["enabled"]:
                 rule = None
-            elif not rule:
-                log(f"  [{t['id']}] «{t['name']}»: пускать нечего — ни подсетей "
-                    f"в AllowedIPs, ни записей в списке")
+            else:
+                apps = app_rule(t["include_apps"])
+                if not rule and not apps:
+                    log(f"  [{t['id']}] «{t['name']}»: пускать нечего — ни "
+                        f"подсетей в AllowedIPs, ни записей в списке")
         # Правило и DNS в основном конфиге — у каждого туннеля, у выключенного
         # и у «всего остального» с пустыми rule-set: что забирает туннель,
         # меняет файл, а не основной конфиг. Иначе смена основного и «Всё
         # остальное напрямую» требовали бы полного перезапуска (Tunnel.live_plan).
-        sets[rules_tag(t["id"])] = rule_set(rule)
+        sets[rules_tag(t["id"])] = rule_set(rule, apps)
         rules.append({"rule_set": [rules_tag(t["id"])],
                       "outbound": via_tag(t["id"])})
         # DNS туннеля: из [Interface] DNS его .conf, иначе не поднимаем.
@@ -1400,7 +1404,9 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
             # они есть: поиск стоит каждому новому соединению. Флаг в основном
             # конфиге, поэтому первая программа и снятие последней — полный
             # перезапуск (live_plan), остальные правки списка — rule-set на лету.
-            "find_process": bool(main and main[0]["exclude_apps"]),
+            "find_process": bool(main and main[0]["exclude_apps"]) or any(
+                t["include_apps"] for t, conf, _ in built
+                if t["mode"] == "list" and t["enabled"] and conf),
             "default_domain_resolver": PUBLIC_DNS_TAG,
         },
     }

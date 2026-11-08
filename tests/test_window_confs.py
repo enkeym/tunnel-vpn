@@ -344,7 +344,7 @@ def test_галочка_журнала_отпускается_и_при_отка
 def test_лист_правил_получает_только_поля_туннеля(monkeypatch):
     work = {"id": "work", "name": "Работа", "mode": "list", "active": "corp",
             "include": ["corp.example"], "exclude": ["198.51.100.7/32"],
-            "exclude_apps": [], "lab": 1}
+            "include_apps": [], "exclude_apps": [], "lab": 1}
     api, admin, shown = _api(monkeypatch, [{"ok": True, "tunnels": [work]},
                                            {"ok": True, "tunnels": [work]}])
 
@@ -375,6 +375,24 @@ def test_экспорт_правил_читается_обратно_загру�
         "include": "corp.example", "exclude": "198.51.100.7/32"}
 
 
+def test_экспорт_основного_читается_обратно_с_программами(monkeypatch, tmp_path):
+    out = tmp_path / "rules.json"
+
+    class Win:
+        def create_file_dialog(self, _kind, **_kw):
+            return (str(out),)
+    api, _, shown = _api(monkeypatch, [])
+    api.holder["window"] = Win()
+    api.send("export_rules", {"name": "Работа", "exclude": ["a.ru"],
+                              "include_apps": ["C:\\A b\\a.exe"],
+                              "exclude_apps": ["D:\\b.exe"]})
+
+    assert "failed" not in [fn for fn, _ in shown]
+    assert window._rules_from_file(out.read_text(encoding="utf-8")) == {
+        "include": "", "exclude": "a.ru", "include_apps": "C:\\A b\\a.exe",
+        "exclude_apps": "D:\\b.exe"}
+
+
 def test_файл_экспорта_основного_несёт_программы_строками():
     text = '{"include": [], "exclude": ["a.ru"], "exclude_apps": ["C:\\\\A b\\\\a.exe", "D:\\\\b.exe"]}'
 
@@ -396,8 +414,19 @@ def test_выбранная_программа_уходит_в_лист_путё
     api.send("pick_app")
 
     # Выбор — правка поля, не запись: служба не зовётся; передумали — тишина.
-    assert shown == [("appPicked", "C:\\Steam\\steam.exe")]
+    assert shown == [("appPicked", {"path": "C:\\Steam\\steam.exe",
+                                    "field": "exclude_apps"})]
     assert admin == []
+
+
+def test_выбранная_программа_уходит_в_поле_по_ключу(monkeypatch):
+    api, _, shown = _api(monkeypatch, [])
+    monkeypatch.setattr(api, "_pick", lambda _types: "C:\\A\\a.exe")
+
+    api.send("pick_app", {"field": "include_apps"})
+
+    assert shown == [("appPicked", {"path": "C:\\A\\a.exe",
+                                    "field": "include_apps"})]
 
 
 def test_файл_экспорта_раскладывается_по_полям():

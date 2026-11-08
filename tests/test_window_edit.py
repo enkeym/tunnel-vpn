@@ -183,9 +183,9 @@ def test_правила_уходят_текстом_поля_а_ответ_со_
 
     # Только присланные поля: exclude не пришёл — служба его не трогает.
     assert admin == [("set-tunnel", {"tunnel": "work", "include": "a.ru foo_bar"})]
-    assert ("rulesSaved", {"include": ["a.ru"], "exclude": [], "exclude_apps": [],
-                           "rejected": {"include": ["foo_bar"]}, "mode": "",
-                           "applied": ""}) in shown
+    assert ("rulesSaved", {"include": ["a.ru"], "exclude": [], "include_apps": [],
+                           "exclude_apps": [], "rejected": {"include": ["foo_bar"]},
+                           "mode": "", "applied": ""}) in shown
 
 
 def _save_then_apply(monkeypatch, applied):

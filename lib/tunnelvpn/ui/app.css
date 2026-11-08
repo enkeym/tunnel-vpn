@@ -1371,6 +1371,49 @@ body.kbd :focus-visible {
   display: grid;
   gap: var(--sp-5);
 }
+.rules-mode {
+  display: grid;
+  gap: var(--sp-1);
+}
+.rules-segs {
+  display: inline-flex;
+  justify-self: start;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--r-m);
+  background: var(--field);
+  border: 1px solid var(--line-strong);
+}
+.rules-seg {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: var(--hit-s);
+  padding: 0 var(--sp-3);
+  border-radius: var(--r-s);
+  color: var(--dim);
+  font-size: var(--fs-m);
+  white-space: nowrap;
+  transition:
+    background var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+.rules-seg:hover:not(:disabled) {
+  color: var(--text);
+}
+.rules-seg:disabled {
+  cursor: default;
+}
+.rules-seg[aria-checked="true"] {
+  background: var(--raised);
+  color: var(--text);
+}
+.rules-seg[aria-checked="true"] .radio {
+  border-color: var(--text);
+}
+.rules-seg[aria-checked="true"] .radio::after {
+  transform: scale(1);
+}
 .rules-field {
   display: grid;
   gap: var(--sp-1);

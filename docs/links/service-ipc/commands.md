@@ -25,27 +25,29 @@ paths:
   `state\run\` — закрытый каталог; в ответ не должны попасть ключи, пароли socks и секрет `clash_api`.
   `get-tunnels`, `add-tunnel`, `set-tunnel`, `remove-tunnel`, `set-log-level`, `set-kill-switch` — только
   администратору; отправитель — `lib/tunnelvpn/window.py:_dispatch` (`_tunnel_rules`, `_save_rules`, `del_tunnel`,
-  `set_mode` → `set-tunnel {mode}`, `log_level`, `kill_switch` → `set-kill-switch {on}` строго bool, без `apply`:
+  `set_mode` → `set-tunnel {mode}` — и `all`, и `list` (лист «Только выбранные»); `log_level`, `kill_switch` → `set-kill-switch {on}` строго bool, без `apply`:
   `lib/tunnelvpn/service.py:_set_kill_switch` сам переводит выход `direct` ↔ `block`), у `add-tunnel` отправителей нет. Отказ `set-tunnel`
   (дубль записи, нет `0.0.0.0/0`, у уходящего в запасные непустой «не пускать», несколько конфигов или тот же
   файл у основного) — `error` строкой и `problems [{field: include|exclude, text, entry?}]`
   (`lib/tunnelvpn/service.py:_clash_of`, `_set_tunnel`; `entry` — у дублей). `check-rules` (только администратору,
-  закрыта по умолчанию) — тот же `_plan_tunnel` без записи: `{include, exclude, rejected, problems, fate}`;
-  отправитель — `lib/tunnelvpn/window.py:_validate_rules`, только при `_is_admin()`. Правка расчёта
+  закрыта по умолчанию) — тот же `_plan_tunnel` без записи: `{include, exclude, include_apps, rejected, problems, fate}`;
+  отправитель — `lib/tunnelvpn/window.py:_validate_rules`, только при `_is_admin()`. Программы (`include_apps`/`exclude_apps`)
+  с другими туннелями не сверяются: `check-rules` их не получает. Правка расчёта
   `set-tunnel` — в `_plan_tunnel`, иначе проверка на лету и сохранение разойдутся; окно показывает `rulesFailed({error, problems})` красным у
   поля `field`, без `problems` — `error` под первым полем. Ответ `set-tunnel` — `rejected`
-  `{include|exclude|exclude_apps: [...]}` (`exclude_apps` — `_apps` → `routelist.parse_apps`), сохранённые
-  `include`/`exclude`/`exclude_apps` и `mode` (полный конфиг без «пускать» без основного
-  стал `all`; `rulesSaved` тогда перерисовывает лист с одним полем). При живом основном такой конфиг уходит к
+  `{include|exclude|include_apps|exclude_apps: [...]}` (программы — `_apps` → `routelist.parse_apps`), сохранённые
+  `include`/`exclude`/`include_apps`/`exclude_apps` и `mode` (полный конфиг без «пускать» и программ без основного
+  стал `all`; `rulesSaved` тогда перерисовывает лист с полями основного). При живом основном такой конфиг уходит к
   нему запасным (`_spare_blocks`, `_to_spare` → `_move_config(…, "all", drop_tunnel=True)`), туннель удалён,
   ответ `{ok, moved: {tunnel, name, main}}` без списков → окно `rulesMoved(moved)` и `apply`; `handle` проверяет
   конфиг уже по `moved.tunnel` (`_test_conf`), а не `_test_active` удалённого.
-- Повышение в основной (`lib/tunnelvpn/service.py:_promote`, `_idle_full`) — в `_set_tunnel` (при `include`),
+- Повышение в основной (`lib/tunnelvpn/service.py:_promote`, `_idle_full`) — в `_set_tunnel` (при `include`/`include_apps`),
   `_remove_tunnel`, `_remove_config` с `drop_tunnel`, `_move_config` с `drop_tunnel`: только когда основной ушёл
-  этой командой. `set-tunnel {mode: list}` у основного («Всё остальное напрямую») его не зовёт — иначе выбор
-  человека отменялся бы следующим удалением.
+  этой командой. `set-tunnel {mode: list}` у основного («Только выбранные») его не зовёт — `_idle_full` требует пустых
+  `include` и `include_apps`, а `mode` без списков не план; выбор человека не отменяется следующим удалением.
 - `lib/tunnelvpn/cli.py:main` (`list`, `status`) читает `st["tunnels"]` (`id`, `name`, `mode`, `active`, `confs`,
-  `check`, `answer`, `checking`). `add-config` с `tunnel=<id>` без `place` (окно `add_config {tunnel}` →
+  `check`, `answer`, `checking`, `rules`, `records`, `apps`). `records`/`apps` — счётчики активного режима
+  (у `all` — `exclude`/`exclude_apps`, у `list` — `include`/`include_apps`) для сводки карточки. `add-config` с `tunnel=<id>` без `place` (окно `add_config {tunnel}` →
   `lib/tunnelvpn/window.py:_send_config`; трей конфиги не добавляет): конфиг становится активным, прежние остаются;
   общий частный DNS с выбранным конфигом туннеля «по списку» (`lib/tunnelvpn/service.py:_same_dns`, `_list_confs` —
   те же, что у `_place`) → `place: replace`, прежние удалены; затем `apply`. Ответ `check` — `{ok, status}`.

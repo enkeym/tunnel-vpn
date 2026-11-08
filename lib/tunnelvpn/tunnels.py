@@ -140,14 +140,14 @@ def _check_list(tunnel, key):
     return entries
 
 
-def _check_apps(tunnel):
-    """Пути программ «мимо основного» — как их разбирает routelist.parse_apps."""
-    items = tunnel.get("exclude_apps", [])
+def _check_apps(tunnel, key):
+    """Пути программ — как их разбирает routelist.parse_apps."""
+    items = tunnel.get(key, [])
     if not isinstance(items, list):
-        raise ValueError(f"туннель {tunnel['id']}: exclude_apps должен быть списком")
+        raise ValueError(f"туннель {tunnel['id']}: {key} должен быть списком")
     entries, rejected = routelist.parse_app_list(items)
     if rejected:
-        raise ValueError(f"туннель {tunnel['id']}: в exclude_apps не путь к .exe: "
+        raise ValueError(f"туннель {tunnel['id']}: в {key} не путь к .exe: "
                          f"{', '.join(rejected)}")
     return entries
 
@@ -181,7 +181,8 @@ def _check_tunnel(raw):
               "active": active, "enabled": enabled}
     tunnel["include"] = _check_list(raw, "include")
     tunnel["exclude"] = _check_list(raw, "exclude")
-    tunnel["exclude_apps"] = _check_apps(raw)
+    tunnel["include_apps"] = _check_apps(raw, "include_apps")
+    tunnel["exclude_apps"] = _check_apps(raw, "exclude_apps")
     return tunnel
 
 
@@ -395,9 +396,11 @@ def migrate(log=print):
              # conf\, и тогда сборка всё равно требовала оставить один.
              "active": work_confs[0] if work_confs else "",
              "include": rules("CORP_DOMAINS"),
-             "exclude": rules("SB_CORP_EXCLUDE")},
+             "exclude": rules("SB_CORP_EXCLUDE"),
+             "include_apps": []},
             {"id": "home", "name": "Личный", "mode": "all",
-             "active": profile, "include": [], "exclude": []},
+             "active": profile, "include": [], "exclude": [],
+             "include_apps": [], "exclude_apps": []},
         ],
     }
     data = save(data)
