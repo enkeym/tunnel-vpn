@@ -11,7 +11,8 @@ paths:
   (его же `_test_config` возвращает в `testDone`),
   `{tunnel, name, drop_tunnel}` у `del_config`, `{tunnel, name, to, drop_tunnel}` у `move_config`,
   `{tunnel, mode}` у `set_mode` (all — «всё остальное через этот туннель»; list — «Только выбранные» с листа,
-  шлёт `rules.js:switchMode`, минуя авто-`spare`/`promoted`: payload без списков), карточки одним списком в порядке
+  шлёт `rules.js:switchMode`, минуя авто-`spare`/`promoted`: payload без списков; list ставит `pinned` в
+  `tunnels.json`, all снимает — пустые списки выбранной вкладки не уводят туннель запасным), карточки одним списком в порядке
   `st["tunnels"]` (`.cards` в `#pane-tunnels`),
   id строкой у `del_tunnel`/`tunnel_rules`, `{}`|`{tunnel}`|`{tunnel, place: "replace"}` у `add_config`,
   `{place, tunnel}` у `place_config`, `{tunnel, include?, exclude?, include_apps?, exclude_apps?}` (текст полей) у `save_rules`,
@@ -38,7 +39,9 @@ paths:
   `self._asked = (имя, текст)` и зовёт `askPlace({id, name, conf, file})` → кнопка шлёт `place_config` →
   `lib/tunnelvpn/window.py:_place_config` повторяет `add-config` с `place` без второго диалога.
 - Лист «Туннелирование»: `lib/tunnelvpn/window.py:_tunnel_rules` (`get-tunnels`) → `showRules({id, name, mode,
-  active, include, exclude, include_apps, exclude_apps})` (`_RULE_KEYS`); `_save_rules` (`set-tunnel`) →
+  active, switchable, include, exclude, include_apps, exclude_apps})` (`_RULE_KEYS`); `switchable` считает служба:
+  `mode == "all"` или `pinned` или полный конфиг без основного своего протокола — только тогда `rules.js:modeBar`
+  показывает вкладки «Исключать / Только выбранные» и в режиме «по списку»; `_save_rules` (`set-tunnel`) →
   `rulesSaved({include, exclude, include_apps, exclude_apps, rejected, mode})`,
   `rulesMoved({tunnel, name, main})` (ушёл запасным: лист закрыт, затем `_apply`)
   или `rulesFailed({error, problems})` (`problems[] {field, text, line, token}` — `_locate` по `entry` службы;

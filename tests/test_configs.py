@@ -1111,7 +1111,107 @@ def test_переключение_в_только_выбранные_не_уво
 
     r = core._set_tunnel("work", {"mode": "list"})
     assert r["ok"] and r["mode"] == "list"
+    assert _tunnel("work")["pinned"] is True
     assert _ids() == ["work", "home"] and tunnels.list_confs("work") == ["nl"]
+
+
+def test_пустые_списки_в_только_выбранные_не_уводят_запасным(core):
+    """Вкладка «Только выбранные» у полного конфига: сохранение пустых
+    списков — решение человека, а не «конфиг ничего не везёт»."""
+    tunnels.save({"tunnels": [WORK, HOME]})
+    _put("work", "nl.conf", FULL)
+    _put("home", "de.conf", FULL)
+
+    r = core._set_tunnel("work", {"mode": "list", "include": "",
+                                  "include_apps": "", "exclude": ""})
+
+    assert r["ok"] and r["mode"] == "list" and "moved" not in r
+    assert _tunnel("work")["pinned"] is True
+    assert _ids() == ["work", "home"] and tunnels.list_confs("work") == ["nl"]
+    assert tunnels.main_tunnel(tunnels.load())["id"] == "home"
+
+
+def test_awg_в_только_выбранные_с_пустым_списком_остаётся_туннелем(core):
+    """AWG — тот же протокол wg: вкладка режима ведёт себя так же."""
+    awg = FULL.replace("[Interface]\n", "[Interface]\nJc = 4\nS1 = 15\n")
+    tunnels.save({"tunnels": [WORK, HOME]})
+    _put("work", "awg.conf", awg)
+    _put("home", "de.conf", FULL)
+
+    r = core._set_tunnel("work", {"mode": "list", "include": ""})
+
+    assert r["ok"] and r["mode"] == "list"
+    assert _tunnel("work")["pinned"] is True
+    assert _ids() == ["work", "home"] and tunnels.list_confs("work") == ["awg"]
+
+
+def test_pinned_не_считается_пустым_полным_конфигом(core):
+    tunnels.save({"tunnels": [{**WORK, "pinned": True}, HOME]})
+    _put("work", "nl.conf", FULL)
+    _put("home", "de.conf", FULL)
+
+    data = tunnels.load()
+    work = tunnels.find(data, "work")
+    assert core._idle_full(data, work) is False
+    # Без вкладки тот же полный конфиг с пустым «пускать» ничего не везёт.
+    work.pop("pinned")
+    assert core._idle_full(data, work) is True
+
+
+def test_новый_основной_снимает_вкладку_у_прежнего(core):
+    """Прежний основной уходит в «по списку» по выбору нового основного:
+    пустые списки там снова значат «не везёт ничего»."""
+    tunnels.save({"tunnels": [{**WORK, "pinned": True}, HOME]})
+    _put("work", "nl.conf", FULL)
+    _put("home", "de.conf", FULL)
+
+    r = core._set_tunnel("work", {"mode": "all"})
+
+    assert r["ok"] and r["mode"] == "all"
+    assert "pinned" not in _tunnel("work")
+    assert _tunnel("home")["mode"] == "list" and "pinned" not in _tunnel("home")
+
+
+def test_лист_знает_где_вкладки_режима(core):
+    """switchable: основной, выбранный вкладкой или полный конфиг, у которого
+    своего основного нет; остальным вкладки не нужны."""
+    tunnels.save({"tunnels": [{**WORK, "pinned": True}, {**HOME, "active": "de"}]})
+    _put("work", "nl.conf", FULL)
+    _put("home", "de.conf", FULL)
+
+    work, home = core._get_tunnels()["tunnels"]
+
+    assert work["full"] is True and work["switchable"] is True
+    assert home["full"] is True and home["switchable"] is True
+
+
+def test_у_полного_без_своего_основного_вкладки_видны(core):
+    tunnels.save({"tunnels": [WORK]})
+    _put("work", "nl.conf", FULL)
+
+    work = core._get_tunnels()["tunnels"][0]
+
+    assert work["full"] is True and work["switchable"] is True
+
+
+def test_частичному_туннелю_без_основного_вкладки_не_нужны(core):
+    tunnels.save({"tunnels": [WORK]})
+    _put("work", "corp.conf", WG)
+
+    work = core._get_tunnels()["tunnels"][0]
+
+    assert work["full"] is False and work["switchable"] is False
+
+
+def test_полному_при_своём_основном_вкладки_не_нужны(core):
+    tunnels.save({"tunnels": [WORK, {**HOME, "active": "de"}]})
+    _put("work", "nl.conf", FULL)
+    _put("home", "de.conf", FULL)
+
+    work, home = core._get_tunnels()["tunnels"]
+
+    assert work["full"] is True and work["switchable"] is False
+    assert home["switchable"] is True
 
 
 def test_переключение_в_основной_без_полного_конфига_отказ(core):

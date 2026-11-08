@@ -344,7 +344,7 @@ def test_галочка_журнала_отпускается_и_при_отка
 def test_лист_правил_получает_только_поля_туннеля(monkeypatch):
     work = {"id": "work", "name": "Работа", "mode": "list", "active": "corp",
             "include": ["corp.example"], "exclude": ["198.51.100.7/32"],
-            "include_apps": [], "exclude_apps": [], "lab": 1}
+            "include_apps": [], "exclude_apps": [], "switchable": False, "lab": 1}
     api, admin, shown = _api(monkeypatch, [{"ok": True, "tunnels": [work]},
                                            {"ok": True, "tunnels": [work]}])
 

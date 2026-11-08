@@ -2432,19 +2432,29 @@ class Core:
         self.log(f"→ {done}")
         return {"ok": True}
 
-    @staticmethod
-    def _get_tunnels():
+    def _get_tunnels(self):
         """tunnels.json со списками правил и конфигами каждого туннеля.
 
         Только администратору: в списках адреса и домены рабочей сети. Испорченный
         файл — ошибка, а не пустой: редактор поверх пустого затёр бы туннели.
+
+        full — у выбранного конфига 0.0.0.0/0. switchable — у листа есть
+        вкладки «Исключать / Только выбранные»: основной, выбранный вкладкой
+        или полный конфиг, у которого своего основного нет. Тогда вкладки
+        видны и в режиме «по списку».
         """
         try:
             data = tunnels.load()
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
+        in_use = self._in_use(data)
+        mains = {t.get("proto", "wg") for t in data["tunnels"] if t["mode"] == "all"}
         for t in data["tunnels"]:
-            t["confs"] = tunnels.list_confs(t["id"], t.get("proto", "wg"))
+            proto = t.get("proto", "wg")
+            t["confs"] = tunnels.list_confs(t["id"], proto)
+            t["full"] = _conf_full(t["id"], in_use[t["id"]], proto)
+            t["switchable"] = (t["mode"] == "all" or bool(t.get("pinned"))
+                               or (t["full"] and proto not in mains))
         return {"ok": True, **data}
 
     def _add_tunnel(self, name, mode):
@@ -2524,6 +2534,14 @@ class Core:
         for key in ("name", "mode"):
             if key in payload:
                 t[key] = payload[key]
+        # Вкладка листа: выбранный режим важнее эвристики «пустой полный
+        # конфиг не везёт ничего». «Только выбранные» с пустыми списками —
+        # легальное состояние, туннель не уходит запасным и не становится
+        # основным сам.
+        if payload.get("mode") == "list":
+            t["pinned"] = True
+        elif payload.get("mode") == "all":
+            t.pop("pinned", None)
         main = tunnels.main_tunnel(data)
         idle = (("include" in payload or "include_apps" in payload)
                 and self._idle_full(data, t))
@@ -2597,9 +2615,10 @@ class Core:
 
     def _idle_full(self, data, t):
         """Полный конфиг «по списку» с пустыми «пускать» и программами через
-        VPN: такой не везёт ничего."""
-        return (t["mode"] == "list" and not t["include"]
-                and not t["include_apps"]
+        VPN: такой не везёт ничего. Режим, выбранный вкладкой, это не
+        отменяет: там пустые списки — решение человека."""
+        return (t["mode"] == "list" and not t.get("pinned")
+                and not t["include"] and not t["include_apps"]
                 and _conf_full(t["id"], self._in_use(data)[t["id"]],
                                t.get("proto", "wg")))
 
@@ -2637,6 +2656,9 @@ class Core:
         if main is None:
             return []
         main["mode"] = "list"
+        # Прежний основной в «по списку» — по выбору нового основного, а не
+        # вкладкой: пустые списки снова значат «не везёт ничего».
+        main.pop("pinned", None)
         return [main]
 
     def _clash_of(self, data, changed):

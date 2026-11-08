@@ -183,6 +183,10 @@ def _check_tunnel(raw):
     tunnel["exclude"] = _check_list(raw, "exclude")
     tunnel["include_apps"] = _check_apps(raw, "include_apps")
     tunnel["exclude_apps"] = _check_apps(raw, "exclude_apps")
+    # Режим выбран вкладкой листа: «Только выбранные» с пустыми списками —
+    # легальное «пока ничего не забирает», туннель не уходит запасным.
+    if raw.get("pinned"):
+        tunnel["pinned"] = True
     return tunnel
 
 

@@ -534,3 +534,23 @@ def test_предпросмотр_без_аргументов_объясняет
     reply = _core().handle("preview", {}, True)
 
     assert reply["ok"] is False and "ссылка" in reply["error"]
+
+
+def test_vless_в_только_выбранные_остаётся_переключаемым():
+    """Пустой список у VLESS — тоже легальное состояние: профиль не уходит
+    запасным, вкладки листа остаются."""
+    core = _core()
+    main = core.handle("add-link", {"link": _link()}, True)
+    tid = main["tunnel"]
+
+    r = core._set_tunnel(tid, {"mode": "list", "include": "", "include_apps": ""})
+
+    assert r["ok"] and r["mode"] == "list" and "moved" not in r
+    vless = _tunnel({"tunnel": tid})
+    assert vless["mode"] == "list" and vless["pinned"] is True
+    work = next(x for x in core._get_tunnels()["tunnels"] if x["id"] == tid)
+    assert work["full"] is True and work["switchable"] is True
+
+    back = core._set_tunnel(tid, {"mode": "all"})
+    assert back["ok"] and back["mode"] == "all"
+    assert "pinned" not in _tunnel({"tunnel": tid})

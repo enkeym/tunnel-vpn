@@ -973,7 +973,7 @@ class Api:
         if t is None:
             raise RuntimeError(f"нет туннеля {tunnel}")
         self.js("showRules", {k: t[k] for k in ("id", "name", "mode", "active",
-                                                *_RULE_KEYS)})
+                                                "switchable", *_RULE_KEYS)})
 
     def _save_rules(self, arg):
         """Поля листа — текстом, как их ввёл человек: разбирает служба
