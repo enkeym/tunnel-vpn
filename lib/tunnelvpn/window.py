@@ -330,6 +330,11 @@ class Api:
             reply = self._admin_call("set-tunnel", **payload)
             if not reply.get("ok"):
                 return {"ok": False, "error": reply.get("error") or "служба отказала"}
+            if reply.get("enabled") is False:
+                # Выключенный только запоминает режим: живой VPN не трогаем и
+                # настройки возьмут на включении (set_enabled сам зовёт _apply).
+                self.refresh(full=True)
+                return reply
             try:
                 self._apply()
             except Exception as exc:                   # noqa: BLE001
@@ -1004,6 +1009,11 @@ class Api:
                  "exclude_apps": reply.get("exclude_apps", []),
                  "rejected": reply.get("rejected", {}),
                  "mode": reply.get("mode", "")}
+        if reply.get("enabled") is False:
+            # Выключенный только запоминает списки: живой VPN не трогаем.
+            self.refresh(full=True)
+            self.js("rulesSaved", {**lists, "applied": "off"})
+            return
         self._apply(lambda r: self.js("rulesSaved", {
             **lists, "applied": r.get("applied", "") if r.get("ok") else "failed"}))
 

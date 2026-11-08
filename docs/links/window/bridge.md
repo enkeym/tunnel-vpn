@@ -14,7 +14,8 @@ paths:
   листа, шлёт `rules.js:switchMode`, минуя авто-`spare`/`promoted`: payload без списков; list ставит `pinned` в
   `tunnels.json`, all снимает — пустые списки выбранной вкладки не уводят туннель запасным; прежний основной
   уходит в list с `pinned`, его вкладки остаются; `keep_enabled` — вкладка листа не включает выключенный туннель,
-  без него пункт меню ⋮ «Всё остальное через этот» включает), карточки одним списком в порядке
+  без него пункт меню ⋮ «Всё остальное через этот» включает; выключенный основной не трогает, окно тогда не зовёт
+  `apply` — режим возьмут на включении), карточки одним списком в порядке
   `st["tunnels"]` (`.cards` в `#pane-tunnels`),
   id строкой у `del_tunnel`/`tunnel_rules`, `{}`|`{tunnel}`|`{tunnel, place: "replace"}` у `add_config`,
   `{place, tunnel}` у `place_config`, `{tunnel, include?, exclude?, include_apps?, exclude_apps?}` (текст полей) у `save_rules`,

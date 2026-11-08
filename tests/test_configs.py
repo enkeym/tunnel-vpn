@@ -740,7 +740,8 @@ def test_списки_разбираются_а_непонятое_возвра�
     # Сохранённые списки — в ответе: окно показывает «сохранено N» рядом с непонятым.
     assert r == {"ok": True, "rejected": {"include": ["foo_bar"]},
                  "include": ["a.ru", "1.2.3.4/32", "*.b.ru"], "exclude": [],
-                 "include_apps": [], "exclude_apps": [], "mode": "list"}
+                 "include_apps": [], "exclude_apps": [], "mode": "list",
+                 "enabled": True}
     t = tunnels.find(tunnels.load(), "work")
     assert t["include"] == ["a.ru", "1.2.3.4/32", "*.b.ru"]
     assert t["name"] == "Офис" and t["exclude"] == []
@@ -1170,6 +1171,23 @@ def test_смена_вкладки_не_включает_выключенный_
 
     assert r["ok"] and r["mode"] == "all"
     assert _tunnel("work")["enabled"] is False
+
+
+def test_вкладка_выключенного_не_переводит_рабочий_основной(core):
+    """Выключенный только запоминает режим: включённый основной остаётся
+    основным, а настройки выключенного возьмут, когда его включат."""
+    tunnels.save({"tunnels": [*_off(WORK), HOME]})
+    _put("work", "nl.conf", FULL)
+    _put("home", "de.conf", FULL)
+
+    r = core._set_tunnel("work", {"mode": "all", "keep_enabled": True})
+
+    assert r["ok"] and r["enabled"] is False
+    assert _tunnel("home")["mode"] == "all" and _tunnel("home")["enabled"] is True
+    assert "pinned" not in _tunnel("home")
+
+    assert core._set_enabled("work", True)["ok"]
+    assert _tunnel("home")["mode"] == "list" and _tunnel("home")["enabled"] is False
 
 
 def test_лист_знает_где_вкладки_режима(core):

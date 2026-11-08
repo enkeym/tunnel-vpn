@@ -2501,7 +2501,7 @@ class Core:
         return ({**r, "rejected": p["rejected"], "include": t["include"],
                  "exclude": t["exclude"], "include_apps": t["include_apps"],
                  "exclude_apps": t["exclude_apps"],
-                 "mode": t["mode"]} if r["ok"] else r)
+                 "mode": t["mode"], "enabled": t["enabled"]} if r["ok"] else r)
 
     def _plan_tunnel(self, tunnel, payload):
         """Правка set-tunnel без записи: свежий tunnels.json с ней и что из неё
@@ -2519,10 +2519,12 @@ class Core:
             t["include_apps"], rejected["include_apps"] = self._apps(payload["include_apps"])
         changed = [t]
         if payload.get("mode") == "all" and t["mode"] != "all":
-            changed += self._make_main(data, t)
-            # «Весь остальной через этот» — чтобы вез, а не стал выключенным основным.
+            # «Весь остальной через этот» — чтобы вез, а не стал выключенным
+            # основным. Вкладка листа выключенный туннель не включает: тогда
+            # и живой основной не трогаем, режим возьмут на включении.
             if not payload.get("keep_enabled"):
                 t["enabled"] = True
+            changed += self._make_main(data, t)
         for key in ("name", "mode"):
             if key in payload:
                 t[key] = payload[key]
@@ -2627,11 +2629,15 @@ class Core:
     def _make_main(self, data, t):
         """Готовит t к режиму all: конфиг должен забирать весь трафик, иначе
         его сервер отбросил бы чужой. Прежний основной → list с вкладками
-        (pinned); он и возвращается — его записи тоже проверяются на дубль."""
+        (pinned); он и возвращается — его записи тоже проверяются на дубль.
+        Выключенный t основной не трогает: вкладка листа только запоминает
+        режим, а прежний основной меняется при включении (_set_enabled)."""
         if not _conf_full(t["id"], self._in_use(data)[t["id"]],
                           t.get("proto", "wg")):
             raise ValueError(f"у «{t['name']}» нет конфига с 0.0.0.0/0 в AllowedIPs — "
                              f"весь остальной трафик его сервер отбросил бы")
+        if not t.get("enabled", True):
+            return []
         main = tunnels.main_tunnel(data)
         if main is None:
             return []

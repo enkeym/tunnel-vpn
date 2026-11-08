@@ -288,6 +288,35 @@ def test_отказ_вкл_выкл_виден_и_не_применяет(monkey
     assert ("failed", "set_enabled: «Личный» — основной") in shown
 
 
+def test_вкладка_выключенного_не_применяется_к_живому_vpn(monkeypatch):
+    """Set-tunnel сказал «туннель выключен» — живой VPN не трогаем: режим
+    запомнится и возьмётся при включении."""
+    api, admin, _ = _api(monkeypatch, [{"ok": True, "mode": "all", "enabled": False,
+                                        "include": [], "exclude": [],
+                                        "include_apps": [], "exclude_apps": []}])
+    applied = []
+    monkeypatch.setattr(api, "_apply", lambda: applied.append(True))
+
+    got = api.send("set_mode", {"tunnel": "t2", "mode": "all", "keep_enabled": True})
+
+    assert got["ok"] and applied == []
+    assert admin == [("set-tunnel", {"tunnel": "t2", "mode": "all", "keep_enabled": True})]
+
+
+def test_списки_выключенного_только_запоминаются(monkeypatch):
+    api, _admin, shown = _api(monkeypatch, [{"ok": True, "enabled": False, "mode": "list",
+                                             "include": ["a.ru"], "exclude": [],
+                                             "include_apps": [], "exclude_apps": []}])
+    applied = []
+    monkeypatch.setattr(api, "_apply", lambda *a: applied.append(True))
+
+    api.send("save_rules", {"tunnel": "t3", "include": "a.ru"})
+
+    assert applied == []
+    saved = next(arg for fn, arg in shown if fn == "rulesSaved")
+    assert saved["applied"] == "off" and saved["include"] == ["a.ru"]
+
+
 def test_команды_плитки_уходят_администратору_с_id_туннеля(monkeypatch):
     api, admin, shown = _api(monkeypatch, [])
 
