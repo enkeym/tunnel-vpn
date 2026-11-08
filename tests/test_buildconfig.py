@@ -136,25 +136,13 @@ def test_ipv6_из_списка_остаётся_при_v6_на_tun():
 
 
 def test_правило_без_исключений_одно_условие_или():
-    rule = buildconfig.tunnel_rule(["10.0.0.0/8"], ["corp.example"], [], [])
+    rule = buildconfig.tunnel_rule(["10.0.0.0/8"], ["corp.example"])
     assert rule == {"ip_cidr": ["10.0.0.0/8"], "domain_suffix": ["corp.example"]}
-
-
-def test_исключение_это_отрицание_внутри_и():
-    """/32 внутри /16 из AllowedIPs раньше не исключался: SB_CORP_EXCLUDE
-    выкидывал только подсети, целиком лежащие в исключении."""
-    rule = buildconfig.tunnel_rule(["10.10.0.0/16"], [], ["10.10.5.9/32"],
-                                   ["git.corp.example"])
-
-    assert rule == {"type": "logical", "mode": "and", "rules": [
-        {"ip_cidr": ["10.10.0.0/16"]},
-        {"ip_cidr": ["10.10.5.9/32"], "domain_suffix": ["git.corp.example"],
-         "invert": True}]}
 
 
 def test_пускать_нечего_правила_нет():
     """Правило без условий sing-box считает совпадением со всем."""
-    assert buildconfig.tunnel_rule([], [], ["10.0.0.1/32"], []) is None
+    assert buildconfig.tunnel_rule([], []) is None
     assert buildconfig.rule_set(None) == {"version": 3, "rules": []}
 
 
@@ -701,11 +689,8 @@ def test_что_забирает_туннель_лежит_в_его_rule_set(bu
                     "bypass-names", "no-v6")]
     assert _load(tmp_path / "rules-home.json") == {"version": 3, "rules": []}
     assert _load(tmp_path / "rules-work.json") == {"version": 3, "rules": [
-        {"type": "logical", "mode": "and", "rules": [
-            {"ip_cidr": ["10.10.0.0/16", "192.168.77.0/24"],
-             "domain_suffix": ["corp.example", ".intra.example"]},
-            {"ip_cidr": ["10.10.5.9/32"], "domain_suffix": ["git.corp.example"],
-             "invert": True}]}]}
+        {"ip_cidr": ["10.10.0.0/16", "192.168.77.0/24"],
+         "domain_suffix": ["corp.example", ".intra.example"]}]}
     assert _load(tmp_path / "rules-lab.json") == {"version": 3, "rules": [
         {"ip_cidr": ["172.20.0.0/16", "203.0.113.9/32"]}]}
 
@@ -1285,8 +1270,8 @@ def test_собирает_туннели_из_tunnels_json(state):
     assert (state / "tunnel-home.json").exists()
     assert not (state / "tunnel2-home.json").exists()
     [rule] = buildconfig.rule_set_rules(main, "rules-work")
-    assert rule["rules"][0]["domain_suffix"] == ["corp.example"]
-    assert rule["rules"][1] == {"ip_cidr": ["10.10.5.9/32"], "invert": True}
+    assert rule == {"ip_cidr": ["10.10.0.0/16", "192.168.77.0/24"],
+                    "domain_suffix": ["corp.example"]}
     assert _by_tag(main["outbounds"], "out")["default"] == "via-home"
     assert buildconfig.main_id(main) == "home"
 

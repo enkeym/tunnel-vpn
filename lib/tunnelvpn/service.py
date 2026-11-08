@@ -217,13 +217,9 @@ def _nets(entries):
     return out
 
 
-def _taken(a, b, out):
-    """Забирает ли подсеть b часть подсети a, не вынесенную в «не пускать» out."""
-    if a.version != b.version or not a.overlaps(b):
-        return False
-    # Подсети либо вложены, либо не пересекаются: общая часть — меньшая.
-    inner = a if a.prefixlen >= b.prefixlen else b
-    return not any(x.version == inner.version and inner.subnet_of(x) for x in out)
+def _taken(a, b):
+    """Пересекаются ли подсети a и b."""
+    return a.version == b.version and a.overlaps(b)
 
 
 def _domains(entries):
@@ -242,17 +238,9 @@ def _covers(x, y):
     return (xd == yd and (y_sub or not x_sub)) or yd.endswith("." + xd)
 
 
-def _domain_taken(a, b, out):
-    """Забирает ли доменная запись b имена записи a, не вынесенные в «не
-    пускать» out."""
-    # Имена либо вложены, либо не пересекаются: общая часть — меньшая запись.
-    if _covers(b, a):
-        inner = a
-    elif _covers(a, b):
-        inner = b
-    else:
-        return False
-    return not any(_covers(x, inner) for x in out)
+def _domain_taken(a, b):
+    """Одна доменная запись накрывает другую."""
+    return _covers(b, a) or _covers(a, b)
 
 
 def _clash(t, other, conf, conf_name=""):
@@ -263,30 +251,30 @@ def _clash(t, other, conf, conf_name=""):
     первое совпавшее правило: запись, которую забирают два туннеля «по
     списку», ушла бы в тот, что выше в файле. Забирает — та же запись в его
     «пускать», пересечение с его подсетями (AllowedIPs конфига conf и
-    «пускать») или доменами по суффиксу (a.ru забирает x.a.ru), не вынесенное
-    в «не пускать» ни там, ни в t: исключённое одним идёт дальше и достаётся
-    другому. Все записи, а не первая: окно показывает их под полем
-    разом, а не по одной на каждое «Сохранить». conf_name — имя активного
-    конфига other: в тексте видно, какой из его конфигов забирает запись.
+    «пускать») или доменами по суффиксу (a.ru забирает x.a.ru). Все записи, а
+    не первая: окно показывает их под полем разом, а не по одной на каждое
+    «Сохранить». conf_name — имя активного конфига other: в тексте видно,
+    какой из его конфигов забирает запись.
+
+    Списки «Мимо VPN» и «Программы мимо VPN» у основного в сверке не участвуют:
+    у туннеля «по списку» их нет, а лежащие в файле со времён основного не
+    действуют.
     """
     nets = _nets(other["include"])
     if conf:
         nets += _nets(buildconfig.allowed_nets(conf, v6=True))
-    out = _nets(other["exclude"] + t["exclude"])
     domains = _domains(other["include"])
-    out_domains = _domains(other["exclude"] + t["exclude"])
     where = f"«{other['name']}»" + (f" (конфиг {conf_name})" if conf_name else "")
     found = []
     for entry in t["include"]:
         if entry in other["include"]:
             found.append((entry, f"«{entry}» уже в {where} → одна запись — у одного "
                                  f"туннеля: удалите её там или здесь"))
-        elif (any(_taken(a, b, out) for a in _nets([entry]) for b in nets)
-              or any(_domain_taken(a, b, out_domains)
+        elif (any(_taken(a, b) for a in _nets([entry]) for b in nets)
+              or any(_domain_taken(a, b)
                      for a in _domains([entry]) for b in domains)):
             found.append((entry, f"«{entry}» из «{t['name']}» уже идёт через "
-                                 f"{where} → уберите его здесь или впишите "
-                                 f"туда в «не пускать»"))
+                                 f"{where} → уберите его здесь или там"))
     return found
 
 
@@ -2487,8 +2475,9 @@ class Core:
         «Пускать» стёрто у полного конфига «по списку»: 0.0.0.0/0 в списке не
         берётся (allowed_nets), и такой туннель не вёз бы ничего. Основного нет —
         становится им (в ответе mode); есть — конфиг уходит к нему запасным, а
-        туннель — вместе с ним (в ответе moved). Непустой «не пускать» так не
-        переносится: у запасного своих списков нет, молча его не теряем.
+        туннель — вместе с ним (в ответе moved). Списки «Мимо VPN» и «Программы
+        мимо VPN» остаются в файле: в «по списку» они не действуют и вернутся,
+        если туннель снова станет основным.
         """
         try:
             p = self._plan_tunnel(tunnel, payload)
@@ -2584,18 +2573,6 @@ class Core:
         out = [{"field": k, "text": f"Не распознано: {', '.join(bad)} → подробности под полем"}
                for k, bad in rejected.items() if bad]
         texts = []
-        target = (f"запасным к «{main['name']}»"
-                  if main.get("proto", "wg") == t.get("proto", "wg")
-                  else "запасным к основному своего протокола")
-        if t["exclude"]:
-            texts.append(f"без «пускать» конфиг станет {target}, а у "
-                       f"запасного своих списков нет — очистите и «не пускать» или "
-                       f"впишите, что пускать через него")
-        # Поля программ у туннеля «по списку» на листе нет — указываем, где его очистить.
-        if t["exclude_apps"]:
-            texts.append(f"у «{t['name']}» остался список программ мимо VPN с тех пор, как он "
-                         f"был основным, а у запасного своих списков нет — сделайте его "
-                         f"основным и очистите программы или впишите, что пускать через него")
         if len(tunnels.list_confs(t["id"], t.get("proto", "wg"))) > 1:
             texts.append(f"у «{t['name']}» несколько конфигов — запасным к "
                        f"«{main['name']}» уходит только единственный: уберите лишние "

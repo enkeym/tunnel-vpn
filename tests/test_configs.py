@@ -921,8 +921,7 @@ def test_вложенный_домен_дубль_по_суффиксу(core):
     # domain_suffix «a.ru» забирает и x.a.ru: ушёл бы в тот туннель, что выше в файле.
     # Одна причина на пересечение: не ещё и «a.ru из «Лаб» … убери его здесь».
     assert not r["ok"] and [p["text"] for p in r["problems"]] == [
-        "«x.a.ru» из «Работа» уже идёт через «Лаб» → уберите его здесь или впишите "
-        "туда в «не пускать»"]
+        "«x.a.ru» из «Работа» уже идёт через «Лаб» → уберите его здесь или там"]
     assert _tunnel("work")["include"] == []
 
 
@@ -948,44 +947,38 @@ def test_похожий_хвост_без_точки_не_дубль(core):
     assert core._set_tunnel("work", {"include": "ba.ru b.ru"})["ok"]
 
 
-def test_вложенный_домен_проходит_через_не_пускать_другого(core):
+def test_не_пускать_листа_не_выпускает_запись_чужого_домена(core):
     core._add_tunnel("Лаб", "list")
     core._set_tunnel("t1", {"include": "a.ru", "exclude": "x.a.ru"})
 
-    assert core._set_tunnel("work", {"include": "x.a.ru y.x.a.ru"})["ok"]
+    assert not core._set_tunnel("work", {"include": "x.a.ru y.x.a.ru"})["ok"]
 
 
-def test_не_пускать_только_поддомены_не_выпускает_сам_домен(core):
+def test_не_пускать_листа_не_выпускает_поддомены(core):
     core._add_tunnel("Лаб", "list")
     core._set_tunnel("t1", {"include": "a.ru", "exclude": "*.x.a.ru"})
 
-    # Исключены только поддомены x.a.ru: сам x.a.ru «Лаб» по-прежнему забирает.
     assert not core._set_tunnel("work", {"include": "x.a.ru"})["ok"]
-    assert core._set_tunnel("work", {"include": "*.x.a.ru"})["ok"]
+    assert not core._set_tunnel("work", {"include": "*.x.a.ru"})["ok"]
 
 
-def test_адрес_в_сетях_конфига_другого_туннеля_только_через_его_не_пускать(core):
+def test_адрес_в_сетях_конфига_другого_туннеля_занят(core):
     _put("work", "corp.conf", _wg("10.53.0.0/16"))
     core._add_tunnel("Лаб", "list")
 
     r = core._set_tunnel("t1", {"include": "10.53.1.5"})
-    assert not r["ok"] and "«не пускать»" in r["error"] and "«Работа»" in r["error"]
+    assert not r["ok"] and "«Работа»" in r["error"]
 
     assert core._set_tunnel("work", {"exclude": "10.53.1.0/24"})["ok"]
-    assert core._set_tunnel("t1", {"include": "10.53.1.5"})["ok"]
-
-    # Убрать исключение назад — снова дубль, уже со стороны «Работы».
-    r = core._set_tunnel("work", {"exclude": ""})
-    assert not r["ok"] and _tunnel("work")["exclude"] == ["10.53.1.0/24"]
+    assert not core._set_tunnel("t1", {"include": "10.53.1.5"})["ok"]
 
 
-def test_подсеть_с_вынесенным_в_свой_не_пускать_не_дубль(core):
+def test_подсеть_с_не_пускать_листа_всё_равно_дубль(core):
     core._add_tunnel("Лаб", "list")
     core._set_tunnel("t1", {"include": "10.53.1.5"})
 
-    # 10.53.1.5 «Работа» не забирает: у неё он идёт дальше по правилам — в «Лаб».
-    assert core._set_tunnel("work", {"include": "10.53.0.0/16",
-                                     "exclude": "10.53.1.0/24"})["ok"]
+    assert not core._set_tunnel("work", {"include": "10.53.0.0/16",
+                                         "exclude": "10.53.1.0/24"})["ok"]
 
 
 def test_подсеть_шире_чужой_тоже_дубль(core):
@@ -1053,24 +1046,18 @@ def test_полный_без_пускать_при_основном_уходит
     assert not os.path.exists(tunnels.conf_dir("work"))
 
 
-def test_полный_без_пускать_с_не_пускать_остаётся_туннелем(core):
+def test_полный_без_пускать_с_не_пускать_уходит_запасным(core):
     tunnels.save({"tunnels": [{**WORK, "include": ["a.ru"], "exclude": ["b.ru"]}, HOME]})
     _put("work", "nl.conf", FULL)
     _put("home", "de.conf", FULL)
 
     r = core._set_tunnel("work", {"include": ""})
 
-    # У запасного своих списков нет: «не пускать» молча не теряется.
-    assert not r["ok"]
-    assert [p["field"] for p in r["problems"]] == ["include"]
-    assert "запасным к «Личный»" in r["error"] and "«не пускать»" in r["error"]
-    assert _tunnel("work")["include"] == ["a.ru"]
-    assert tunnels.list_confs("work") == ["nl"]
+    assert r == {"ok": True, "moved": {"tunnel": "home", "name": "nl", "main": "Личный"}}
+    assert _ids() == ["home"] and not os.path.exists(tunnels.conf_dir("work"))
 
 
-def test_полный_без_пускать_с_программами_остаётся_туннелем(core):
-    """Программы остались с тех пор, как туннель был основным: на листе «по
-    списку» их поля нет, и отказ говорит, где их очистить."""
+def test_полный_без_пускать_с_программами_мимо_уходит_запасным(core):
     tunnels.save({"tunnels": [{**WORK, "include": ["a.ru"], "exclude_apps": ["C:\\a.exe"]},
                               HOME]})
     _put("work", "nl.conf", FULL)
@@ -1078,9 +1065,8 @@ def test_полный_без_пускать_с_программами_остаё
 
     r = core._set_tunnel("work", {"include": ""})
 
-    assert not r["ok"] and [p["field"] for p in r["problems"]] == ["include"]
-    assert "список программ" in r["error"] and "«не пускать»" not in r["error"]
-    assert _ids() == ["work", "home"] and _tunnel("work")["exclude_apps"] == ["C:\\a.exe"]
+    assert r == {"ok": True, "moved": {"tunnel": "home", "name": "nl", "main": "Личный"}}
+    assert _ids() == ["home"]
 
 
 def test_полный_без_пускать_с_программами_через_vpn_остаётся_туннелем(core):

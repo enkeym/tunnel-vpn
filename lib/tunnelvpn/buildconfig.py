@@ -534,23 +534,15 @@ def _match(nets, domains):
     return match
 
 
-def tunnel_rule(nets, domains, ex_nets, ex_domains):
+def tunnel_rule(nets, domains):
     """Что туннель «по списку» забирает — правило его rule-set; None — пускать
     нечего.
 
     ip_cidr и domain_suffix в одном правиле sing-box объединяет через «или».
-    Исключение — отрицание внутри «и»: соединение не вырезается из подсети, а
-    идёт дальше по правилам — к локальной сети, «мимо VPN» или в выход. Так
-    /32 внутри подсети из AllowedIPs тоже исключается.
+    Списки «Мимо VPN» и «Программы мимо VPN» основного — отдельное правило,
+    поэтому у туннеля «по списку» исключений нет.
     """
-    match = _match(nets, domains)
-    if not match:
-        return None
-    exclude = _match(ex_nets, ex_domains)
-    if not exclude:
-        return match
-    return {"type": "logical", "mode": "and",
-            "rules": [match, {**exclude, "invert": True}]}
+    return _match(nets, domains) or None
 
 
 def rule_set(*rules):
@@ -1086,7 +1078,7 @@ def _summary_lines(t, head, nets, domains, dns):
     lines = [head]
     if nets or domains:
         lines.append(f"      пускаю: {_few(nets + domains)}")
-    if t["exclude"]:
+    if t["mode"] == "all" and t["exclude"]:
         lines.append(f"      мимо  : {_few(t['exclude'])}")
     if t["mode"] == "all" and t["exclude_apps"]:
         lines.append(f"      программы мимо: {_few(t['exclude_apps'])}")
@@ -1262,8 +1254,7 @@ def assemble(data, confs, log=print, links=None, api=None, resolve=True,
                 corp_diagnostics(ep)
             inc_nets, domains = split_entries(t["include"], v6)
             nets = _unique((allowed_nets(conf, v6) if ep else []) + inc_nets)
-            ex_nets, ex_domains = split_entries(t["exclude"], v6)
-            rule = tunnel_rule(nets, domains, ex_nets, ex_domains)
+            rule = tunnel_rule(nets, domains)
             if not t["enabled"]:
                 rule = None
             else:

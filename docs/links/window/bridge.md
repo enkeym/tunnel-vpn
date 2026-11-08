@@ -39,7 +39,7 @@ paths:
   `self._asked = (имя, текст)` и зовёт `askPlace({id, name, conf, file})` → кнопка шлёт `place_config` →
   `lib/tunnelvpn/window.py:_place_config` повторяет `add-config` с `place` без второго диалога.
 - Лист «Туннелирование»: `lib/tunnelvpn/window.py:_tunnel_rules` (`get-tunnels`) → `showRules({id, name, mode,
-  active, switchable, include, exclude, include_apps, exclude_apps})` (`_RULE_KEYS`); `switchable` считает служба:
+  active, switchable, pinned, include, exclude, include_apps, exclude_apps})` (`_RULE_KEYS`); `switchable` считает служба:
   `mode == "all"` или `pinned` или полный конфиг без основного своего протокола — только тогда `rules.js:modeBar`
   показывает вкладки «Исключать / Только выбранные» и в режиме «по списку»; `_save_rules` (`set-tunnel`) →
   `rulesSaved({include, exclude, include_apps, exclude_apps, rejected, mode})`,
@@ -52,7 +52,7 @@ paths:
   `lib/tunnelvpn/ui/dev/mock-api.js`;
   `_load_rules` → `fillRules` (`_rules_from_file`: `{include, exclude}`, `include_apps`/`exclude_apps` — только если
   есть в файле, из JSON экспорта или `{text}` в первое поле); `_export_rules` пишет поля листа в JSON — тот же формат,
-  что читает `_rules_from_file`. `ruleKeys` в странице: у `list` — `include, include_apps, exclude`, у `all` —
+  что читает `_rules_from_file`. `ruleKeys` в странице: у `list` — `include, include_apps`, у `all` —
   `exclude, exclude_apps`.
   «Добавить программу…» (`.rules-pick`) → `pick_app` с `{field}` → `lib/tunnelvpn/window.py:_pick_app` (проводник,
   `routelist.app`) → `appPicked({path, field})` дописывает строку в поле `rules-<field>`; записывает только «Сохранить».

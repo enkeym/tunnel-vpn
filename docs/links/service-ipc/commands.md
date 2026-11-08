@@ -27,8 +27,8 @@ paths:
   администратору; отправитель — `lib/tunnelvpn/window.py:_dispatch` (`_tunnel_rules`, `_save_rules`, `del_tunnel`,
   `set_mode` → `set-tunnel {mode}` — и `all`, и `list` (лист «Только выбранные»); `log_level`, `kill_switch` → `set-kill-switch {on}` строго bool, без `apply`:
   `lib/tunnelvpn/service.py:_set_kill_switch` сам переводит выход `direct` ↔ `block`), у `add-tunnel` отправителей нет. Отказ `set-tunnel`
-  (дубль записи, нет `0.0.0.0/0`, у уходящего в запасные непустой «не пускать», несколько конфигов или тот же
-  файл у основного) — `error` строкой и `problems [{field: include|exclude, text, entry?}]`
+  (дубль записи, нет `0.0.0.0/0`, несколько конфигов или тот же файл у основного) — `error` строкой и
+  `problems [{field: include|exclude, text, entry?}]`
   (`lib/tunnelvpn/service.py:_clash_of`, `_set_tunnel`; `entry` — у дублей). `check-rules` (только администратору,
   закрыта по умолчанию) — тот же `_plan_tunnel` без записи: `{include, exclude, include_apps, rejected, problems, fate}`;
   отправитель — `lib/tunnelvpn/window.py:_validate_rules`, только при `_is_admin()`. Программы (`include_apps`/`exclude_apps`)

@@ -352,7 +352,8 @@ def test_лист_правил_получает_только_поля_тунне
     api.send("tunnel_rules", "gone")
 
     assert admin == [("get-tunnels", {}), ("get-tunnels", {})]
-    assert shown[0] == ("showRules", {k: v for k, v in work.items() if k != "lab"})
+    assert shown[0] == ("showRules", {**{k: v for k, v in work.items() if k != "lab"},
+                                      "pinned": False})
     assert shown[1][0] == "failed"
 
 

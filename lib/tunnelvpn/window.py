@@ -972,8 +972,9 @@ class Api:
         t = next((x for x in reply.get("tunnels") or [] if x["id"] == tunnel), None)
         if t is None:
             raise RuntimeError(f"нет туннеля {tunnel}")
-        self.js("showRules", {k: t[k] for k in ("id", "name", "mode", "active",
-                                                "switchable", *_RULE_KEYS)})
+        self.js("showRules", {**{k: t[k] for k in ("id", "name", "mode", "active",
+                                                   "switchable", *_RULE_KEYS)},
+                              "pinned": bool(t.get("pinned"))})
 
     def _save_rules(self, arg):
         """Поля листа — текстом, как их ввёл человек: разбирает служба

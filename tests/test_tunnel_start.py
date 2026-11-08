@@ -1472,10 +1472,10 @@ def test_правка_правил_закрывает_соединения_по_
     записей: чужие долгие соединения (SSH, звонок) правка не рвёт."""
     tun, seen = live
     buildconfig.write_json(buildconfig.rule_set_json("rules-work"), buildconfig.rule_set(
-        buildconfig.tunnel_rule(["10.10.0.0/16"], ["gone.example"], [], [])))
+        buildconfig.tunnel_rule(["10.10.0.0/16"], ["gone.example"])))
     seen["sets"] = {
         "rules-work": buildconfig.rule_set(buildconfig.tunnel_rule(
-            ["10.10.0.0/16", "10.20.0.0/16"], ["new.example"], [], [".skip.new.example"])),
+            ["10.10.0.0/16", "10.20.0.0/16"], ["new.example"])),
         buildconfig.BYPASS_TAG: buildconfig.rule_set(buildconfig.app_rule([r"C:\Apps\Zoom.exe"]))}
     FakeClash.conns = [
         _conn("sub", host="api.new.example"),          # поддомен нового

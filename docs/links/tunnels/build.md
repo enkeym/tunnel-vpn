@@ -28,7 +28,7 @@ paths:
 - Проверка туннелей без `CORP_PROBE`: домен проверки — `lib/tunnelvpn/probe.py:_probe_host` (первый include
   туннеля «по списку» без `/` и `*.`). План — `Prober.check_plan` (`tunnels.json` + `side_ids`/`tunnel_dns`
   собранного `config.json`) → `probe_slow` (часть — `_list_part`: `_slow_dns` при DNS у туннеля, иначе
-  `_slow_http`; HTTPS при DNS не делается — адрес домена бывает в «не пускать» и мерил бы соседа; итог
+  `_slow_http`; HTTPS при DNS не делается — адрес домена бывает в «Мимо VPN» и мерил бы соседа; итог
   `_check_result`), `_slow_summary`, CLI `корп-DNS` (`HTTP` только при `corp_http`),
   `Prober.tunnel_answer` (сторож).
 - Теги по id туннеля — только через `buildconfig.ep_tag` (`wg-<id>`), `socks_tag` (`socks-<id>`, слот 1 —
@@ -47,7 +47,7 @@ paths:
   «весь остальной трафик» тоже (пустой rule-set не совпадает ни с чем) — иначе смена основного и «Всё остальное
   напрямую» меняли бы основной конфиг (`tunnel._fixed`) и шли в полный перезапуск. `names-*` — только `domain_suffix`: rule-set с `ip_cidr` в правиле DNS sing-box 1.14 при
   перечитывании отвергает и молча держит старый. Читают через `buildconfig.rule_set_rules`: `tunnel_domains`
-  (NRPT), `tunnel_nets` (окно). Домен его же endpoint выкидывает `buildconfig.off_endpoint`. «Не пускать»
+  (NRPT), `tunnel_nets` (окно). Домен его же endpoint выкидывает `buildconfig.off_endpoint`. «Мимо VPN»
   основного — rule-set `bypass` (`BYPASS_TAG`, пустой без основного), его домены — ещё и `bypass-names`
   (`BYPASS_NAMES_TAG`, только `domain_suffix`) для DNS-правила на сервер `uplink` (`UPLINK_DNS_TAG`, `type: dhcp` —
   DNS аплинка напрямую; тег без `dns-`, иначе `tunnel_dns` и NRPT взяли бы его за туннель); его `exclude_apps` — там же отдельным
@@ -64,7 +64,7 @@ paths:
   (selector как detour sing-box 1.14.2-lx принимает); у `via-<id>` `default` всегда `socks-<id>`, живой выбор слота —
   только через clash_api (`tunnel._swap_slot`), `tunnel._fixed` его не видит.
 - `allowed_ips` у endpoint бокового — `0.0.0.0/0` (+`::/0` при `v6` — v6-адрес у включённого основного): что пускать, решает rule-set
-  туннеля (`buildconfig.tunnel_rule` → `rule_set`, исключение — `invert` внутри `and`).
+  туннеля (`buildconfig.tunnel_rule` → `rule_set`; «Мимо VPN» основного — отдельный rule-set `bypass`).
 - `add-config` (`service._add_config`) проверяет конфиг `lib/tunnelvpn/buildconfig.py:check_conf_text`: секции,
   затем `parse_text` и `buildconfig._endpoint` — те же правила, что у сборки (обязательные поля, `host:port`,
   числа), ошибка — `ValueError` строкой, без резолва. `endpoint` — обёртка над `_endpoint` с `sys.exit`, резолвом
