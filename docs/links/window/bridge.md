@@ -10,9 +10,11 @@ paths:
   Форма `arg` — тоже договор: `{tunnel, name}` у `use_config`/`show_config`/`edit_config`/`test_config`
   (его же `_test_config` возвращает в `testDone`),
   `{tunnel, name, drop_tunnel}` у `del_config`, `{tunnel, name, to, drop_tunnel}` у `move_config`,
-  `{tunnel, mode}` у `set_mode` (all — «всё остальное через этот туннель»; list — «Только выбранные» с листа,
-  шлёт `rules.js:switchMode`, минуя авто-`spare`/`promoted`: payload без списков; list ставит `pinned` в
-  `tunnels.json`, all снимает — пустые списки выбранной вкладки не уводят туннель запасным), карточки одним списком в порядке
+  `{tunnel, mode, keep_enabled?}` у `set_mode` (all — «всё остальное через этот туннель»; list — «Только выбранные» с
+  листа, шлёт `rules.js:switchMode`, минуя авто-`spare`/`promoted`: payload без списков; list ставит `pinned` в
+  `tunnels.json`, all снимает — пустые списки выбранной вкладки не уводят туннель запасным; прежний основной
+  уходит в list с `pinned`, его вкладки остаются; `keep_enabled` — вкладка листа не включает выключенный туннель,
+  без него пункт меню ⋮ «Всё остальное через этот» включает), карточки одним списком в порядке
   `st["tunnels"]` (`.cards` в `#pane-tunnels`),
   id строкой у `del_tunnel`/`tunnel_rules`, `{}`|`{tunnel}`|`{tunnel, place: "replace"}` у `add_config`,
   `{place, tunnel}` у `place_config`, `{tunnel, include?, exclude?, include_apps?, exclude_apps?}` (текст полей) у `save_rules`,

@@ -293,12 +293,14 @@ def test_команды_плитки_уходят_администратору_�
 
     api.send("move_config", {"tunnel": "home", "name": "nl-1", "to": "new"})
     api.send("set_mode", {"tunnel": "t3", "mode": "all"})
+    api.send("set_mode", {"tunnel": "t3", "mode": "all", "keep_enabled": True})
     api.send("del_tunnel", "work")
 
     assert admin == [
         ("move-config", {"tunnel": "home", "name": "nl-1", "to": "new",
                          "drop_tunnel": False}),
         ("set-tunnel", {"tunnel": "t3", "mode": "all"}),
+        ("set-tunnel", {"tunnel": "t3", "mode": "all", "keep_enabled": True}),
         ("remove-tunnel", {"tunnel": "work"})]
     assert "failed" not in [fn for fn, _ in shown]
 

@@ -1144,9 +1144,9 @@ def test_pinned_не_считается_пустым_полным_конфиго
     assert core._idle_full(data, work) is True
 
 
-def test_новый_основной_снимает_вкладку_у_прежнего(core):
-    """Прежний основной уходит в «по списку» по выбору нового основного:
-    пустые списки там снова значат «не везёт ничего»."""
+def test_новый_основной_оставляет_вкладки_у_прежнего(core):
+    """Прежний основной уходит в «по списку», но вкладки у него остаются:
+    настройки помнятся по id, и вернуться в «Исключать» можно тем же сегментом."""
     tunnels.save({"tunnels": [{**WORK, "pinned": True}, HOME]})
     _put("work", "nl.conf", FULL)
     _put("home", "de.conf", FULL)
@@ -1155,7 +1155,21 @@ def test_новый_основной_снимает_вкладку_у_прежн
 
     assert r["ok"] and r["mode"] == "all"
     assert "pinned" not in _tunnel("work")
-    assert _tunnel("home")["mode"] == "list" and "pinned" not in _tunnel("home")
+    assert _tunnel("home")["mode"] == "list" and _tunnel("home")["pinned"] is True
+    home = next(t for t in core._get_tunnels()["tunnels"] if t["id"] == "home")
+    assert home["switchable"] is True
+
+
+def test_смена_вкладки_не_включает_выключенный_туннель(core):
+    """Вкладка «Исключать» меняет только режим: выключенный остаётся выключенным."""
+    tunnels.save({"tunnels": [*_off(WORK), HOME]})
+    _put("work", "nl.conf", FULL)
+    _put("home", "de.conf", FULL)
+
+    r = core._set_tunnel("work", {"mode": "all", "keep_enabled": True})
+
+    assert r["ok"] and r["mode"] == "all"
+    assert _tunnel("work")["enabled"] is False
 
 
 def test_лист_знает_где_вкладки_режима(core):

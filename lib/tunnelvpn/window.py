@@ -324,8 +324,10 @@ class Api:
         elif name == "set_mode":
             # «Всё остальное через этот туннель» (all) или напрямую (list у
             # основного): прежний основной служба сама переводит в list.
-            reply = self._admin_call("set-tunnel", tunnel=arg["tunnel"],
-                                     mode=arg["mode"])
+            payload = {"tunnel": arg["tunnel"], "mode": arg["mode"]}
+            if arg.get("keep_enabled"):
+                payload["keep_enabled"] = True
+            reply = self._admin_call("set-tunnel", **payload)
             if not reply.get("ok"):
                 return {"ok": False, "error": reply.get("error") or "служба отказала"}
             try:
