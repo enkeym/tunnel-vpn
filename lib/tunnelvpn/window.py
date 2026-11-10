@@ -80,6 +80,7 @@ WINDOW_LOG_MAX = 1 << 20
 _FILE_TYPES = ("Config files (*.conf)", "All files (*.*)")
 # Списки правил туннеля: JSON экспорта или текст списка.
 _RULES_TYPES = ("Rules (*.json;*.txt)", "All files (*.*)")
+_LINK_TYPES = ("Link files (*.txt)", "All files (*.*)")
 # «Добавить программу…» в листе основного.
 _APP_TYPES = ("Programs (*.exe)",)
 # Поля листа «Туннелирование»: списки туннеля в tunnels.json. include_apps —
@@ -306,6 +307,9 @@ class Api:
             return self._subscription_op("set-allow-private", arg or {}, apply=False)
         elif name == "list_subscriptions":
             return self._admin_call("list-subscriptions")
+        elif name == "links":
+            return self._admin_call("export-links", scope=arg.get("scope", ""),
+                                    id=arg.get("id", ""))
         elif name == "show_config":
             self._show_conf(arg["tunnel"], arg["name"])
         elif name == "conf_details":
@@ -353,6 +357,8 @@ class Api:
             self._pick_app((arg or {}).get("field", ""))
         elif name == "export_rules":
             self._export_rules(arg)
+        elif name == "export_links":
+            self._export_links(arg)
         elif name == "log_level":
             # Как флажок автозапуска: чем бы ни кончился UAC, галочка на
             # странице вернётся к настоящему уровню. Но только после _apply:
@@ -886,8 +892,12 @@ class Api:
                     else f"{server}:{v['server_port']}",
                     "security": "Reality" if v.get("security") == "reality" else "TLS",
                     "transport": "TCP" if v.get("type") == "tcp" else
+                                 "gRPC" if v.get("type") == "grpc" else
                                  "QUIC" if profile["proto"] == "hysteria2" else "WebSocket",
-                    "host": v.get("host", ""), "ws_path": v.get("path", ""),
+                    "host": v.get("host", ""),
+                    "ws_path": "" if v.get("type") == "grpc" else v.get("path", ""),
+                    "service": v.get("service_name", ""),
+                    "flow": v.get("flow", ""),
                     "sni": v.get("sni", ""), "fp": v.get("fp", ""),
                     "alpn": v.get("alpn", ""), "obfs": v.get("obfs", ""),
                     "problem": ""}
@@ -1081,6 +1091,21 @@ class Api:
         with open(picked[0], "w", encoding="utf-8") as fh:
             json.dump(out, fh, ensure_ascii=False, indent=2)
             fh.write("\n")
+
+    def _export_links(self, arg):
+        reply = self._admin_call("export-links", scope=arg.get("scope", ""),
+                                 id=arg.get("id", ""))
+        if not reply.get("ok"):
+            self._guard(reply)
+            return
+        import webview
+        picked = self.holder.get("window").create_file_dialog(
+            webview.FileDialog.SAVE, file_types=_LINK_TYPES,
+            save_filename=f"{tunnels.safe_name(arg.get('name', 'links'))}.txt")
+        if not picked:
+            return
+        with open(picked[0], "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(reply["text"] + "\n")
 
     def _log(self, line):
         """Строка в paths.WINDOW_LOG. Раньше журнал шёл в state\\logs, куда у

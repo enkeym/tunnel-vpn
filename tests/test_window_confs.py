@@ -407,6 +407,30 @@ def test_экспорт_правил_читается_обратно_загру�
         "include": "corp.example", "exclude": "198.51.100.7/32"}
 
 
+def test_ссылки_запрашиваются_у_службы(monkeypatch):
+    api, admin, _ = _api(monkeypatch, [{"ok": True, "text": "vless://…", "profiles": 1}])
+
+    got = api.send("links", {"scope": "profile", "id": "p_0123456789abcdef"})
+
+    assert got == {"ok": True, "text": "vless://…", "profiles": 1}
+    assert admin == [("export-links", {"scope": "profile", "id": "p_0123456789abcdef"})]
+
+
+def test_экспорт_ссылок_пишет_текст(monkeypatch, tmp_path):
+    out = tmp_path / "links.txt"
+
+    class Win:
+        def create_file_dialog(self, _kind, **_kw):
+            return (str(out),)
+    api, admin, _ = _api(monkeypatch, [{"ok": True, "text": "vless://first\nvless://second"}])
+    api.holder["window"] = Win()
+
+    api.send("export_links", {"scope": "all", "name": "Все ссылки"})
+
+    assert admin == [("export-links", {"scope": "all", "id": ""})]
+    assert out.read_text(encoding="utf-8") == "vless://first\nvless://second\n"
+
+
 def test_экспорт_основного_читается_обратно_с_программами(monkeypatch, tmp_path):
     out = tmp_path / "rules.json"
 

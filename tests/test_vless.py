@@ -132,6 +132,12 @@ def test_каноническая_ссылка():
         "&fp=chrome&allowInsecure=0")
 
 
+def test_полная_ссылка_включает_имя():
+    profile = vless.parse_link(_link())
+
+    assert vless.link(profile) == vless.canonical(profile) + "#Test%20Server"
+
+
 def test_порядок_параметров_не_влияет():
     first = vless.parse_link(_link())
     second = vless.parse_link(
@@ -204,6 +210,111 @@ def test_outbound_без_хоста_и_отпечатка():
 def test_outbound_без_тега():
     with pytest.raises(ValueError):
         vless.to_outbound(vless.parse_link(_link()), "")
+
+
+GRPC_LINK = (
+    f"vless://{UUID}@example.com:443?encryption=none&type=grpc"
+    "&serviceName=grpc-vk&mode=multi&security=reality"
+    "&sni=ads.x5.ru&fp=firefox"
+    "&pbk=sgFFdQvfeujBKh6g7N7klU_u0mKYlr800MFbko5FzUg"
+    "&sid=844352756c1fabba#Riot")
+
+
+def test_разбор_ссылки_grpc_reality():
+    f = vless.parse_link(GRPC_LINK)["vless"]
+
+    assert f["type"] == "grpc"
+    assert f["security"] == "reality"
+    assert f["service_name"] == "grpc-vk"
+    assert f["sni"] == "ads.x5.ru"
+
+
+def test_outbound_grpc_reality():
+    ob = vless.to_outbound(vless.parse_link(GRPC_LINK), "vless-work")
+
+    assert ob["transport"] == {"type": "grpc", "service_name": "grpc-vk"}
+    assert ob["tls"]["reality"]["public_key"] == (
+        "sgFFdQvfeujBKh6g7N7klU_u0mKYlr800MFbko5FzUg")
+
+
+def test_ссылка_grpc_сохраняет_сервис():
+    profile = vless.parse_link(GRPC_LINK)
+
+    assert "type=grpc" in vless.link(profile)
+    assert "serviceName=grpc-vk" in vless.link(profile)
+    assert vless.canonical(vless.from_outbound(
+        vless.to_outbound(profile, "t"))) == vless.canonical(profile)
+
+
+@pytest.mark.parametrize("over", [
+    {"type": "grpc"},
+    {"type": "grpc", "security": "reality", "mode": "side",
+     "pbk": "sgFFdQvfeujBKh6g7N7klU_u0mKYlr800MFbko5FzUg",
+     "sid": "844352756c1fabba"},
+])
+def test_grpc_без_reality_или_с_неверным_mode(over):
+    with pytest.raises(ValueError):
+        vless.parse_link(_link(serviceName="svc", **over))
+
+
+def test_serviceName_только_для_grpc():
+    with pytest.raises(ValueError, match="serviceName"):
+        vless.parse_link(_link(serviceName="svc"))
+
+
+VISION_LINK = (
+    f"vless://{UUID}@example.com:443?type=tcp&security=reality"
+    "&encryption=none&pbk=sgFFdQvfeujBKh6g7N7klU_u0mKYlr800MFbko5FzUg"
+    "&flow=xtls-rprx-vision&fp=chrome&sni=www.wikipedia.org"
+    "&sid=4f38af1528d65068#Reality")
+
+
+def test_разбор_ссылки_reality_vision():
+    f = vless.parse_link(VISION_LINK)["vless"]
+
+    assert (f["security"], f["type"], f["flow"]) == (
+        "reality", "tcp", "xtls-rprx-vision")
+
+
+def test_outbound_reality_vision():
+    ob = vless.to_outbound(vless.parse_link(VISION_LINK), "vless-work")
+
+    assert ob["flow"] == "xtls-rprx-vision"
+    assert ob["tls"]["reality"]["public_key"] == (
+        "sgFFdQvfeujBKh6g7N7klU_u0mKYlr800MFbko5FzUg")
+    assert "transport" not in ob
+
+
+def test_ссылка_reality_vision_сохраняет_flow():
+    profile = vless.parse_link(VISION_LINK)
+
+    assert "flow=xtls-rprx-vision" in vless.link(profile)
+    assert vless.canonical(vless.from_outbound(
+        vless.to_outbound(profile, "t"))) == vless.canonical(profile)
+
+
+@pytest.mark.parametrize("over", [
+    {"flow": "xtls-rprx-vision"},
+    {"flow": "xtls-rprx-direct"},
+])
+def test_flow_только_для_reality_tcp(over):
+    with pytest.raises(ValueError):
+        vless.parse_link(_link(**over))
+
+
+def test_json_импортирует_grpc_reality():
+    tls = {"enabled": True, "server_name": "ads.x5.ru",
+           "utls": {"enabled": True, "fingerprint": "firefox"},
+           "reality": {"enabled": True,
+                       "public_key": "sgFFdQvfeujBKh6g7N7klU_u0mKYlr800MFbko5FzUg",
+                       "short_id": "844352756c1fabba"}}
+    ob = _outbound(tls=tls,
+                   transport={"type": "grpc", "service_name": "grpc-vk"})
+
+    (profile,) = vless.parse_singbox_json(_json(ob))
+
+    assert profile["vless"]["type"] == "grpc"
+    assert profile["vless"]["service_name"] == "grpc-vk"
 
 
 def test_json_подписки_бота():

@@ -93,6 +93,11 @@ def fingerprint(profile):
     return hashlib.sha256(canonical(profile).encode("utf-8")).hexdigest()
 
 
+def link(profile):
+    normalized = normalize(profile)
+    return canonical(normalized) + "#" + quote(normalized["name"], safe="")
+
+
 def to_outbound(profile, tag):
     fields = normalize(profile)[PROTO]
     tls = {"enabled": True}

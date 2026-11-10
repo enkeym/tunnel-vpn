@@ -21,6 +21,7 @@ _PROFILE_ID = re.compile(r"^p_[0-9a-f]{16}$")
 _BOT_SUB = re.compile(
     r"^/sub/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/?$",
     re.IGNORECASE)
+_RIOT_SUB = re.compile(r"^/sub/[A-Za-z0-9_-]+/?$")
 
 LOCK = threading.RLock()
 
@@ -61,7 +62,8 @@ def _url_key(url):
 
 def _fetch_url(url):
     parts = urlsplit(url)
-    if not _BOT_SUB.match(parts.path):
+    riot = (parts.hostname or "").lower() == "riotvpn.eu" and _RIOT_SUB.match(parts.path)
+    if not (_BOT_SUB.match(parts.path) or riot):
         return url
     for pair in parts.query.split("&"):
         if unquote_plus(pair.split("=", 1)[0]).lower() == "format":
@@ -527,3 +529,28 @@ def list_profiles(sub_id=None):
         raise ValueError(f"нет подписки {sub_id}")
     return [p for p in data["profiles"]
             if p["source"] == {"subscription": sub_id}]
+
+
+def links(scope, item_id=""):
+    data = load()
+    if scope == "profile":
+        profile = find_profile(data, check_profile_id(item_id))
+        if profile is None:
+            raise ValueError(f"нет профиля {item_id}")
+        profiles = [profile]
+    elif scope == "subscription":
+        sub_id = _check_sub_id(item_id)
+        if find(data, sub_id) is None:
+            raise ValueError(f"нет подписки {sub_id}")
+        profiles = [p for p in data["profiles"]
+                    if p["source"] == {"subscription": sub_id}]
+    elif scope == "manual":
+        profiles = [p for p in data["profiles"] if p["source"] == {"manual": True}]
+    elif scope == "all":
+        profiles = data["profiles"]
+    else:
+        raise ValueError("неизвестная область экспорта ссылок")
+    links = [proxy.link(p) for p in profiles]
+    if not links:
+        raise ValueError("в выбранной области нет профилей")
+    return links

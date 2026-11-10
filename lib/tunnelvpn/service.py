@@ -531,6 +531,8 @@ class Core:
             return self._update_subscription(payload.get("id", ""))
         if op == "list-subscriptions":
             return self._list_subscriptions()
+        if op == "export-links":
+            return self._export_links(payload.get("scope", ""), payload.get("id", ""))
         if op == "remove-subscription":
             return self._remove_subscription(payload.get("id", ""))
         if op == "remove-profile":
@@ -2143,6 +2145,13 @@ class Core:
                  for t in data["tunnels"] if t.get("proto") == "vless"]
         return {"ok": True, "subscriptions": subs, "profiles": profiles,
                 "tunnels": vless}
+
+    def _export_links(self, scope, item_id):
+        try:
+            links = subscriptions.links(scope, item_id)
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "text": "\n".join(links), "profiles": len(links)}
 
     def _drop_profiles(self):
         data = tunnels.load()

@@ -384,6 +384,25 @@ def test_явный_формат_и_чужой_путь_не_переписыв�
                      ("https://sub.example.test/sub/not-a-uuid", False)]
 
 
+def test_riotvpn_подписка_явно_просит_base64(monkeypatch):
+    calls = _fake_open(monkeypatch, _b64(_link()))
+    url = "https://riotvpn.eu/sub/heP0enQfNn1P6vPV"
+
+    subscriptions.add(url)
+
+    assert calls == [(f"{url}?format=base64", False)]
+
+
+def test_предпросмотр_riotvpn_явно_просит_base64(monkeypatch):
+    calls = _fake_open(monkeypatch, _b64(_link()))
+    url = "https://riotvpn.eu/sub/heP0enQfNn1P6vPV"
+
+    result = subscriptions.preview(url)
+
+    assert result["profiles"] == 1
+    assert calls == [(f"{url}?format=base64", False)]
+
+
 def test_обновление_своего_бота_просит_base64_и_помнит_адрес(monkeypatch):
     url = f"https://vpn.example.test/sub/{UUID1}"
     _fake_open(monkeypatch, _b64(_link()))

@@ -52,8 +52,8 @@ paths:
   сразу, без прогрева (`Tray._start_window`). Мок: `?mock=update&upd=net|bad|link|error`, `&outcome=updated|tunnel|error|installing`.
   Переименовал вызов — страница молчит: `call` ловит отсутствие функции только в журнал окна.
 - Листы конфига — `lib/tunnelvpn/ui/js/sheets.js` (в `parts` index.html после `cards`): `showConf`, `askPlace`,
-  `askFull` зовёт Python; `cancel` берётся из `cards.js`. «Подробности»: `confDetails(t, name)` из `cardMenu`/
-  `spareMenu` → `request('conf_details', {tunnel, name})` → `lib/tunnelvpn/window.py:_conf_details` (op
+  `askFull` зовёт Python; `cancel` берётся из `cards.js`. «Подробности»: `confDetails(t, name)` из `cardMenu`
+  → `request('conf_details', {tunnel, name})` → `lib/tunnelvpn/window.py:_conf_details` (op
   `read-config`, UAC) → `_conf_summary` — ответ возвратом `send`, ключи `{ok, error | path, awg, endpoint,
   address[], dns[], allowed[], keepalive, mtu, mtu_file, cut, mask[[имя, значение]], problem}`. MTU сборки —
   копия правил `buildconfig.endpoint` (`AWG_MTU_MAX`, `AWG_JUNK`, умолчание 1280 из `buildconfig.build`):

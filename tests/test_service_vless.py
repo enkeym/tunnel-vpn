@@ -350,6 +350,39 @@ def test_список_подписок_отдаёт_профили_и_vless_ту
                                  "active": added["profile"]}]
 
 
+def test_экспорт_ссылок_по_профилю_подписке_и_всем(monkeypatch):
+    _serve(monkeypatch, _link(), _link(uuid=UUID2, name="Second", path="/b"))
+    core = _core()
+    added = core.handle("add-subscription", {"url": SUB}, True)
+    manual = core.handle("add-link", {"link": _link(name="Manual", path="/manual")}, True)
+
+    profile = core.handle("export-links", {"scope": "profile",
+                                           "id": added["profile"]}, True)
+    group = core.handle("export-links", {"scope": "subscription",
+                                         "id": added["subscription"]}, True)
+    all_links = core.handle("export-links", {"scope": "all"}, True)
+
+    assert profile == {"ok": True, "text": vless.link(subscriptions.find_profile(
+        subscriptions.load(), added["profile"])), "profiles": 1}
+    assert group["profiles"] == 2 and "#Second" in group["text"]
+    assert all_links["profiles"] == 3 and "#Manual" in all_links["text"]
+    assert manual["profile"] in [p["id"] for p in subscriptions.list_profiles()]
+
+
+def test_экспорт_включает_hysteria2(monkeypatch):
+    core = _core()
+    added = core.handle("add-link", {
+        "link": "hysteria2://secret@hy.example.test:443?security=tls"
+                "&sni=hy.example.test&alpn=h3#Hy2"}, True)
+
+    reply = core.handle("export-links", {"scope": "profile",
+                                         "id": added["profile"]}, True)
+
+    assert reply["profiles"] == 1
+    assert reply["text"].startswith("hysteria2://")
+    assert reply["text"].endswith("#Hy2")
+
+
 def test_статус_показывает_профиль_вместо_файлов(monkeypatch):
     core = _core()
     added = core.handle("add-link", {"link": _link()}, True)

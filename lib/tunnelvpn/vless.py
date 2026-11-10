@@ -17,7 +17,7 @@ FP_VALUES = frozenset({
 _LINK_KEYS = frozenset({
     "encryption", "security", "type", "host", "sni", "path", "fp",
     "allowinsecure", "headertype", "flow", "pbk", "sid", "spx",
-    "support-x25519mlkem768",
+    "support-x25519mlkem768", "servicename", "mode",
 })
 _TOP_KEYS = frozenset({"outbounds", "log", "dns", "route"})
 _TOP_BLOCKED = ("inbounds", "endpoints", "experimental",
@@ -31,6 +31,7 @@ _TLS_KEYS = frozenset({"enabled", "server_name", "utls", "insecure", "alpn", "re
 _UTLS_KEYS = frozenset({"enabled", "fingerprint"})
 _WS_KEYS = frozenset({
     "type", "path", "headers", "max_early_data", "early_data_header_name",
+    "service_name",
 })
 _NODE_TYPES = frozenset({"vless", "selector", "urltest", "direct", "block"})
 
@@ -118,6 +119,16 @@ def _check_path(value):
     return value
 
 
+def _check_service(value):
+    if not isinstance(value, str):
+        raise ValueError("serviceName: ожидаю строку")
+    if len(value) > 256:
+        raise ValueError("serviceName: слишком длинный")
+    if any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value):
+        raise ValueError("serviceName: пробелы и управляющие символы недопустимы")
+    return value
+
+
 def _check_fp(value):
     if not isinstance(value, str):
         raise ValueError("fp: ожидаю строку")
@@ -134,9 +145,12 @@ def _check_flow(value):
         return ""
     if not isinstance(value, str):
         raise ValueError("flow: ожидаю строку")
-    if not value.strip():
+    flow = value.strip().lower()
+    if not flow:
         return ""
-    raise ValueError("flow не поддерживается")
+    if flow != "xtls-rprx-vision":
+        raise ValueError("flow не поддерживается")
+    return flow
 
 
 def _check_allow_insecure(value):
@@ -156,7 +170,8 @@ def _check_header_type(value):
 
 
 def _profile(name, uuid_value, server, port, host, path, sni, fp,
-             security="tls", kind="ws", public_key="", short_id=""):
+             security="tls", kind="ws", public_key="", short_id="",
+             service_name="", flow=""):
     uuid_value = _check_uuid(uuid_value)
     server = _check_host(server, "адрес сервера")
     if ":" in server:
@@ -166,8 +181,19 @@ def _profile(name, uuid_value, server, port, host, path, sni, fp,
     host = _check_host(host, "host") if host else ""
     sni = _check_host(sni, "sni") if sni else ""
     fp = _check_fp(fp)
-    if (security, kind) not in (("tls", "ws"), ("reality", "tcp")):
-        raise ValueError("поддерживается VLESS WebSocket/TLS или Reality/TCP")
+    if (security, kind) not in (("tls", "ws"), ("reality", "tcp"),
+                                ("reality", "grpc")):
+        raise ValueError("поддерживается VLESS WebSocket/TLS, Reality/TCP "
+                         "или Reality/gRPC")
+    if kind == "grpc":
+        service_name = _check_service(service_name)
+        path = "/"
+    elif service_name:
+        raise ValueError("serviceName задан для транспорта без gRPC")
+    flow = _check_flow(flow)
+    if flow and (security, kind) != ("reality", "tcp"):
+        raise ValueError("flow xtls-rprx-vision поддерживается только "
+                         "с Reality/TCP")
     if security == "reality":
         if not isinstance(public_key, str) or not re.fullmatch(
                 r"[A-Za-z0-9_-]{43}", public_key):
@@ -200,6 +226,8 @@ def _profile(name, uuid_value, server, port, host, path, sni, fp,
             "public_key": public_key,
             "short_id": short_id.lower(),
             "allow_insecure": False,
+            "service_name": service_name,
+            "flow": flow,
         },
     }
 
@@ -257,8 +285,19 @@ def parse_link(text):
     if security not in ("tls", "reality"):
         raise ValueError("нужен TLS или Reality")
     kind = values.get("type", "").strip().lower()
-    if (security, kind) not in (("tls", "ws"), ("reality", "tcp")):
-        raise ValueError("поддерживается WebSocket/TLS или Reality/TCP")
+    if (security, kind) not in (("tls", "ws"), ("reality", "tcp"),
+                                ("reality", "grpc")):
+        raise ValueError("поддерживается WebSocket/TLS, Reality/TCP "
+                         "или Reality/gRPC")
+    mode = values.get("mode", "").strip().lower()
+    if kind == "grpc":
+        if mode not in ("", "gun", "multi"):
+            raise ValueError("неверный mode gRPC")
+    elif mode:
+        raise ValueError("параметр mode относится только к gRPC")
+    service_name = values.get("servicename", "")
+    if kind != "grpc" and service_name:
+        raise ValueError("serviceName задан для транспорта без gRPC")
     if security == "reality":
         if "spx" in values:
             _check_path(values["spx"] or "/")
@@ -268,7 +307,7 @@ def parse_link(text):
     elif any(key in values for key in ("pbk", "sid", "spx", "support-x25519mlkem768")):
         raise ValueError("параметры Reality заданы для обычного TLS")
     _check_header_type(values.get("headertype", ""))
-    _check_flow(values.get("flow", ""))
+    flow = _check_flow(values.get("flow", ""))
     _check_allow_insecure(values.get("allowinsecure", ""))
     path = values.get("path", "") or "/"
     name = _unquote(parts.fragment, "имя") if parts.fragment else ""
@@ -285,6 +324,8 @@ def parse_link(text):
         kind,
         values.get("pbk", ""),
         values.get("sid", ""),
+        service_name,
+        flow,
     )
 
 
@@ -304,6 +345,8 @@ def normalize(profile):
         fields.get("type") or "ws",
         fields.get("public_key") or "",
         fields.get("short_id") or "",
+        fields.get("service_name") or "",
+        fields.get("flow") or "",
     )
 
 
@@ -336,6 +379,8 @@ def _normalized_fields(profile):
         fields.get("type") or "ws",
         fields.get("public_key") or "",
         fields.get("short_id") or "",
+        fields.get("service_name") or "",
+        fields.get("flow") or "",
     )["vless"]
 
 
@@ -349,8 +394,12 @@ def canonical(profile):
         ("type", fields["type"]),
     )
     if fields["security"] == "reality":
+        if fields["flow"]:
+            values += (("flow", fields["flow"]),)
         values += (("sni", fields["sni"]), ("fp", fields["fp"]),
                    ("pbk", fields["public_key"]), ("sid", fields["short_id"]))
+        if fields["type"] == "grpc":
+            values += (("serviceName", fields["service_name"]),)
     else:
         values += (("host", fields["host"]), ("sni", fields["sni"]),
                    ("path", fields["path"]), ("fp", fields["fp"]),
@@ -358,6 +407,11 @@ def canonical(profile):
     query = "&".join(f"{key}={quote(value, safe='')}" for key, value in values)
     return (f"vless://{fields['uuid']}@{authority}:"
             f"{fields['server_port']}?{query}")
+
+
+def link(profile):
+    normalized = normalize(profile)
+    return canonical(normalized) + "#" + quote(normalized["name"], safe="")
 
 
 def fingerprint(profile):
@@ -386,11 +440,16 @@ def to_outbound(profile, tag):
         "uuid": fields["uuid"],
         "tls": tls,
     }
+    if fields["flow"]:
+        out["flow"] = fields["flow"]
     if fields["type"] == "ws":
         transport = {"type": "ws", "path": fields["path"]}
         if fields["host"]:
             transport["headers"] = {"Host": fields["host"]}
         out["transport"] = transport
+    elif fields["type"] == "grpc":
+        out["transport"] = {"type": "grpc",
+                            "service_name": fields["service_name"]}
     return out
 
 
@@ -402,10 +461,10 @@ def from_outbound(outbound):
                                  f"должен подключаться напрямую")
             raise ValueError(f"поле {key} в VLESS outbound не поддерживается")
     network = outbound.get("network")
-    if network not in (None, "", "tcp", "ws"):
+    if network not in (None, "", "tcp", "ws", "grpc"):
         raise ValueError(f"network {network!r} не поддерживается: "
-                         f"только TCP/WebSocket")
-    _check_flow(outbound.get("flow", ""))
+                         f"только TCP/WebSocket/gRPC")
+    flow = _check_flow(outbound.get("flow", ""))
     tls = outbound.get("tls")
     if not isinstance(tls, dict):
         raise ValueError("у VLESS outbound нет TLS")
@@ -442,36 +501,47 @@ def from_outbound(outbound):
         if enabled is True and not fp:
             raise ValueError("uTLS включён без fingerprint")
     reality = tls.get("reality")
-    security, kind, public_key, short_id = "tls", "ws", "", ""
+    security, kind, public_key, short_id = "tls", "tcp", "", ""
+    service_name, path, host = "", "/", ""
     transport = outbound.get("transport")
     if reality is not None:
         if not isinstance(reality, dict) or set(reality) - {"enabled", "public_key", "short_id"}:
             raise ValueError("неверные параметры Reality")
-        if reality.get("enabled") is not True or transport is not None:
-            raise ValueError("Reality требует TCP без транспорта")
-        security, kind = "reality", "tcp"
+        if reality.get("enabled") is not True:
+            raise ValueError("Reality должен быть включён")
+        security = "reality"
         public_key, short_id = reality.get("public_key", ""), reality.get("short_id", "")
-    elif not isinstance(transport, dict):
-        raise ValueError("нужен WebSocket transport")
-    path, host = "/", ""
-    if transport is not None:
+    if transport is None:
+        if security != "reality":
+            raise ValueError("нужен WebSocket transport")
+    else:
+        if not isinstance(transport, dict):
+            raise ValueError("transport: ожидаю объект")
         for key in transport:
             if key not in _WS_KEYS:
                 raise ValueError(f"поле transport.{key} не поддерживается")
-        if transport.get("type") != "ws":
-            raise ValueError("поддерживается только WebSocket transport")
-        path = transport.get("path") or "/"
-        headers = transport.get("headers")
-        if headers is not None:
-            if not isinstance(headers, dict):
-                raise ValueError("transport.headers: ожидаю объект")
-            for key, value in headers.items():
-                if key.lower() != "host":
-                    raise ValueError(f"заголовок {key} в транспорте "
-                                     f"не поддерживается")
-                if not isinstance(value, str):
-                    raise ValueError("Host: ожидаю строку")
-                host = value
+        ttype = transport.get("type")
+        if ttype == "grpc":
+            if security != "reality":
+                raise ValueError("gRPC поддерживается только с Reality")
+            kind = "grpc"
+            service_name = _check_service(transport.get("service_name", ""))
+        elif ttype == "ws":
+            kind = "ws"
+            path = transport.get("path") or "/"
+            headers = transport.get("headers")
+            if headers is not None:
+                if not isinstance(headers, dict):
+                    raise ValueError("transport.headers: ожидаю объект")
+                for key, value in headers.items():
+                    if key.lower() != "host":
+                        raise ValueError(f"заголовок {key} в транспорте "
+                                         f"не поддерживается")
+                    if not isinstance(value, str):
+                        raise ValueError("Host: ожидаю строку")
+                    host = value
+        else:
+            raise ValueError("поддерживается только WebSocket или gRPC transport")
     return _profile(
         outbound.get("tag") or "",
         outbound.get("uuid"),
@@ -485,6 +555,8 @@ def from_outbound(outbound):
         kind,
         public_key,
         short_id,
+        service_name,
+        flow,
     )
 
 

@@ -33,6 +33,10 @@ def fingerprint(profile):
     return _module(profile).fingerprint(profile)
 
 
+def link(profile):
+    return _module(profile).link(profile)
+
+
 def to_outbound(profile, tag):
     return _module(profile).to_outbound(profile, tag)
 

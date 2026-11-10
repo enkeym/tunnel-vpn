@@ -43,7 +43,7 @@ paths:
   `lib/tunnelvpn/ui/js/model.js`, заголовок «Не запускается».
 - Карточки: `paintCards`/`paintCard` в `lib/tunnelvpn/ui/js/cards.js` по `st["tunnels"]` (`id`, `name`, `mode`,
   `active`, `confs`, `rules`, `full`, `awg`, `check`, `answer`, `checking`, `last`, `seq`, `tests`, `enabled`) и
-  `exit_state`/`out` у основного; меню ⋮ (`cardMenu`, у запасного — `spareMenu`) — «Всё остальное через этот
+  `exit_state`/`out` у основного; меню ⋮ (`cardMenu` у любого профиля, у неактивного — «Сделать активным») — «Всё остальное через этот
   туннель»/«Запасным к» только при `full`, вопрос при удалении последнего — по `rules` (`dropAsk`),
   «Выключить»/«Включить» у всех (`flipEnabled`, только флаг), круглая кнопка ⏻ (`r.pow` → `tilePower`,
   `aria-pressed` по `enabled`, `working` пока `WANT` или VPN включается/выключается; `WANT` снимает `sendWanted` по

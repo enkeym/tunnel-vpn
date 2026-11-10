@@ -1066,6 +1066,8 @@ def _summary_vless(t, profile, nets, domains, conf_name=""):
     v = proxy.fields(profile)
     label = ("vless ws+tls" if profile["proto"] == "vless" and
              v.get("security", "tls") == "tls" else
+             "vless reality+grpc" if profile["proto"] == "vless" and
+             v.get("type") == "grpc" else
              "vless reality+tcp" if profile["proto"] == "vless" else "hysteria2")
     head = (f"  [{t['id']}] «{t['name']}»: "
             f"{'весь остальной трафик' if t['mode'] == 'all' else 'по списку'}, "
