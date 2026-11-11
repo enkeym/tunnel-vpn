@@ -544,7 +544,8 @@ def test_предпросмотр_ссылки_ничего_не_пишет():
     reply = core.handle("preview", {"link": _link(name="Проверка")}, True)
 
     assert reply == {"ok": True, "type": "link", "name": "Проверка",
-                     "host": HOST, "port": 443, "profiles": 1}
+                     "host": HOST, "port": 443, "profiles": 1,
+                     "invalid": 0, "duplicates": 0}
     assert UUID1 not in str(reply)
     assert subscriptions.load() == subscriptions.empty()
     assert tunnels.load()["tunnels"] == []

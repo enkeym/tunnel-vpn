@@ -15,6 +15,7 @@ VERSION = 1
 KINDS = ("uri-list", "base64", "singbox")
 ADAPTIVE_KINDS = ("auto",) + KINDS
 NAME_MAX_LEN = 80
+MAX_IMPORT = 2000
 
 _SUB_ID = re.compile(r"^s_[0-9a-f]{16}$")
 _PROFILE_ID = re.compile(r"^p_[0-9a-f]{16}$")
@@ -302,8 +303,41 @@ def add_profile(link):
     return add_profiles(link)[0][0]
 
 
+def parse_import(text):
+    text = _decode(text)
+    kind = detect_kind(text)
+    if kind == "base64":
+        text = _decode_base64(text)
+    if text.strip().startswith("{"):
+        return {"profiles": parse_body("singbox", text), "invalid": 0, "duplicates": 0}
+    profiles, seen = [], set()
+    invalid = duplicates = 0
+    lines = [line.strip() for line in text.splitlines()
+             if line.strip() and not line.strip().startswith("#")]
+    if len(lines) > MAX_IMPORT:
+        raise ValueError(f"ссылок больше {MAX_IMPORT}")
+    for line in lines:
+        try:
+            profile = proxy.parse_link(line)
+        except ValueError:
+            invalid += 1
+            continue
+        mark = proxy.fingerprint(profile)
+        if mark in seen:
+            duplicates += 1
+            continue
+        seen.add(mark)
+        profiles.append(profile)
+    if not profiles:
+        raise ValueError("нет поддерживаемых ссылок прокси или VPN")
+    return {"profiles": profiles, "invalid": invalid, "duplicates": duplicates}
+
+
 def add_profiles(text):
-    profiles = parse_body("auto", text)
+    return store_profiles(parse_body("auto", text))
+
+
+def store_profiles(profiles):
     data = load()
     taken = {p["id"] for p in data["profiles"]}
     known = {p["fingerprint"]: p for p in data["profiles"]}

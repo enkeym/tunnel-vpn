@@ -18,7 +18,7 @@ import tempfile
 import threading
 import time
 
-from . import instance, ipc, paths, portable, proxy, routelist, settings, tunnels, update
+from . import forwardproxy, instance, ipc, paths, portable, proxy, routelist, settings, tunnels, update
 
 POLL_EVERY = 2.0
 # Ход скачивания обновления — не чаще: куски по 256 КБ идут десятками в
@@ -890,8 +890,9 @@ class Api:
             return {"ok": True, "proto": profile["proto"], "path": "ссылка " + profile["proto"],
                     "endpoint": f"[{server}]:{v['server_port']}" if ":" in server
                     else f"{server}:{v['server_port']}",
-                    "security": "Reality" if v.get("security") == "reality" else "TLS",
-                    "transport": "TCP" if v.get("type") == "tcp" else
+                    "security": "Без шифрования" if profile["proto"] in forwardproxy.PROTOS else
+                                "Reality" if v.get("security") == "reality" else "TLS",
+                    "transport": "TCP" if profile["proto"] in forwardproxy.PROTOS or v.get("type") == "tcp" else
                                  "gRPC" if v.get("type") == "grpc" else
                                  "QUIC" if profile["proto"] == "hysteria2" else "WebSocket",
                     "host": v.get("host", ""),

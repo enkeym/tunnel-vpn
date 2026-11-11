@@ -1,6 +1,7 @@
-from . import hysteria2, vless
+from . import forwardproxy, hysteria2, vless
 
-PROTOS = (vless.PROTO, hysteria2.PROTO)
+PROTOS = (vless.PROTO, hysteria2.PROTO) + forwardproxy.PROTOS
+OUTBOUND_TYPES = (vless.PROTO, hysteria2.PROTO) + forwardproxy.OUTBOUND_TYPES
 
 
 def _module(profile):
@@ -9,6 +10,8 @@ def _module(profile):
         return vless
     if proto == hysteria2.PROTO:
         return hysteria2
+    if proto in forwardproxy.PROTOS:
+        return forwardproxy
     raise ValueError(f"тип профиля {proto!r} не поддерживается")
 
 
@@ -18,7 +21,9 @@ def parse_link(text):
         return vless.parse_link(text)
     if scheme == hysteria2.PROTO:
         return hysteria2.parse_link(text)
-    raise ValueError("поддерживаются ссылки vless:// и hysteria2://")
+    if scheme in forwardproxy.PROTOS:
+        return forwardproxy.parse_link(text)
+    raise ValueError("поддерживаются ссылки vless://, hysteria2://, http://, socks4:// и socks5://")
 
 
 def normalize(profile):
@@ -46,6 +51,8 @@ def fields(profile):
 
 
 def from_outbound(outbound):
+    if outbound.get("type") in forwardproxy.OUTBOUND_TYPES:
+        return forwardproxy.from_outbound(outbound)
     if outbound.get("type") == vless.PROTO:
         return vless.from_outbound(outbound)
     if outbound.get("type") == hysteria2.PROTO:

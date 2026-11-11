@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 
-from . import (buildconfig, ipc, killguard, paths, probe, proxy, routelist,
+from . import (buildconfig, forwardproxy, ipc, killguard, paths, probe, proxy, routelist,
                subscriptions, tunnel, tunnels, winnet)
 
 AUTOSTART_FILE = os.path.join(paths.STATE, "autostart")
@@ -52,7 +52,7 @@ MAX_RULES = routelist.MAX_RULES
 CONF_OPS = frozenset({
     "set-profile", "set-active", "set-enabled", "add-config", "remove-config",
     "move-config", "add-tunnel", "set-tunnel", "remove-tunnel", "set-log-level",
-    "set-kill-switch", "add-link", "add-subscription", "update-subscription",
+    "set-kill-switch", "add-subscription", "update-subscription",
     "remove-subscription", "remove-profile", "set-allow-private"})
 # Сколько кругов пробера (по FAST_EVERY) новая сеть должна продержаться,
 # прежде чем переподключаться: Wi-Fi при смене точки и пробуждении моргает,
@@ -663,13 +663,13 @@ class Core:
                     "domains": buildconfig.tunnel_domains(main_cfg, tid) if is_admin else [],
                 })
             for ob in side.get("outbounds", []):
-                if ob.get("type") not in proxy.PROTOS:
+                if ob.get("type") not in proxy.OUTBOUND_TYPES:
                     continue
                 endpoints.append({
                     "tag": ob.get("tag", ""),
                     "tid": tid,
                     "address": f"{ob.get('server', '')}:{ob.get('server_port', '')}",
-                    "proto": ob["type"],
+                    "proto": "socks" + ob.get("version", "5") if ob["type"] == "socks" else ob["type"],
                     "mtu": None,
                     "awg": False,
                     "peer": "",
@@ -915,7 +915,7 @@ class Core:
                 continue
             cfg = buildconfig.read_json(buildconfig.side_json(side.tid))
             for ob in cfg.get("outbounds") or []:
-                if ob.get("type") not in proxy.PROTOS:
+                if ob.get("type") not in proxy.OUTBOUND_TYPES:
                     continue
                 try:
                     if proxy.fingerprint(proxy.from_outbound(ob)) == mark:
@@ -2068,20 +2068,32 @@ class Core:
 
     def _add_link(self, link, tunnel="", place=""):
         try:
-            profiles, added = subscriptions.add_profiles(link)
-            profile = profiles[0]
-            data = tunnels.load()
-            t = self._attach_profile(data, profile, tunnel, place)
-            if not t["active"]:
-                t["enabled"] = False
-            t["active"] = t["active"] or profile["id"]
-            data = tunnels.save(data)
+            parsed = subscriptions.parse_import(link)
+            candidates = [p for p in parsed["profiles"] if p["proto"] in forwardproxy.PROTOS]
+            working = self.tunnel.check_proxies(candidates) if candidates else []
+            accepted = {proxy.fingerprint(p) for p in working}
+            failed = len(candidates) - len(working)
+            profiles = [p for p in parsed["profiles"]
+                        if p["proto"] not in forwardproxy.PROTOS
+                        or proxy.fingerprint(p) in accepted]
+            if not profiles:
+                return {"ok": False, "error": f"Ни один прокси не прошёл HTTPS-проверку ({failed}). Профили не добавлены."}
+            with tunnels.LOCK:
+                profiles, added = subscriptions.store_profiles(profiles)
+                profile = profiles[0]
+                data = tunnels.load()
+                t = self._attach_profile(data, profile, tunnel, place)
+                if not t["active"]:
+                    t["enabled"] = False
+                t["active"] = t["active"] or profile["id"]
+                data = tunnels.save(data)
         except (OSError, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
         self.log(f"→ добавлены ссылки VPN: {added} новых, "
                  f"{len(profiles)} в наборе туннеля «{t['name']}»")
         return {"ok": True, "profile": profile["id"], "tunnel": t["id"],
-                "place": place or "to", "added": added, "profiles": len(profiles)}
+                "place": place or "to", "added": added, "profiles": len(profiles),
+                "failed": failed, "invalid": parsed["invalid"], "duplicates": parsed["duplicates"]}
 
     def _add_subscription(self, url, name="", allow_private=False, kind="auto"):
         try:
@@ -2106,12 +2118,14 @@ class Core:
     def _preview(self, link="", url="", name="", allow_private=False, kind="auto"):
         try:
             if link:
-                profiles = subscriptions.parse_body("auto", link)
+                parsed = subscriptions.parse_import(link)
+                profiles = parsed["profiles"]
                 profile = profiles[0]
                 fields = proxy.fields(profile)
                 return {"ok": True, "type": "link", "name": profile["name"],
                         "host": fields["server"], "port": fields["server_port"],
-                        "profiles": len(profiles)}
+                        "profiles": len(profiles), "invalid": parsed["invalid"],
+                        "duplicates": parsed["duplicates"]}
             if not url:
                 raise ValueError("нужна ссылка vless://, hysteria2:// или HTTPS-адрес подписки")
             sub = subscriptions.preview(url, name, allow_private, kind)

@@ -27,7 +27,7 @@ import sys
 import threading
 
 # Раскладку знает paths.py — здесь только имена.
-from . import paths, proxy, tunnels, winnet
+from . import forwardproxy, paths, proxy, tunnels, winnet
 from .tunnels import NAME_MAX, check_name, safe_name  # их зовут и через buildconfig
 
 BASE = paths.BASE
@@ -853,6 +853,26 @@ def side_config_vless(profile, link, level="info", server=""):
                                   "strategy": "prefer_ipv4"}
         config["dns"] = {"servers": [{"type": "udp", "tag": VLESS_DNS_TAG,
                                       "server": PUBLIC_DNS[0]}]}
+    if profile["proto"] in forwardproxy.PROTOS:
+        config.setdefault("dns", {"servers": [{"type": "local", "tag": VLESS_DNS_TAG}]})
+        config["route"]["default_domain_resolver"] = VLESS_DNS_TAG
+    return config
+
+
+def proxy_check_config(profiles, links):
+    config = {"log": {"level": "error", "timestamp": True},
+              "inbounds": [], "outbounds": [],
+              "dns": {"servers": [{"type": "local", "tag": VLESS_DNS_TAG}]},
+              "route": {"rules": [], "auto_detect_interface": False,
+                        "default_domain_resolver": VLESS_DNS_TAG}}
+    for index, (profile, link) in enumerate(zip(profiles, links)):
+        tag = f"proxy-check-{index}"
+        inbound = {**_mixed_inbound(link), "tag": tag}
+        out = proxy.to_outbound(profile, tag)
+        out["domain_resolver"] = VLESS_DNS_TAG
+        config["inbounds"].append(inbound)
+        config["outbounds"].append(out)
+        config["route"]["rules"].append({"inbound": [tag], "action": "route", "outbound": tag})
     return config
 
 
@@ -863,7 +883,7 @@ def side_host(cfg):
             if host:
                 return host
     for ob in cfg.get("outbounds") or []:
-        if ob.get("type") in proxy.PROTOS:
+        if ob.get("type") in proxy.OUTBOUND_TYPES:
             return (ob.get("server") or "").strip()
     return ""
 
@@ -875,7 +895,7 @@ def set_side_host(cfg, host):
                 peer["address"] = host
                 return True
     for ob in cfg.get("outbounds") or []:
-        if ob.get("type") in proxy.PROTOS:
+        if ob.get("type") in proxy.OUTBOUND_TYPES:
             ob["server"] = host
             return True
     return False
@@ -1068,7 +1088,7 @@ def _summary_vless(t, profile, nets, domains, conf_name=""):
              v.get("security", "tls") == "tls" else
              "vless reality+grpc" if profile["proto"] == "vless" and
              v.get("type") == "grpc" else
-             "vless reality+tcp" if profile["proto"] == "vless" else "hysteria2")
+             "vless reality+tcp" if profile["proto"] == "vless" else profile["proto"])
     head = (f"  [{t['id']}] «{t['name']}»: "
             f"{'весь остальной трафик' if t['mode'] == 'all' else 'по списку'}, "
             f"{'' if t['enabled'] else 'выключен, '}{conf_name or 'профиль'}, "

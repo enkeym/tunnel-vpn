@@ -29,9 +29,10 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-from . import buildconfig, killguard, paths, proxy, tunnels, winnet
+from . import buildconfig, killguard, paths, probe, proxy, tunnels, winnet
 
 KEEP_LOGS = 10
+PROXY_CHECK_WORKERS = 16
 
 # Потолок файла журнала: сверх него следующий запуск процесса пишет в новый.
 # Под трафиком sing-box пишет постоянно, свежий файл open_log продолжает — и
@@ -802,6 +803,32 @@ class Tunnel:
                                                            server=peer),
                 peer) as got:
             yield got
+
+    def check_proxies(self, profiles):
+        working = []
+        tid = "proxy-" + buildconfig.new_link()["username"]
+        for start in range(0, len(profiles), PROXY_CHECK_WORKERS):
+            batch = profiles[start:start + PROXY_CHECK_WORKERS]
+            links = []
+
+            def config(first):
+                links.append(first)
+                ports = {first["port"]}
+                while len(links) < len(batch):
+                    link = buildconfig.new_link()
+                    if link["port"] not in ports:
+                        links.append(link)
+                        ports.add(link["port"])
+                return buildconfig.proxy_check_config(batch, links)
+
+            with self._trial_run(tid, "проверка прокси", config) as (link, error):
+                if link is None:
+                    raise ValueError(error)
+                with ThreadPoolExecutor(max_workers=PROXY_CHECK_WORKERS) as pool:
+                    results = list(pool.map(probe.proxy_works, links))
+                working.extend(p for p, ok in zip(batch, results) if ok)
+            self.log(f"→ проверено прокси: {start + len(batch)}/{len(profiles)}, рабочих: {len(working)}")
+        return working
 
     @contextlib.contextmanager
     def _trial_run(self, tid, label, config, peer=""):

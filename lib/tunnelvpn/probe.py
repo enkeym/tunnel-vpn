@@ -27,7 +27,7 @@ import time
 import urllib.error
 import urllib.request
 
-from . import buildconfig, paths, tunnels, winnet
+from . import buildconfig, paths, settings, tunnels, winnet
 
 # Быстрый опрос — несколько WMI-запросов по 10–20 мс (см. winnet). Пока они
 # шли через запуск PowerShell, цикл стоил секунды и приходилось реже.
@@ -59,6 +59,7 @@ DNS_ASK_NAME = "dns.msftncsi.com"
 DNS_NO_ADDR = "без адреса"
 # Чем проверять полный конфиг вне VPN, как delay у clash_api (tunnel.DELAY_URL).
 TRIAL_URL = "http://cp.cloudflare.com/generate_204"
+PROXY_CHECK_URL = "https://cp.cloudflare.com/generate_204"
 # Ответ проверки конфига, когда ответил его DNS: адрес домена — из рабочей
 # сети, а итог читает любой (test-config — без прав).
 BY_DNS = "по DNS"
@@ -220,6 +221,21 @@ def _dns_via_proxy(link, server, name, tries=CORP_TRIES, timeout=CORP_HTTP_TIMEO
         if ip is not None:
             return ip or DNS_NO_ADDR
     return ""
+
+
+def proxy_works(link):
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        urllib.request.HTTPSHandler(context=settings.tls_context()), _NoRedirect())
+    request = urllib.request.Request(PROXY_CHECK_URL)
+    request.set_proxy(f"127.0.0.1:{link['port']}", "http")
+    credentials = f"{link['username']}:{link['password']}".encode()
+    request.add_header("Proxy-Authorization", "Basic " + base64.b64encode(credentials).decode("ascii"))
+    try:
+        with opener.open(request, timeout=CORP_HTTP_TIMEOUT) as response:
+            return response.status == 204
+    except (OSError, ValueError, urllib.error.URLError):
+        return False
 
 
 def trial_check(link, full, host, dns):

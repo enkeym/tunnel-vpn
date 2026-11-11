@@ -18,6 +18,10 @@ paths:
   `handle` держит её под `tunnels.LOCK` целиком. Без записи туда параллельная команда затрёт правку, а
   `os.replace` откажет с WinError 5/32. `apply`/`start`/`stop` туда не входят (свой `self.lock`, порядок —
   `self.lock` → `tunnels.LOCK`, обратный даст взаимную блокировку).
+- `add-link` проверяет сеть без `tunnels.LOCK`, а запись профилей и load → изменить → save
+  выполняет под ним в `lib/tunnelvpn/service.py:_add_link`. Если держать замок во время проверки,
+  `lib/tunnelvpn/service.py:_status` не отвечает, и `lib/tunnelvpn/tray.py:_maybe_heal`
+  перезапускает службу с обрывом VPN.
 - Туннель в payload — ключ `tunnel` (id или имя), запасной — `kind` (`corp`/`personal`) у `add-config`,
   `remove-config`, `read-config`; `set-active` (USER_OPS) ↔ `lib/tunnelvpn/cli.py:main` (`use`).
 - `howto` (READ_OPS) ↔ `lib/tunnelvpn/window.py:_howto`: единственная команда, где ответ зависит от `is_admin`

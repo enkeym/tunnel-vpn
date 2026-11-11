@@ -69,3 +69,6 @@ paths:
   открытого, в т. ч. «Туннелирования») → `send('apply_full')` + `PENDING` restart, как у «Перезапустить».
   `roleOf(t, m)` в `lib/tunnelvpn/ui/js/cards.js` — «остальное → «основной»/напрямую» по тем же
   `main`/`direct` из `lib/tunnelvpn/ui/js/model.js:model`, что заголовок.
+- Импорт ссылок: `lib/tunnelvpn/service.py:_preview` возвращает `profiles, invalid, duplicates`,
+  `lib/tunnelvpn/service.py:_add_link` — ещё `added, failed`; читает `lib/tunnelvpn/ui/js/sheets.js:addLinkSheet`.
+  `failed` — HTTP/SOCKS, не прошедшие HTTPS-проверку; предпросмотр сеть не проверяет.
