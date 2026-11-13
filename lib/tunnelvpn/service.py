@@ -2385,7 +2385,7 @@ class Core:
             return {"ok": True, "tunnel": t["id"], "enabled": on}
         if on and t["mode"] == "all":
             main = tunnels.main_tunnel(data)
-            if main is not None and main is not t:
+            if main is not None and main is not t and main.get("enabled", True):
                 main["mode"] = "list"
                 main["enabled"] = False
                 main["pinned"] = True
@@ -2663,7 +2663,7 @@ class Core:
         if not t.get("enabled", True):
             return []
         main = tunnels.main_tunnel(data)
-        if main is None:
+        if main is None or not main.get("enabled", True):
             return []
         main["mode"] = "list"
         # Вкладки прежнего основного остаются: его настройки помнятся по id,

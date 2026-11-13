@@ -1191,6 +1191,37 @@ def test_вкладка_выключенного_не_переводит_раб�
     assert _tunnel("home")["pinned"] is True
 
 
+def test_включение_основного_не_переводит_выключенный_в_только_выбранные(core):
+    """Выключенный туннель «Исключать» не уступает место работающему: его
+    режим не меняется, когда включают другой основной."""
+    tunnels.save({"tunnels": [*_off({**WORK, "mode": "all"}), *_off(HOME)]})
+    _put("work", "nl.conf", FULL)
+    _put("home", "de.conf", FULL)
+
+    r = core._set_enabled("home", True)
+
+    assert r["ok"]
+    assert _tunnel("work")["mode"] == "all" and _tunnel("work")["enabled"] is False
+    assert "pinned" not in _tunnel("work")
+    assert _tunnel("home")["mode"] == "all" and _tunnel("home")["enabled"] is True
+
+
+def test_всё_остальное_через_этот_не_трогает_выключенный_основной(core):
+    """Пункт «Всё остальное через этот туннель» у включённого «по списку»
+    тоже не переводит выключенного основного в «Только выбранные»."""
+    tunnels.save({"tunnels": [*_off({**WORK, "mode": "all"}),
+                              {**HOME, "mode": "list", "pinned": True}]})
+    _put("work", "nl.conf", FULL)
+    _put("home", "de.conf", FULL)
+
+    r = core._set_tunnel("home", {"mode": "all"})
+
+    assert r["ok"] and r["mode"] == "all"
+    assert _tunnel("work")["mode"] == "all" and _tunnel("work")["enabled"] is False
+    assert "pinned" not in _tunnel("work")
+    assert _tunnel("home")["mode"] == "all" and _tunnel("home")["enabled"] is True
+
+
 def test_правка_списков_у_выключенного_основного_не_уводит_конфиг(core):
     """Прежний основной стал «по списку» и выключен: сохранение списков у
     него не уводит конфиг запасным к новому основному."""
