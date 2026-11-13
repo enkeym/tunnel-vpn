@@ -1439,7 +1439,9 @@ def test_задержка_живого_и_мёртвого_выхода(clash):
     assert tun.delay(buildconfig.DIRECT_TAG) == 42
     assert tun.delay(HOME_SOCKS) is None
     # Мерить по имени: голый адрес sing-box через selector не меряет.
-    assert "cp.cloudflare.com" in FakeClash.paths_seen[-1]
+    assert "cp.cloudflare.com" in FakeClash.paths_seen[-2]
+    # Один недоступный адрес не вердикт: мёртвый выход спрашивают про запасной.
+    assert "connectivitycheck.gstatic.com" in FakeClash.paths_seen[-1]
 
 
 def test_чужой_секрет_это_отказ_а_не_исключение(clash, monkeypatch):

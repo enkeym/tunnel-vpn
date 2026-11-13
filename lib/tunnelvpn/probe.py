@@ -58,8 +58,10 @@ DNS_ASK_NAME = "dns.msftncsi.com"
 # Ответ DNS без A-записи: сервер ответил, но имени не знает.
 DNS_NO_ADDR = "без адреса"
 # Чем проверять полный конфиг вне VPN, как delay у clash_api (tunnel.DELAY_URL).
-TRIAL_URL = "http://cp.cloudflare.com/generate_204"
+TRIAL_URL = "https://cp.cloudflare.com/generate_204"
 PROXY_CHECK_URL = "https://cp.cloudflare.com/generate_204"
+# Запасной адрес другого CDN: сервер может не пускать Cloudflare и везти прочее.
+CHECK_FALLBACK_URL = "https://connectivitycheck.gstatic.com/generate_204"
 # Ответ проверки конфига, когда ответил его DNS: адрес домена — из рабочей
 # сети, а итог читает любой (test-config — без прав).
 BY_DNS = "по DNS"
@@ -227,15 +229,18 @@ def proxy_works(link):
     opener = urllib.request.build_opener(
         urllib.request.ProxyHandler({}),
         urllib.request.HTTPSHandler(context=settings.tls_context()), _NoRedirect())
-    request = urllib.request.Request(PROXY_CHECK_URL)
-    request.set_proxy(f"127.0.0.1:{link['port']}", "http")
     credentials = f"{link['username']}:{link['password']}".encode()
-    request.add_header("Proxy-Authorization", "Basic " + base64.b64encode(credentials).decode("ascii"))
-    try:
-        with opener.open(request, timeout=CORP_HTTP_TIMEOUT) as response:
-            return response.status == 204
-    except (OSError, ValueError, urllib.error.URLError):
-        return False
+    for url in (PROXY_CHECK_URL, CHECK_FALLBACK_URL):
+        request = urllib.request.Request(url)
+        request.set_proxy(f"127.0.0.1:{link['port']}", "http")
+        request.add_header("Proxy-Authorization", "Basic " + base64.b64encode(credentials).decode("ascii"))
+        try:
+            with opener.open(request, timeout=CORP_HTTP_TIMEOUT) as response:
+                if response.status == 204:
+                    return True
+        except (OSError, ValueError, urllib.error.URLError):
+            continue
+    return False
 
 
 def trial_check(link, full, host, dns):
@@ -245,9 +250,11 @@ def trial_check(link, full, host, dns):
     HTTPS к host. Ни того, ни другого служба не запускает (none)."""
     proxy = _proxy_url(link)
     if full:
-        code = Prober._http_code(TRIAL_URL, proxy)
-        if code == "204":
-            return "up", "HTTP 204"
+        code = ""
+        for url in (TRIAL_URL, CHECK_FALLBACK_URL):
+            code = Prober._http_code(url, proxy)
+            if code == "204":
+                return "up", "HTTP 204"
         return "error", f"HTTP {code}" if code else "сервер не отвечает"
     p = {"id": "", "mode": "list", "host": host, "dns": dns}
     if dns:

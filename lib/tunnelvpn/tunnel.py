@@ -66,7 +66,10 @@ TRIAL_PREFIX = "trial"
 
 # Чем clash_api меряет выход. Только по имени: голый 1.1.1.1 sing-box
 # через selector не меряет и отвечает таймаутом даже живому туннелю.
-DELAY_URL = "http://cp.cloudflare.com/generate_204"
+DELAY_URL = "https://cp.cloudflare.com/generate_204"
+# Запасной адрес другого CDN: сервер или путь к нему может не пускать
+# Cloudflare (порт 80 у cp.cloudflare.com — обычно), а остальное везти.
+DELAY_FALLBACK_URL = "https://connectivitycheck.gstatic.com/generate_204"
 
 # Ответ start, брошенного по cancel: «Выключить» пришло посреди включения.
 CANCELLED = "отменено: выключаю"
@@ -1311,16 +1314,21 @@ class Tunnel:
             return ""
 
     def delay(self, tag, timeout_ms=3000):
-        """Задержка до DELAY_URL через выход tag в мс; None — не дошло."""
-        query = urllib.parse.urlencode({"url": DELAY_URL, "timeout": timeout_ms})
-        try:
-            reply = self._clash(
-                f"/proxies/{urllib.parse.quote(tag)}/delay?{query}",
-                timeout=timeout_ms / 1000 + 2)
-        except (OSError, ValueError):
-            return None
-        ms = reply.get("delay")
-        return ms if isinstance(ms, int) and ms > 0 else None
+        """Задержка до DELAY_URL (иначе до DELAY_FALLBACK_URL) через выход tag
+        в мс; None — не дошло ни до одного. Один недоступный адрес не делает
+        вердикт «сервер не отвечает»: туннель мог везти остальное."""
+        for url in (DELAY_URL, DELAY_FALLBACK_URL):
+            query = urllib.parse.urlencode({"url": url, "timeout": timeout_ms})
+            try:
+                reply = self._clash(
+                    f"/proxies/{urllib.parse.quote(tag)}/delay?{query}",
+                    timeout=timeout_ms / 1000 + 2)
+            except (OSError, ValueError):
+                continue
+            ms = reply.get("delay")
+            if isinstance(ms, int) and ms > 0:
+                return ms
+        return None
 
     def _keep_awake(self, on):
         try:

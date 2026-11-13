@@ -102,7 +102,8 @@ def proxy_network(monkeypatch, tmp_path):
 
     def open_response(opener, request, timeout):
         assert request.type == "https"
-        assert request._tunnel_host == "cp.cloudflare.com"
+        assert request._tunnel_host in ("cp.cloudflare.com",
+                                        "connectivitycheck.gstatic.com")
         assert request.host.startswith("127.0.0.1:")
         assert request.get_header("Proxy-authorization").startswith("Basic ")
         handler = next(h for h in opener.handlers if isinstance(h, urllib.request.HTTPSHandler))
