@@ -1187,8 +1187,8 @@ def test_вкладка_выключенного_не_переводит_раб�
     assert "pinned" not in _tunnel("home")
 
     assert core._set_enabled("work", True)["ok"]
-    assert _tunnel("home")["mode"] == "list" and _tunnel("home")["enabled"] is False
-    assert _tunnel("home")["pinned"] is True
+    assert _tunnel("home")["mode"] == "all" and _tunnel("home")["enabled"] is False
+    assert "pinned" not in _tunnel("home")
 
 
 def test_включение_основного_не_переводит_выключенный_в_только_выбранные(core):

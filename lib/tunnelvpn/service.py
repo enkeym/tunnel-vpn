@@ -2386,9 +2386,7 @@ class Core:
         if on and t["mode"] == "all":
             main = tunnels.main_tunnel(data)
             if main is not None and main is not t and main.get("enabled", True):
-                main["mode"] = "list"
                 main["enabled"] = False
-                main["pinned"] = True
         # Основной забирает оставшееся после «по списку»: его 0.0.0.0/0 им не мешает.
         off = self._clashing(data, t) if on and t["mode"] == "list" else []
         if off and not replace:
@@ -2460,7 +2458,8 @@ class Core:
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
         in_use = self._in_use(data)
-        mains = {t.get("proto", "wg") for t in data["tunnels"] if t["mode"] == "all"}
+        mains = {t.get("proto", "wg") for t in data["tunnels"]
+                 if t["mode"] == "all" and t.get("enabled", True)}
         for t in data["tunnels"]:
             proto = t.get("proto", "wg")
             t["confs"] = tunnels.list_confs(t["id"], proto)
