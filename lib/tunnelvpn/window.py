@@ -79,7 +79,7 @@ WINDOW_LOG_MAX = 1 << 20
 # без точек, а кириллица на части сборок под \w не подходит. Из-за «site.env
 # (*.env)» и «Все файлы (*.*)» диалог падал с ValueError ещё до открытия —
 # держим строки латиницей и без точек в описании.
-_FILE_TYPES = ("Config files (*.conf;*.json;*.txt)", "All files (*.*)")
+_FILE_TYPES = ("Config files (*.conf;*.json;*.txt;*.vpn)", "All files (*.*)")
 # Списки правил туннеля: JSON экспорта или текст списка.
 _RULES_TYPES = ("Rules (*.json;*.txt)", "All files (*.*)")
 _LINK_TYPES = ("Link files (*.txt)", "All files (*.*)")
@@ -908,7 +908,10 @@ class Api:
         try:
             subscriptions.parse_import(text)
             imports = True
-        except ValueError:
+        except ValueError as exc:
+            if str(exc) == subscriptions.VPN_IMPORT_ERROR:
+                self.js("failed", str(exc))
+                return
             imports = text.lstrip().startswith("{")
         if imports:
             # Списки ссылок и sing-box JSON — как у «Вставить ссылки…»;
@@ -931,10 +934,11 @@ class Api:
         нескольких .conf берём первый — вопрос о месте задаётся по одному."""
         files = (event.get("dataTransfer") or {}).get("files") or []
         confs = [f["pywebviewFullPath"] for f in files
-                 if (f.get("pywebviewFullPath") or "").lower().endswith(".conf")]
+                 if (f.get("pywebviewFullPath") or "").lower().endswith(
+                     (".conf", ".vpn"))]
         try:
             if not confs:
-                raise RuntimeError("Нужен файл .conf WireGuard или AmneziaWG")
+                raise RuntimeError("Нужен файл .conf или .vpn")
             self._add_file(confs[0])
         except Exception as exc:                       # noqa: BLE001
             # Поток pywebview: исключение отсюда никто бы не увидел.

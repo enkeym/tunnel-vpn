@@ -1,8 +1,8 @@
 """Окно: конфиги и правила по id туннеля — вопрос о месте конфига, удаление
 последнего, списки правил из файла."""
 
-from conftest import NoTimer, SyncThread
-from tunnelvpn import ipc, window
+from conftest import NoTimer, SyncThread, vpn_key
+from tunnelvpn import ipc, subscriptions, window
 
 WG = "[Interface]\nAddress = 10.53.0.4/32\n[Peer]\nAllowedIPs = 10.53.0.0/16\n"
 
@@ -107,7 +107,29 @@ def test_брошенный_не_conf_объясняется_и_не_шлётс�
     api._drop({"type": "drop", "dataTransfer": {"files": [{"name": "a.conf"}]}})
 
     assert admin == []
-    assert shown == [("failed", "Нужен файл .conf WireGuard или AmneziaWG")]
+    assert shown == [("failed", "Нужен файл .conf или .vpn")]
+
+
+def test_брошенный_vpn_объясняется_и_не_шлётся(monkeypatch, tmp_path):
+    key = tmp_path / "config.vpn"
+    key.write_text(vpn_key() + "\n", encoding="utf-8")
+    api, admin, shown = _api(monkeypatch, [])
+
+    api._drop({"type": "drop", "dataTransfer": {"files": [
+        {"name": "config.vpn", "pywebviewFullPath": str(key)}]}})
+
+    assert admin == []
+    assert shown == [("failed", subscriptions.VPN_IMPORT_ERROR)]
+
+
+def test_диалог_файла_предлагает_vpn(monkeypatch):
+    api, _, _ = _api(monkeypatch, [])
+    picked = []
+    monkeypatch.setattr(api, "_pick", lambda types: picked.append(types) or "")
+
+    api.send("add_config", {})
+
+    assert "*.vpn" in picked[0][0]
 
 
 AWG = ("[Interface]\nPrivateKey = PRIV0secret=\nAddress = 10.8.0.2/32, fd00::2/128\n"

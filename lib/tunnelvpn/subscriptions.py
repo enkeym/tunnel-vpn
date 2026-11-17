@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 import threading
+import zlib
 from datetime import datetime, timezone
 from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
@@ -13,6 +14,9 @@ from . import happ, netguard, paths, proxy, vless
 
 VERSION = 1
 KINDS = ("uri-list", "base64", "singbox")
+VPN_SCHEME = "vpn://"
+_VPN_HEADER = b"\x00\x00\x00\xff"
+VPN_IMPORT_ERROR = "импорт конфигов по ключу vpn:// пока не поддерживается"
 ADAPTIVE_KINDS = ("auto",) + KINDS
 NAME_MAX_LEN = 80
 MAX_IMPORT = 2000
@@ -238,6 +242,39 @@ def _decode_base64(text):
         raise ValueError("base64-подписка не в UTF-8") from None
 
 
+def decode_vpn_key(text):
+    body = ""
+    for line in text.splitlines():
+        line = line.strip()
+        if line.lower().startswith(VPN_SCHEME):
+            body = line[len(VPN_SCHEME):]
+            break
+    if not body:
+        raise ValueError("нет ключа vpn://")
+    padded = body + "=" * (-len(body) % 4)
+    try:
+        raw = base64.b64decode(padded, altchars=b"-_", validate=True)
+    except (binascii.Error, ValueError):
+        raise ValueError("ключ vpn:// не декодируется из base64") from None
+    if not raw.startswith(_VPN_HEADER):
+        raise ValueError("неожиданный заголовок ключа vpn://")
+    try:
+        cfg = json.loads(zlib.decompress(raw[len(_VPN_HEADER):]))
+    except (zlib.error, UnicodeDecodeError, ValueError):
+        raise ValueError("тело ключа vpn:// повреждено") from None
+    api = cfg.get("api_config") or {}
+    if api.get("service_type") != "amnezia-premium":
+        raise ValueError(f"ключ vpn:// не от Amnezia Premium: "
+                         f"{api.get('service_type') or 'без сервиса'}")
+    api_key = str((cfg.get("auth_data") or {}).get("api_key", ""))
+    if not api_key:
+        raise ValueError("в ключе vpn:// нет api_key")
+    return {"api_key": api_key,
+            "service_protocol": api.get("service_protocol", ""),
+            "user_country_code": api.get("user_country_code", ""),
+            "name": _name(cfg.get("name"), "Amnezia Premium")}
+
+
 def detect_kind(body):
     text = _decode(body)
     stripped = text.strip()
@@ -245,6 +282,8 @@ def detect_kind(body):
         raise ValueError("пустая подписка")
     if stripped.startswith("{"):
         return "singbox"
+    if VPN_SCHEME in stripped.lower():
+        return "vpn"
     if any(f"{proto}://" in stripped.lower() for proto in proxy.PROTOS):
         return "uri-list"
     decoded = _decode_base64(stripped)
@@ -279,6 +318,9 @@ def parse_body(kind, body):
     text = _decode(body)
     if kind == "auto":
         kind = detect_kind(text)
+    if kind == "vpn":
+        decode_vpn_key(text)
+        raise ValueError(VPN_IMPORT_ERROR)
     if kind not in KINDS:
         raise ValueError(f"неизвестный вид подписки: {kind!r}")
     if kind == "base64":
@@ -306,6 +348,9 @@ def add_profile(link):
 def parse_import(text):
     text = _decode(text)
     kind = detect_kind(text)
+    if kind == "vpn":
+        decode_vpn_key(text)
+        raise ValueError(VPN_IMPORT_ERROR)
     if kind == "base64":
         text = _decode_base64(text)
     if text.strip().startswith("{"):

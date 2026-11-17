@@ -30,7 +30,11 @@ for _sub in ("conf", "state", os.path.join("state", "logs")):
 sys.path.insert(0, os.path.join(_ROOT, "lib"))
 
 
+import base64
 import contextlib
+import json
+import zlib
+
 import pytest
 
 from tunnelvpn import killguard
@@ -98,6 +102,17 @@ class NoTimer:
 
     def start(self):
         pass
+
+
+def vpn_key(cfg=None):
+    payload = {"name": "Amnezia Premium", "config_version": 2,
+               "api_config": {"service_type": "amnezia-premium",
+                              "service_protocol": "awg",
+                              "user_country_code": "ru"},
+               "auth_data": {"api_key": "fake.key"}}
+    raw = b"\x00\x00\x00\xff" + zlib.compress(
+        json.dumps(cfg or payload).encode("utf-8"))
+    return "vpn://" + base64.b64encode(raw, altchars=b"-_").decode().rstrip("=")
 
 
 @pytest.fixture(autouse=True)
