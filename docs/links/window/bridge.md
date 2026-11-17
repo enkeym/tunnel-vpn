@@ -29,6 +29,12 @@ paths:
   Работающий основной в окне — `main` в `lib/tunnelvpn/ui/js/model.js:model` (`mode all` и `enabled`, как
   `tray._main_on`): от него `direct` («Запасной выход»), `headOf`, `roleOf`, выход/IPv6/запасной в `settings.js`.
   Слот основного (любой `all`) — `cardMenu` «Запасным к» и `fateOf` в `rules.js`, как `tunnels.main_tunnel` в службе.
+- Пишущие операции (`lib/tunnelvpn/window.py:QUEUED_OPS`) мост не выполняет сам: `Api.send` кладёт
+  их в `Api._jobs` и отвечает `None` сразу, выполняет один рабочий поток (`Api._pump`,
+  `Api._drain_jobs`) по порядку. Операция, ответа которой страница ждёт через `request`
+  (`lib/tunnelvpn/ui/js/core.js`), в `QUEUED_OPS` не попадает: `request` видит `None` как
+  «нет ответа» и показывает ошибку там, где всё удалось. Итог длинной операции страница берёт
+  из push-статуса (`render`, `failed`), а не из возврата `send`.
 - Вызовы Python → JS: `lib/tunnelvpn/window.py:js` / `lib/tunnelvpn/window.py:jsn` с именем функции
   (`render`, `renderHowto`, `renderVersion`, `renderLogs`, `failed`, `closeSheet`,
   `showConf(tid, name, text)`, `askPlace`, `showRules`, `rulesSaved`, `rulesMoved`, `rulesFailed`, `fillRules`, `checkStart`,

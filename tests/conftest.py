@@ -79,6 +79,27 @@ class FakeWFP:
         self.rules.append((layer, action, conditions))
 
 
+class SyncThread:
+    """Поток, который выполняет цель сразу: тесту нечего ждать."""
+
+    def __init__(self, target, args=(), daemon=None):
+        self.target, self.args = target, args
+
+    def start(self):
+        self.target(*self.args)
+
+
+class NoTimer:
+    """Запасной таймер, который не срабатывает: SyncThread вместо Thread
+    ломает настоящий threading.Timer."""
+
+    def __init__(self, delay, fn):
+        self.daemon = False
+
+    def start(self):
+        pass
+
+
 @pytest.fixture(autouse=True)
 def wfp(monkeypatch):
     engine = FakeWFP()

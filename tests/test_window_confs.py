@@ -1,6 +1,7 @@
 """Окно: конфиги и правила по id туннеля — вопрос о месте конфига, удаление
 последнего, списки правил из файла."""
 
+from conftest import NoTimer, SyncThread
 from tunnelvpn import ipc, window
 
 WG = "[Interface]\nAddress = 10.53.0.4/32\n[Peer]\nAllowedIPs = 10.53.0.0/16\n"
@@ -10,6 +11,8 @@ def _api(monkeypatch, replies):
     """Окно с подменёнными каналом и UAC: replies — ответы админ-команд по очереди."""
     admin, shown = [], []
     monkeypatch.setattr(ipc, "call", lambda op, **_kw: {"ok": True, "status": {}})
+    monkeypatch.setattr(window.threading, "Thread", SyncThread)
+    monkeypatch.setattr(window.threading, "Timer", NoTimer)
     api = window.Api({})
 
     def admin_call(op, **kw):

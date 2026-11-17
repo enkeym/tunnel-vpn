@@ -283,7 +283,8 @@ def call(op, **payload):
                 f"служба {paths.SERVICE_NAME} не отвечает: канал занят")
 
         win32file.WriteFile(handle, req + b"\n")
-        data = _read_reply(handle, STATUS_TIMEOUT if op == "status" else None)
+        timeout = STATUS_TIMEOUT if op == "status" else OP_TIMEOUT
+        data = _read_reply(handle, timeout)
     except pywintypes.error as exc:
         # Код Windows остаётся в __cause__: его пишет журнал трея (tray._heal).
         raise NotRunning(
@@ -303,6 +304,7 @@ CHECK_POLL = 0.3
 
 # Сколько ждать ответа на status (см. call) и как часто заглядывать в канал.
 STATUS_TIMEOUT = 5.0
+OP_TIMEOUT = 120.0
 _PEEK_EVERY = 0.05
 
 

@@ -6,6 +6,7 @@
 
 import os
 
+from conftest import SyncThread
 from tunnelvpn import ipc, paths, window
 
 WORK = {"id": "work", "name": "Работа", "mode": "list", "active": "corp",
@@ -14,19 +15,9 @@ HOME = {"id": "home", "name": "Личный", "mode": "all", "active": "nl-1",
         "confs": ["nl-1"]}
 
 
-class _SyncThread:
-    """Поток, который выполняет цель сразу: тесту нечего ждать."""
-
-    def __init__(self, target, args=(), daemon=None):
-        self.target, self.args = target, args
-
-    def start(self):
-        self.target(*self.args)
-
-
 def _setup(monkeypatch, status):
     runs, shown = [], []
-    monkeypatch.setattr(window.threading, "Thread", _SyncThread)
+    monkeypatch.setattr(window.threading, "Thread", SyncThread)
     monkeypatch.setattr(ipc, "call", lambda op, **_kw: {"ok": True, "status": status})
     monkeypatch.setattr(window, "_run_elevated",
                         lambda exe, args, show=False: runs.append((exe, args, show)))
@@ -171,6 +162,7 @@ def _save_rules(monkeypatch, up, reply=None):
                          "rejected": {"include": ["foo_bar"]}}
 
     monkeypatch.setattr(ipc, "call", call)
+    monkeypatch.setattr(window.threading, "Thread", SyncThread)
     api = window.Api({})
     monkeypatch.setattr(api, "_admin_call", admin_call)
     monkeypatch.setattr(api, "js", lambda fn, arg=None: shown.append((fn, arg)))
@@ -197,6 +189,7 @@ def _save_then_apply(monkeypatch, applied):
         return {"ok": True, "applied": applied} if op == "apply" else {"ok": True, "status": {}}
 
     monkeypatch.setattr(ipc, "call", call)
+    monkeypatch.setattr(window.threading, "Thread", SyncThread)
     api = window.Api({})
     monkeypatch.setattr(api, "_admin_call", lambda op, **kw: {"ok": True, "include": ["a.ru"]})
     monkeypatch.setattr(api, "js", lambda fn, arg=None: events.append((fn, arg)))

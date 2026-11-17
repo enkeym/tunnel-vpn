@@ -7,34 +7,14 @@ import os
 import sys
 import types
 
+from conftest import NoTimer, SyncThread
 from tunnelvpn import cli, ipc, paths, window
-
-
-class _SyncThread:
-    """Поток, который выполняет цель сразу: тесту нечего ждать."""
-
-    def __init__(self, target, args=(), daemon=None):
-        self.target, self.args = target, args
-
-    def start(self):
-        self.target(*self.args)
-
-
-class _Timer:
-    """Запасной таймер, который не срабатывает: _SyncThread вместо Thread
-    ломает настоящий threading.Timer."""
-
-    def __init__(self, delay, fn):
-        self.daemon = False
-
-    def start(self):
-        pass
 
 
 def _api(monkeypatch, reply=None):
     calls, shown = [], []
-    monkeypatch.setattr(window.threading, "Thread", _SyncThread)
-    monkeypatch.setattr(window.threading, "Timer", _Timer)
+    monkeypatch.setattr(window.threading, "Thread", SyncThread)
+    monkeypatch.setattr(window.threading, "Timer", NoTimer)
     monkeypatch.setattr(window, "PAINT_WAIT", 0)
 
     def call(op, **kw):

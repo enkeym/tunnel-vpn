@@ -118,12 +118,21 @@ def test_молчащая_служба_на_status_не_отвечает_пос�
     assert win.calls[-1] == "CloseHandle"
 
 
-def test_долгие_команды_ждут_ответа_без_таймаута(win):
+def test_долгие_команды_ждут_ответа_не_обрываясь(win):
     """start честно работает до тридцати секунд — его не обрываем."""
     win.reads.append(b'{"ok": true}\n')
 
     assert ipc.call("start") == {"ok": True}
-    assert "PeekNamedPipe" not in win.calls
+
+
+def test_молчащая_служба_на_start_обрывается_по_op_таймауту(win, monkeypatch):
+    monkeypatch.setattr(ipc, "OP_TIMEOUT", 0.1)
+    monkeypatch.setattr(ipc, "_PEEK_EVERY", 0.01)
+
+    with pytest.raises(ipc.NotRunning, match="нет ответа"):
+        ipc.call("start")
+
+    assert win.calls[-1] == "CloseHandle"
 
 
 def test_сервер_сбрасывает_буфер_до_отключения(win, monkeypatch):

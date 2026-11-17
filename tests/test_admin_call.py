@@ -33,8 +33,8 @@ def _fake_win32(monkeypatch, execute):
         "win32com.shell": win32com_shell,
         "win32con": types.SimpleNamespace(SW_HIDE=0, SW_SHOWNORMAL=1),
         "win32event": types.SimpleNamespace(
-            INFINITE=-1,
-            WaitForSingleObject=lambda h, t: calls.append(("wait", h, t))),
+            INFINITE=-1, WAIT_OBJECT_0=0,
+            WaitForSingleObject=lambda h, t: calls.append(("wait", h, t)) or 0),
         "win32api": types.SimpleNamespace(
             CloseHandle=lambda h: calls.append(("close", h))),
         "pywintypes": types.SimpleNamespace(error=_WinError),
@@ -71,7 +71,7 @@ def test_команда_с_правами_идёт_через_shellexecute_и_ж
     kw = calls[0][1]
     assert kw["lpVerb"] == "runas" and kw["lpFile"] == sys.executable
     assert _args(kw["lpParameters"])[:4] == ["-m", "tunnelvpn.cli", "admin-op", "read-config"]
-    assert calls[1:] == [("wait", 77, -1), ("close", 77)]
+    assert calls[1:] == [("wait", 77, int(window.ADMIN_OP_WAIT * 1000)), ("close", 77)]
 
 
 def test_отказ_в_uac_даёт_ошибку_а_не_исключение(monkeypatch):
@@ -88,8 +88,9 @@ def test_отказ_в_uac_даёт_ошибку_а_не_исключение(mo
 def test_admin_op_скрыт_а_редактор_виден(monkeypatch):
     calls = _fake_win32(monkeypatch, lambda _kw: {"hProcess": 5})
 
-    window._run_elevated("x.exe", [])
-    window._run_elevated("notepad.exe", ["a.conf"], show=True)
+    assert window._run_elevated("x.exe", []) is True
+    assert window._run_elevated("notepad.exe", ["a.conf"], show=True) is True
 
     shown = [c[1]["nShow"] for c in calls if c[0] == "execute"]
     assert shown == [0, 1]
+    assert [c[2] for c in calls if c[0] == "wait"] == [int(window.ADMIN_OP_WAIT * 1000), -1]

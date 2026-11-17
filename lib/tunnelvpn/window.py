@@ -12,6 +12,7 @@
 
 import json
 import os
+import queue
 import subprocess
 import sys
 import tempfile
@@ -30,6 +31,7 @@ DOWNLOAD_FAILED = "Не удалось скачать обновление → �
 # она открывает канал (Core.start → _migrate) — столько ждём первый ответ.
 SERVICE_PIPE_WAIT = 15.0
 RESTART_FAILED = "Службу не удалось перезапустить → перезагрузите компьютер"
+ADMIN_OP_WAIT = 120.0
 # Сколько ждём отчёта страницы о готовности. Не дождались — WebView2 не
 # поднялся, и окно так и висело бы серым: выходим с READY_LOST, трей
 # перезапустит окно.
@@ -125,12 +127,13 @@ def _run_elevated(exe, args, show=False):
             lpFile=exe, lpParameters=subprocess.list2cmdline(args),
             nShow=win32con.SW_SHOWNORMAL if show else win32con.SW_HIDE)
     except pywintypes.error:
-        return
+        return False
     proc = info.get("hProcess")
     if not proc:
-        return
+        return False
     try:
-        win32event.WaitForSingleObject(proc, win32event.INFINITE)
+        timeout = win32event.INFINITE if show else int(ADMIN_OP_WAIT * 1000)
+        return win32event.WaitForSingleObject(proc, timeout) == win32event.WAIT_OBJECT_0
     finally:
         win32api.CloseHandle(proc)
 
@@ -149,6 +152,14 @@ def _service_installed():
         return True
     except pywintypes.error:
         return False
+
+
+QUEUED_OPS = frozenset({
+    "start", "stop", "restart", "start_only", "use_config", "set_enabled",
+    "apply_full", "del_config", "del_tunnel", "move_config",
+    "set_autostart", "log_level", "kill_switch", "show_config", "place_config",
+    "tunnel_rules", "save_rules", "logs",
+})
 
 
 class Api:
@@ -194,10 +205,19 @@ class Api:
         self._setup = None
         self._upd_cancel = threading.Event()
         self._upd_thread = None
+        self._jobs = queue.Queue()
+        self._jobs_lock = threading.Lock()
+        self._jobs_running = False
 
     # ------------------------------------------------------- приём из JS
 
     def send(self, name, arg=None):
+        if name in QUEUED_OPS:
+            self._post(name, arg)
+            return None
+        return self._run(name, arg)
+
+    def _run(self, name, arg):
         try:
             return self._dispatch(name, arg)
         except ipc.NotRunning as exc:
@@ -205,6 +225,29 @@ class Api:
         except Exception as exc:                       # noqa: BLE001
             self.js("failed", f"{name}: {exc}")
         return None
+
+    def _post(self, name, arg):
+        self._jobs.put((name, arg))
+        self._pump()
+
+    def _pump(self):
+        with self._jobs_lock:
+            if self._jobs_running or self._jobs.empty():
+                return
+            self._jobs_running = True
+        threading.Thread(target=self._drain_jobs, daemon=True).start()
+
+    def _drain_jobs(self):
+        while True:
+            try:
+                name, arg = self._jobs.get_nowait()
+            except queue.Empty:
+                with self._jobs_lock:
+                    self._jobs_running = False
+                if not self._jobs.empty():
+                    self._pump()
+                return
+            self._run(name, arg)
 
     def _dispatch(self, name, arg):
         if name == "painted":
@@ -513,11 +556,14 @@ class Api:
                 exe, base_args = sys.executable, []
             else:
                 exe, base_args = sys.executable, ["-m", "tunnelvpn.cli"]
-            _run_elevated(exe, base_args + ["admin-op", op, payload_file, result_file])
+            finished = _run_elevated(exe, base_args + ["admin-op", op, payload_file, result_file])
 
             if os.path.isfile(result_file):
                 with open(result_file, encoding="utf-8") as fh:
                     return json.load(fh)
+            if not finished:
+                return {"ok": False,
+                        "error": f"запрос прав отменён или операция не завершилась за {ADMIN_OP_WAIT:.0f} с"}
             # UAC отменили или дочерний процесс не успел записать ответ —
             # оба исхода снаружи выглядят одинаково: действие не выполнено.
             return {"ok": False, "error": "запрос прав отменён или не выполнился"}
