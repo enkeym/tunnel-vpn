@@ -35,6 +35,14 @@ paths:
   (`lib/tunnelvpn/ui/js/core.js`), в `QUEUED_OPS` не попадает: `request` видит `None` как
   «нет ответа» и показывает ошибку там, где всё удалось. Итог длинной операции страница берёт
   из push-статуса (`render`, `failed`), а не из возврата `send`.
+- Общий оптимистичный слой — `WANT`/`wanted`/`sendWanted`/`PENDING_MS` в `lib/tunnelvpn/ui/js/core.js`
+  (одна реализация на карточки и топбар): целевое состояние рисуется сразу, команда уходит фоном,
+  сверка — по push-статусу (`wanted` снимает ключ, когда статус догнал или вышло `PENDING_MS`).
+  Ключи: `on:<id>`/`pick:<id>` (`cards.js`), `vpn:up` — желаемый VPN целиком
+  (`topbar.js:toggleVpn`/`restartVpn` задают, `topbar.js:shouldStop` сверяет на каждой отрисовке,
+  `cards.js:startOnly` ставит вместе с флагами). Отказ — `failed` → `ON_FAILED` чистит `WANT`
+  целиком (откат) и снимает `PENDING` топ-бара, тост об ошибке. Свой `seq` у `set_enabled` при этом
+  обязателен: `wanted` — про отрисовку, порядок записи на VPN держит `_flip`.
 - Вызовы Python → JS: `lib/tunnelvpn/window.py:js` / `lib/tunnelvpn/window.py:jsn` с именем функции
   (`render`, `renderHowto`, `renderVersion`, `renderLogs`, `failed`, `closeSheet`,
   `showConf(tid, name, text)`, `askPlace`, `showRules`, `rulesSaved`, `rulesMoved`, `rulesFailed`, `fillRules`, `checkStart`,
