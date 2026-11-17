@@ -27,7 +27,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from . import buildconfig, killguard, paths, probe, proxy, tunnels, winnet
 
@@ -828,8 +828,16 @@ class Tunnel:
                 if link is None:
                     raise ValueError(error)
                 with ThreadPoolExecutor(max_workers=PROXY_CHECK_WORKERS) as pool:
-                    results = list(pool.map(probe.proxy_works, links))
-                working.extend(p for p, ok in zip(batch, results) if ok)
+                    futures = {pool.submit(probe.proxy_works, entry): profile
+                               for profile, entry in zip(batch, links)}
+                    for fut in as_completed(futures):
+                        try:
+                            ok = fut.result()
+                        except Exception as exc:
+                            self.log(f"!! проверка прокси [{futures[fut].get('name', '')}]: {exc}")
+                            ok = False
+                        if ok:
+                            working.append(futures[fut])
             self.log(f"→ проверено прокси: {start + len(batch)}/{len(profiles)}, рабочих: {len(working)}")
         return working
 

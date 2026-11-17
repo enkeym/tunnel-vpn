@@ -136,6 +136,35 @@ def _test_result(p, got):
     return result, answer
 
 
+def _race(items, check):
+    lock, done = threading.Lock(), threading.Event()
+    hit, errors, left = {}, [], {"n": len(items)}
+
+    def run(item):
+        try:
+            said = check(item) or ""
+            with lock:
+                if said:
+                    hit.setdefault("said", said)
+        except Exception as exc:
+            with lock:
+                errors.append(exc)
+        finally:
+            with lock:
+                left["n"] -= 1
+                if hit.get("said") or not left["n"]:
+                    done.set()
+
+    for item in items:
+        threading.Thread(target=run, args=(item,), daemon=True).start()
+    done.wait()
+    if hit.get("said"):
+        return hit["said"]
+    if errors:
+        raise errors[0]
+    return ""
+
+
 def _proxy_url(link):
     """http-вход временного процесса с логином — адресом прокси для urllib.
     Логин — hex, пароль — urlsafe (buildconfig.new_link): экранировать нечего."""
@@ -230,17 +259,18 @@ def proxy_works(link):
         urllib.request.ProxyHandler({}),
         urllib.request.HTTPSHandler(context=settings.tls_context()), _NoRedirect())
     credentials = f"{link['username']}:{link['password']}".encode()
-    for url in (PROXY_CHECK_URL, CHECK_FALLBACK_URL):
+
+    def check(url):
         request = urllib.request.Request(url)
         request.set_proxy(f"127.0.0.1:{link['port']}", "http")
         request.add_header("Proxy-Authorization", "Basic " + base64.b64encode(credentials).decode("ascii"))
         try:
             with opener.open(request, timeout=CORP_HTTP_TIMEOUT) as response:
-                if response.status == 204:
-                    return True
+                return "ok" if response.status == 204 else ""
         except (OSError, ValueError, urllib.error.URLError):
-            continue
-    return False
+            return ""
+
+    return bool(_race((PROXY_CHECK_URL, CHECK_FALLBACK_URL), check))
 
 
 def trial_check(link, full, host, dns):
@@ -250,11 +280,15 @@ def trial_check(link, full, host, dns):
     HTTPS к host. Ни того, ни другого служба не запускает (none)."""
     proxy = _proxy_url(link)
     if full:
-        code = ""
-        for url in (TRIAL_URL, CHECK_FALLBACK_URL):
-            code = Prober._http_code(url, proxy)
-            if code == "204":
-                return "up", "HTTP 204"
+        codes = {}
+
+        def check(url):
+            codes[url] = said = Prober._http_code(url, proxy)
+            return "204" if said == "204" else ""
+
+        if _race((TRIAL_URL, CHECK_FALLBACK_URL), check):
+            return "up", "HTTP 204"
+        code = codes.get(CHECK_FALLBACK_URL) or codes.get(TRIAL_URL) or ""
         return "error", f"HTTP {code}" if code else "сервер не отвечает"
     p = {"id": "", "mode": "list", "host": host, "dns": dns}
     if dns:

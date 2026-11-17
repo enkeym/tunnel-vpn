@@ -127,6 +127,27 @@ def test_полный_молчит(monkeypatch):
     assert probe.trial_check(LINK, True, "", "") == ("error", "сервер не отвечает")
 
 
+def test_полный_висячий_адрес_не_держит_ответивший(monkeypatch):
+    release = threading.Event()
+
+    def code(url, proxy=""):
+        if url == probe.TRIAL_URL:
+            release.wait(30)
+            return ""
+        return "204"
+
+    monkeypatch.setattr(probe.Prober, "_http_code", staticmethod(code))
+    got = []
+    t = threading.Thread(target=lambda: got.append(probe.trial_check(LINK, True, "", "")),
+                         daemon=True)
+    t.start()
+    try:
+        t.join(5)
+        assert not t.is_alive() and got == [("up", "HTTP 204")]
+    finally:
+        release.set()
+
+
 def test_по_списку_ответ_dns_без_адреса_сети(monkeypatch):
     """Итог читает любой: адрес домена из рабочей сети в ответ не идёт."""
     monkeypatch.setattr(probe, "_dns_via_proxy", lambda link, server, name: "10.1.2.3")

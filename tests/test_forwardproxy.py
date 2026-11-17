@@ -140,6 +140,47 @@ def test_страница_вместо_ответа_проверки_откло�
     assert not probe.proxy_works(link)
 
 
+def test_проверка_прокси_висячий_адрес_не_держит_ответивший(proxy_network, monkeypatch):
+    link = buildconfig.new_link()
+    proxy_network.statuses[link["port"]] = 204
+    open_response = urllib.request.OpenerDirector.open
+    release = threading.Event()
+
+    def hanging(opener, request, timeout):
+        if request._tunnel_host == "cp.cloudflare.com":
+            release.wait(30)
+            raise urllib.error.URLError("dead")
+        return open_response(opener, request, timeout)
+
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", hanging)
+    got = []
+    t = threading.Thread(target=lambda: got.append(probe.proxy_works(link)), daemon=True)
+    t.start()
+    try:
+        t.join(5)
+        assert not t.is_alive() and got == [True]
+    finally:
+        release.set()
+
+
+def test_сбой_проверки_одной_ссылки_не_роняет_остальные(proxy_network, monkeypatch):
+    core = _core()
+    asked = []
+
+    def flaky(link):
+        asked.append(link["port"])
+        if len(asked) == 1:
+            raise RuntimeError("сбой")
+        return True
+
+    monkeypatch.setattr(probe, "proxy_works", flaky)
+    profiles = [proxy.parse_link(f"socks5://203.0.113.1:{port}") for port in (8081, 8082, 8083)]
+
+    working = core.tunnel.check_proxies(profiles)
+
+    assert len(working) == 2 and len(asked) == 3
+
+
 def test_импорт_сохраняет_сразу_и_убирает_нерабочие_в_фоне(proxy_network, monkeypatch, tmp_path):
     monkeypatch.setattr(paths, "SUBSCRIPTIONS_JSON", str(tmp_path / "subscriptions.json"))
     monkeypatch.setattr(paths, "TUNNELS_JSON", str(tmp_path / "tunnels.json"))
