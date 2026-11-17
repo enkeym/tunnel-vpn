@@ -815,11 +815,11 @@ class Core:
         self._note_test(key, stamp=self._conf_stamp(*key, proto), checking=True)
         if not wait:
             threading.Thread(target=self._finish_test, args=(t, name),
-                             kwargs={"swap": swap}, daemon=True).start()
+                             kwargs={"swap": swap, "settle": True}, daemon=True).start()
             return {"ok": True}
-        return {"ok": True, "test": self._finish_test(t, name)}
+        return {"ok": True, "test": self._finish_test(t, name, settle=True)}
 
-    def _finish_test(self, t, name, alone=False, swap=0.0):
+    def _finish_test(self, t, name, alone=False, swap=0.0, settle=False):
         """Проверка после _test_conf: итог в _conf_checks и в журнал, его же — наружу.
         alone — в _run_test, swap — в _await_swap."""
         key = (t["id"], name)
@@ -830,7 +830,7 @@ class Core:
             with self._tests_lock:
                 lock = self._trial_locks.setdefault(t["id"], threading.Lock())
             with lock:
-                result, answer = self._run_test(t, name, alone)
+                result, answer = self._run_test(t, name, alone, settle)
         except Exception as exc:
             self.log(f"!! проверка {name} упала: {exc!r}")
             result, answer = "error", "проверка упала"
@@ -860,7 +860,18 @@ class Core:
         while self._side_started(tid) == started and time.monotonic() < deadline:
             time.sleep(0.25)
 
-    def _run_test(self, t, name, alone=False):
+    def _await_settled(self):
+        deadline = time.monotonic() + SWAP_WAIT
+        while not self.prober.stop_event.is_set() and time.monotonic() < deadline:
+            now = time.monotonic()
+            fresh = [s for s in self.tunnel.sides
+                     if s.alive() and now - s.started < probe.SIDE_SETTLE]
+            if not fresh:
+                return
+            left = min(s.started + probe.SIDE_SETTLE - now for s in fresh)
+            time.sleep(min(left, probe.SETTLE_PAUSE))
+
+    def _run_test(self, t, name, alone=False, settle=False):
         """(итог, ответ) конфига name туннеля t.
 
         Тот же ключ уже работает в боковом процессе — проверка этого туннеля
@@ -871,7 +882,7 @@ class Core:
         Полный — конфиг основного туннеля или с 0.0.0.0/0; «по списку» без DNS и домена в «пускать» — none без запуска.
         """
         if t.get("proto") == "vless":
-            return self._run_test_vless(t, name, alone)
+            return self._run_test_vless(t, name, alone, settle)
         conf = _read_conf(t["id"], name)
         if conf is None:
             return "error", "конфиг не читается"
@@ -886,6 +897,8 @@ class Core:
         dns = next(iter(buildconfig.conf_dns(conf)), "")
         if not (full or dns or host):
             return "none", ""
+        if settle:
+            self._await_settled()
         # Что именно спрашиваем (probe.trial_check): без этого «сервер не отвечает»
         # не отличить мёртвый сервер от молчащего DNS или сайта.
         self.log(what + "временный sing-box, " + (
@@ -897,7 +910,7 @@ class Core:
                 return "error", err
             return probe.trial_check(link, full, host, dns)
 
-    def _run_test_vless(self, t, name, alone=False):
+    def _run_test_vless(self, t, name, alone=False, settle=False):
         try:
             profile = subscriptions.find_profile(subscriptions.load(), name)
         except (OSError, ValueError) as exc:
@@ -909,6 +922,8 @@ class Core:
         if twin:
             self.log(what + f"тот же профиль у работающего процесса {twin} — спрашиваю его")
             return self.prober.check_one(twin, self.tunnel.delay)
+        if settle:
+            self._await_settled()
         v = proxy.fields(profile)
         self.log(what + f"временный sing-box, {profile['proto']} {v['server']}:{v['server_port']}")
         with self.tunnel.trial_vless(t["id"], profile) as (link, err):

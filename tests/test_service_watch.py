@@ -882,7 +882,7 @@ def _spare_confs(monkeypatch, core, answers, during=None, t=HOME_T):
     случается, пока идёт проверка."""
     tried, made = [], []
 
-    def run_test(t, name, alone=False):
+    def run_test(t, name, alone=False, settle=False):
         tried.append((name, alone))
         if during:
             during()

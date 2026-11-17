@@ -469,6 +469,26 @@ def test_маршрут_к_пиру_пропал_в_работе_ставитс�
                                   ("203.0.113.20/32", 18, "192.168.0.1", 1)]
 
 
+def test_журнал_с_петлёй_чистится_до_сверки(env, monkeypatch):
+    tun, _build, seen = env
+    assert tun.start() == ""
+    net = seen["net"]
+    deleted = []
+
+    def del_route(prefix, if_index=None):
+        deleted.append((prefix, if_index))
+        net.added.remove((prefix, if_index, "192.168.0.1", 1))
+
+    monkeypatch.setattr(net, "del_route", del_route, raising=False)
+    net.added.append(("127.0.0.1/32", 18, "192.168.0.1", 1))
+    tun.own("host", "127.0.0.1", "192.168.0.1", 18)
+
+    assert tun.mend_peer_routes() == []
+    assert deleted == [("127.0.0.1/32", 18)]
+    assert any("127.0.0.1 в журнале — не адрес сервера, маршрут убираю" in l
+               for l in seen["log"])
+
+
 # Маршруты sing-box в обход пиров 203.0.113.x (route_exclude_address), сокращённо:
 # половинки 128.0.0.0/1 среди них нет.
 AROUND_PEER = ["0.0.0.0/1", "128.0.0.0/2", "192.0.0.0/5", "200.0.0.0/7",
@@ -895,6 +915,21 @@ def test_имена_пиров_резолвятся_разом(env, monkeypatch)
 
     assert tun._peer_ips(["work", "home"]) == ["203.0.113.10", "203.0.113.20"]
     assert time.monotonic() - begun < 0.5
+
+
+def test_служебные_адреса_не_становятся_пирами(env, monkeypatch):
+    tun, _build, seen = env
+    buildconfig.write_json(buildconfig.side_json("work"), _side_cfg("127.0.0.1"))
+    buildconfig.write_json(buildconfig.side_json("home"), _side_cfg("169.254.5.5"))
+    main = buildconfig.read_json(paths.CONFIG_JSON)
+    main["outbounds"].append({"type": "socks", "tag": "socks-off", "server_port": 1084})
+    buildconfig.write_json(paths.CONFIG_JSON, main)
+    buildconfig.write_json(buildconfig.side_json("off"), _side_cfg("nl.example"))
+    monkeypatch.setattr(seen["net"], "resolve4", lambda _h: "0.0.0.0", raising=False)
+
+    assert tun._peer_ips() == []
+    assert any("не адреса серверов, маршрут не ставлю: 0.0.0.0, 127.0.0.1, 169.254.5.5"
+               in l for l in seen["log"])
 
 
 def test_включение_vless_резолвит_сервер_и_ставит_маршрут(live):

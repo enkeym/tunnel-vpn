@@ -295,6 +295,7 @@ class _Tunnel:
 
     def __init__(self, twin=None, err=""):
         self.twin, self.err, self.trials = twin, err, []
+        self.sides = []
 
     def side_with_key(self, key):
         return self.twin
@@ -304,6 +305,11 @@ class _Tunnel:
 
     @contextlib.contextmanager
     def trial(self, tid, conf):
+        self.trials.append(tid)
+        yield (None, self.err) if self.err else (LINK, "")
+
+    @contextlib.contextmanager
+    def trial_vless(self, tid, profile):
         self.trials.append(tid)
         yield (None, self.err) if self.err else (LINK, "")
 
@@ -409,6 +415,103 @@ def test_перезапуска_не_дождались_проверка_как_
 
     assert core._finish_test(t, "w1", swap=5.0)["result"] == "up"
     assert core.tunnel.trials == ["t1"]
+
+
+def _clock(monkeypatch, start=0.0):
+    now = [start]
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    monkeypatch.setattr(service.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(service.time, "sleep", sleep)
+    return now
+
+
+def _settle_scene(core, monkeypatch, start=5.0, started=0.0):
+    monkeypatch.setattr(service, "SWAP_WAIT", 60.0)
+    now = _clock(monkeypatch, start)
+    core.tunnel.sides = [types.SimpleNamespace(alive=lambda: True, started=started)]
+    asked = []
+    monkeypatch.setattr(probe, "trial_check", lambda *a: asked.append(now[0]) or ("up", ""))
+    return asked
+
+
+def test_свежий_процесс_проверка_ждёт_стабилизации(core, monkeypatch):
+    _tunnel(monkeypatch, include=["corp.example"])
+    asked = _settle_scene(core, monkeypatch)
+
+    assert core._test_conf("t1", "w1")["test"]["result"] == "up"
+    assert asked == [probe.SIDE_SETTLE]
+
+
+def test_давний_процесс_проверка_не_ждёт(core, monkeypatch):
+    _tunnel(monkeypatch, include=["corp.example"])
+    asked = _settle_scene(core, monkeypatch, start=probe.SIDE_SETTLE + 1.0)
+
+    assert core._test_conf("t1", "w1")["test"]["result"] == "up"
+    assert asked == [probe.SIDE_SETTLE + 1.0]
+
+
+def test_без_живых_процессов_проверка_не_ждёт(core, monkeypatch):
+    _tunnel(monkeypatch, include=["corp.example"])
+    asked = _settle_scene(core, monkeypatch)
+    core.tunnel.sides = []
+
+    assert core._test_conf("t1", "w1")["test"]["result"] == "up"
+    assert asked == [5.0]
+
+
+def test_запасной_не_ждёт_стабилизации(core, monkeypatch):
+    t = _tunnel(monkeypatch, mode="all")
+    asked = _settle_scene(core, monkeypatch)
+
+    assert core._finish_test(t, "w1", alone=True)["result"] == "up"
+    assert asked == [5.0]
+
+
+def test_ожидание_стабилизации_под_потолком_перезапуска(core, monkeypatch):
+    _tunnel(monkeypatch, include=["corp.example"])
+    asked = _settle_scene(core, monkeypatch)
+    monkeypatch.setattr(service, "SWAP_WAIT", 0.0)
+
+    assert core._test_conf("t1", "w1")["test"]["result"] == "up"
+    assert asked == [5.0]
+
+
+def test_остановка_пробера_прерывает_ожидание(core, monkeypatch):
+    _tunnel(monkeypatch, include=["corp.example"])
+    asked = _settle_scene(core, monkeypatch)
+    core.prober.stop_event.set()
+
+    assert core._test_conf("t1", "w1")["test"]["result"] == "up"
+    assert asked == [5.0]
+
+
+def _vless(core, monkeypatch):
+    profile = {"id": "w1", "name": "w1", "proto": "vless"}
+    monkeypatch.setattr(service.subscriptions, "load", lambda: {"profiles": []})
+    monkeypatch.setattr(service.subscriptions, "find_profile", lambda subs, name: profile)
+    monkeypatch.setattr(service.proxy, "fields", lambda p: {"server": "h", "server_port": 443})
+    monkeypatch.setattr(core, "_side_with_profile", lambda p: None)
+    return {"id": "t1", "name": "Работа", "mode": "list", "proto": "vless", "include": []}
+
+
+def test_vless_свежий_процесс_проверка_ждёт_стабилизации(core, monkeypatch):
+    t = _vless(core, monkeypatch)
+    asked = _settle_scene(core, monkeypatch)
+
+    assert core._finish_test(t, "w1", settle=True)["result"] == "up"
+    assert asked == [probe.SIDE_SETTLE]
+    assert core.tunnel.trials == ["t1"]
+
+
+def test_vless_запасной_не_ждёт_стабилизации(core, monkeypatch):
+    t = _vless(core, monkeypatch)
+    asked = _settle_scene(core, monkeypatch)
+
+    assert core._finish_test(t, "w1", alone=True)["result"] == "up"
+    assert asked == [5.0]
 
 
 def test_ждать_перезапуска_только_живого_процесса_с_этим_конфигом(core, monkeypatch):

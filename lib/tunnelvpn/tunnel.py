@@ -101,6 +101,23 @@ def log_prefix(tid):
     return f"tunnel-{tid}"
 
 
+def _is_peer_addr(ip):
+    """Нужен ли адресу host-маршрут мимо туннеля: только серверу снаружи.
+
+    127.0.0.1 локального прокси и 0.0.0.0 из мёртвой ноды из-под туннеля выводить
+    незачем, а /32 через шлюз сети конкретнее системной петли: петля вместе с DNS
+    за ней перестаёт отвечать, и это выглядит как «TunnelVPN уронил Wi-Fi». Снимает
+    WMI такой маршрут тоже отказывается («Неправильный параметр»), и он пережил бы
+    и выключение, и сон.
+    """
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return not (addr.is_loopback or addr.is_unspecified or addr.is_link_local
+                or addr.is_multicast or addr.is_reserved)
+
+
 class Side:
     """Боковой процесс sing-box — один туннель за socks на loopback.
 
@@ -297,8 +314,13 @@ class Tunnel:
                 self.log(f"→ маршрут на {ip} живёт на туннеле — не наш, не трогаю")
                 continue
             winnet.del_route(prefix, idx)
-        if not winnet.routes_for(prefix):
+        left = [str(r.get("NextHop") or "") for r in winnet.routes_for(prefix)]
+        if not left:
             self.log(f"→ убран маршрут на {ip}")
+        elif want_gw and want_gw in left:
+            self.log(f"!! маршрут на {ip} через {want_gw} снять не удалось: "
+                     f"{winnet.last_error or 'без причины'}")
+            self.log(f"   вручную: route delete {ip} mask 255.255.255.255 {want_gw}")
 
     # -------------------------------------------------------------- логи
 
@@ -671,7 +693,11 @@ class Tunnel:
         if hosts:
             with ThreadPoolExecutor(len(hosts)) as pool:
                 out += [ip for ip in pool.map(winnet.resolve4, hosts) if ip]
-        return sorted(set(out))
+        peers = {ip for ip in out if _is_peer_addr(ip)}
+        junk = sorted(set(out) - peers)
+        if junk:
+            self.log(f"→ не адреса серверов, маршрут не ставлю: {', '.join(junk)}")
+        return sorted(peers)
 
     @staticmethod
     def _corp_domains():
@@ -1226,7 +1252,7 @@ class Tunnel:
         if not buildconfig.set_side_host(cfg, ip):
             return f"«{side.title}»: адрес сервера в конфиг не записать"
         up_idx, gw = self.uplink
-        if ip not in self._peers_owned():
+        if _is_peer_addr(ip) and ip not in self._peers_owned():
             # Мимо туннеля до старта процесса — иначе его пакеты к пиру уйдут
             # в tun петлёй.
             self.own("host", ip, gw, up_idx)
@@ -1262,11 +1288,15 @@ class Tunnel:
         if uplink is None:
             return []
         up_idx, gw = uplink
-        peers = sorted({parts[1] for parts in self.owned_lines()
-                        if parts[0] == "host" and len(parts) >= 4
-                        and parts[2] == gw and parts[3] == str(up_idx)})
+        owned = {parts[1] for parts in self.owned_lines()
+                 if parts[0] == "host" and len(parts) >= 4
+                 and parts[2] == gw and parts[3] == str(up_idx)}
+        junk = sorted(ip for ip in owned if not _is_peer_addr(ip))
+        for ip in junk:
+            self.log(f"→ {ip} в журнале — не адрес сервера, маршрут убираю")
+            self.del_host_ours(ip, gw)
         lost = []
-        for ip in peers:
+        for ip in sorted(owned - set(junk)):
             if not any(r.get("NextHop") == gw
                        and str(r.get("InterfaceIndex")) == str(up_idx)
                        for r in winnet.routes_for(f"{ip}/32")):

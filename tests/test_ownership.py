@@ -145,6 +145,22 @@ def test_шлюз_совпал_снимаем(tun, net):
     assert net.deleted == [("198.51.100.7/32", 5)]
 
 
+def test_маршрут_не_снялся_сообщаем(net):
+    lines = []
+    tun = tunnel.Tunnel(log=lines.append)
+    net.routes["127.0.0.1/32"] = [{"InterfaceIndex": 5, "NextHop": "192.168.0.1"}]
+    net.last_error = "Неправильный параметр"
+    net.del_route = lambda *_a: None
+
+    tun.del_host_ours("127.0.0.1", want_gw="192.168.0.1")
+
+    assert net.deleted == []
+    assert any(l.startswith("!! маршрут на 127.0.0.1 через 192.168.0.1 "
+                            "снять не удалось") for l in lines)
+    assert any("route delete 127.0.0.1 mask 255.255.255.255 192.168.0.1" in l
+               for l in lines)
+
+
 def test_без_журнала_маршрут_на_туннеле_не_наш(tun, net):
     """Свой host-маршрут на пира всегда идёт мимо туннеля, через аплинк.
 
