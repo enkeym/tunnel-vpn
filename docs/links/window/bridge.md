@@ -84,5 +84,8 @@ paths:
   `roleOf(t, m)` в `lib/tunnelvpn/ui/js/cards.js` — «остальное → «основной»/напрямую» по тем же
   `main`/`direct` из `lib/tunnelvpn/ui/js/model.js:model`, что заголовок.
 - Импорт ссылок: `lib/tunnelvpn/service.py:_preview` возвращает `profiles, invalid, duplicates`,
-  `lib/tunnelvpn/service.py:_add_link` — ещё `added, failed`; читает `lib/tunnelvpn/ui/js/sheets.js:addLinkSheet`.
-  `failed` — HTTP/SOCKS, не прошедшие HTTPS-проверку; предпросмотр сеть не проверяет.
+  `lib/tunnelvpn/service.py:_add_link` — ещё `added, job, checking`; читает `lib/tunnelvpn/ui/js/sheets.js:addLinkSheet`.
+  Профили сохраняются сразу без сети; HTTP/SOCKS из новой пачки проверяет фоновая задача `job`
+  (реестр `_job_*` в `lib/tunnelvpn/service.py`): недоступные удаляет `_check_added` с причиной,
+  итог (`added, failed, problems`) — в `st["job"]` push-статуса, его рисует `paintJob` в `topbar.js`.
+  Предпросмотр сеть не проверяет.

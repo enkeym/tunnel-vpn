@@ -1,8 +1,8 @@
 import base64
 import contextlib
-import concurrent.futures
 import json
 import os
+import queue
 import ssl
 import threading
 import types
@@ -119,6 +119,20 @@ def proxy_network(monkeypatch, tmp_path):
     return state
 
 
+def _core():
+    core = service.Core.__new__(service.Core)
+    core.log = lambda text: None
+    core.tunnel = tunnel.Tunnel(core.log)
+    core.prober = probe.Prober()
+    core._jobs = {}
+    core._jobs_lock = threading.Lock()
+    core._jobs_done = {}
+    core._job_seq = 0
+    core._job_queue = queue.Queue()
+    core._job_worker = None
+    return core
+
+
 def test_страница_вместо_ответа_проверки_отклоняется(proxy_network):
     link = buildconfig.new_link()
     proxy_network.statuses[link["port"]] = 200
@@ -126,20 +140,20 @@ def test_страница_вместо_ответа_проверки_откло�
     assert not probe.proxy_works(link)
 
 
-def test_импорт_сохраняет_только_рабочие_и_убирает_процессы(proxy_network, monkeypatch, tmp_path):
+def test_импорт_сохраняет_сразу_и_убирает_нерабочие_в_фоне(proxy_network, monkeypatch, tmp_path):
     monkeypatch.setattr(paths, "SUBSCRIPTIONS_JSON", str(tmp_path / "subscriptions.json"))
     monkeypatch.setattr(paths, "TUNNELS_JSON", str(tmp_path / "tunnels.json"))
-    core = service.Core.__new__(service.Core)
-    core.log = lambda text: None
-    core.tunnel = tunnel.Tunnel(core.log)
+    core = _core()
     links = "\n".join(f"socks5://203.0.113.1:{port}" for port in range(1, 20))
 
     reply = core._add_link(links + "\nbad\nsocks5://203.0.113.1:1")
 
-    assert reply["ok"]
-    assert reply["added"] == 10
-    assert reply["failed"] == 9
+    assert reply["ok"] and reply["checking"] and reply["job"]
+    assert reply["added"] == 19
     assert reply["invalid"] == reply["duplicates"] == 1
+    job = core._job_wait(reply["job"], timeout=10)
+    assert job["state"] == "done" and job["added"] == 10 and job["failed"] == 9
+    assert len(job["problems"]) == 9
     assert len(subscriptions.list_profiles()) == 10
     assert tunnels.load()["tunnels"][0]["active"] == reply["profile"]
     assert [len(c["inbounds"]) for c in proxy_network.configs] == [16, 3]
@@ -148,16 +162,16 @@ def test_импорт_сохраняет_только_рабочие_и_убир
     assert not any(name.startswith("trial-proxy-") and name.endswith(".json") for name in os.listdir(paths.RUN))
 
 
-def test_нерабочая_пачка_не_создаёт_профилей(proxy_network, monkeypatch, tmp_path):
+def test_нерабочая_пачка_не_оставляет_ни_профилей_ни_туннелей(proxy_network, monkeypatch, tmp_path):
     monkeypatch.setattr(paths, "SUBSCRIPTIONS_JSON", str(tmp_path / "subscriptions.json"))
     monkeypatch.setattr(paths, "TUNNELS_JSON", str(tmp_path / "tunnels.json"))
-    core = service.Core.__new__(service.Core)
-    core.log = lambda text: None
-    core.tunnel = tunnel.Tunnel(core.log)
+    core = _core()
 
     reply = core._add_link("http://203.0.113.1:80")
 
-    assert not reply["ok"]
+    assert reply["ok"] and reply["checking"]
+    job = core._job_wait(reply["job"], timeout=10)
+    assert job["state"] == "done" and job["failed"] == 1 and job["added"] == 0
     assert not subscriptions.list_profiles()
     assert not tunnels.load()["tunnels"]
     assert len(proxy_network.stopped) == 1
@@ -181,13 +195,13 @@ def test_долгая_проверка_прокси_не_блокирует_ст
 
     monkeypatch.setattr(urllib.request.OpenerDirector, "open", slow_response)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        imported = pool.submit(core.handle, "add-link", {"link": "socks5://203.0.113.1:1081"}, True)
-        try:
-            assert entered.wait(5)
-            status = pool.submit(core.handle, "status", {}, False).result(timeout=2)
-            assert status["ok"]
-            assert not imported.done()
-        finally:
-            release.set()
-        assert imported.result(timeout=5)["ok"]
+    reply = core.handle("add-link", {"link": "socks5://203.0.113.1:1081"}, True)
+
+    assert reply["ok"] and reply["checking"] and reply["job"]
+    assert entered.wait(5)
+    status = core.handle("status", {}, False)
+    assert status["ok"]
+    release.set()
+    job = core._job_wait(reply["job"], timeout=10)
+    assert job["state"] == "done" and not job["failed"]
+    assert len(subscriptions.list_profiles()) == 1

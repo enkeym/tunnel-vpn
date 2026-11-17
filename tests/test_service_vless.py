@@ -87,6 +87,12 @@ def test_ссылка_делает_основной_vless_туннель():
     assert [p["id"] for p in subscriptions.list_profiles()] == [reply["profile"]]
 
 
+def test_ссылка_vless_без_фоновой_проверки():
+    reply = _core().handle("add-link", {"link": _link()}, True)
+
+    assert reply["job"] == "" and reply["checking"] is False
+
+
 def test_ссылка_не_включает_пустой_туннель():
     tunnels.save({"tunnels": [{"id": "proxy", "name": "Proxy", "mode": "all",
                                "proto": "vless", "enabled": True}]})

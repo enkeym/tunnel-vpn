@@ -15,6 +15,7 @@ import datetime
 import ipaddress
 import json
 import os
+import queue
 import re
 import shutil
 import subprocess
@@ -54,6 +55,7 @@ CONF_OPS = frozenset({
     "move-config", "add-tunnel", "set-tunnel", "remove-tunnel", "set-log-level",
     "set-kill-switch", "add-subscription", "update-subscription",
     "remove-subscription", "remove-profile", "set-allow-private"})
+JOBS_KEPT = 20
 # Сколько кругов пробера (по FAST_EVERY) новая сеть должна продержаться,
 # прежде чем переподключаться: Wi-Fi при смене точки и пробуждении моргает,
 # и на каждый пропавший на секунду маршрут перезапуск только мешал бы.
@@ -311,6 +313,12 @@ class Core:
         # них по id, а разные туннели — «Проверить все» без VPN — проверяются разом.
         self._tests_lock = threading.Lock()
         self._trial_locks = {}
+        self._jobs = {}
+        self._jobs_lock = threading.Lock()
+        self._jobs_done = {}
+        self._job_seq = 0
+        self._job_queue = queue.Queue()
+        self._job_worker = None
 
     # Правка записана, а на лету не применена: человек ответил «Позже» на
     # «Переподключить?» (applied "ask"). Снимает любая остановка: включение
@@ -329,6 +337,7 @@ class Core:
     _cmd = 0
     _cmd_lock = threading.Lock()
     _running = None
+    _job_last = None
 
     # Таймауты (время, тег, адрес) за DEAD_WINDOW.
     _dead_hits = ()
@@ -630,6 +639,7 @@ class Core:
         st["log_level"] = data["log_level"]
         # Галочка kill-switch: пишет set-kill-switch (администратор), читать — любому.
         st["kill_switch"] = data["kill_switch"]
+        st["job"] = self._job_last
         return st
 
     @staticmethod
@@ -2066,34 +2076,127 @@ class Core:
                 t[key] = list(main.get(key) or [])
         return t
 
+    def _job_start(self, kind, total, work):
+        with self._jobs_lock:
+            self._job_seq += 1
+            jid = str(self._job_seq)
+            self._jobs[jid] = {"id": jid, "kind": kind, "state": "running",
+                               "total": total, "done": 0, "added": 0,
+                               "failed": 0, "problems": [], "error": ""}
+            self._jobs_done[jid] = threading.Event()
+            finished = [k for k in self._jobs
+                        if k != jid and self._jobs[k]["state"] != "running"]
+            for old in finished[:max(0, len(self._jobs) - JOBS_KEPT)]:
+                del self._jobs[old]
+                self._jobs_done.pop(old, None)
+            worker = self._job_worker
+            if worker is None or not worker.is_alive():
+                self._job_worker = threading.Thread(target=self._job_pump, daemon=True)
+                self._job_worker.start()
+        self._job_queue.put((jid, work))
+        return jid
+
+    def _job_pump(self):
+        while True:
+            jid, work = self._job_queue.get()
+            try:
+                work(jid)
+            except Exception as exc:
+                self.log(f"!! фоновая задача {jid}: {exc}")
+                self._job_finish(jid, "error", error=str(exc))
+            finally:
+                self._job_queue.task_done()
+
+    def _job_progress(self, jid, **fields):
+        with self._jobs_lock:
+            job = self._jobs.get(jid)
+            if job is None:
+                return None
+            job.update(fields)
+            return dict(job, problems=list(job["problems"]))
+
+    def _job_finish(self, jid, state="done", **fields):
+        snapshot = self._job_progress(jid, state=state, **fields)
+        if snapshot is None:
+            return None
+        with self._jobs_lock:
+            self._job_last = snapshot
+            done = self._jobs_done.pop(jid, None)
+        if done is not None:
+            done.set()
+        return snapshot
+
+    def _job_wait(self, jid, timeout=10.0):
+        with self._jobs_lock:
+            done = self._jobs_done.get(jid)
+        if done is None:
+            return self._job_snapshot(jid)
+        done.wait(timeout)
+        return self._job_snapshot(jid)
+
+    def _job_snapshot(self, jid):
+        with self._jobs_lock:
+            job = self._jobs.get(jid)
+            return dict(job, problems=list(job["problems"])) if job else {}
+
+    def _check_added(self, jid, tid, items):
+        problems = []
+        failed = 0
+        step = tunnel.PROXY_CHECK_WORKERS
+        for start in range(0, len(items), step):
+            batch = items[start:start + step]
+            alive, error = set(), ""
+            try:
+                alive = {proxy.fingerprint(p)
+                         for p in self.tunnel.check_proxies([p for _, p in batch])}
+            except (OSError, ValueError) as exc:
+                error = str(exc)
+            with tunnels.LOCK:
+                for record, profile in batch:
+                    if not error and proxy.fingerprint(profile) in alive:
+                        continue
+                    failed += 1
+                    reason = error or "прокси не прошёл HTTPS-проверку"
+                    result = self._remove_profile(record["id"], tunnel=tid, drop_tunnel=True)
+                    if not result["ok"]:
+                        reason = f"{reason}; профиль остался: {result['error']}"
+                    problems.append({"name": record["name"], "reason": reason})
+            self._job_progress(jid, done=min(start + step, len(items)),
+                               failed=failed, problems=list(problems), error=error)
+        self._job_finish(jid, state="done", added=len(items) - failed, failed=failed,
+                         problems=problems)
+
     def _add_link(self, link, tunnel="", place=""):
         try:
             parsed = subscriptions.parse_import(link)
-            candidates = [p for p in parsed["profiles"] if p["proto"] in forwardproxy.PROTOS]
-            working = self.tunnel.check_proxies(candidates) if candidates else []
-            accepted = {proxy.fingerprint(p) for p in working}
-            failed = len(candidates) - len(working)
-            profiles = [p for p in parsed["profiles"]
-                        if p["proto"] not in forwardproxy.PROTOS
-                        or proxy.fingerprint(p) in accepted]
-            if not profiles:
-                return {"ok": False, "error": f"Ни один прокси не прошёл HTTPS-проверку ({failed}). Профили не добавлены."}
             with tunnels.LOCK:
-                profiles, added = subscriptions.store_profiles(profiles)
+                known = {p["fingerprint"] for p in subscriptions.load()["profiles"]}
+                profiles, added = subscriptions.store_profiles(parsed["profiles"])
+                if not profiles:
+                    raise ValueError("ни одной разборной ссылки в тексте нет")
                 profile = profiles[0]
                 data = tunnels.load()
                 t = self._attach_profile(data, profile, tunnel, place)
                 if not t["active"]:
                     t["enabled"] = False
                 t["active"] = t["active"] or profile["id"]
-                data = tunnels.save(data)
+                tunnels.save(data)
+                items = [(r, p) for r, p in zip(profiles, parsed["profiles"])
+                         if p["proto"] in forwardproxy.PROTOS
+                         and proxy.fingerprint(p) not in known]
+                tid, name = t["id"], t["name"]
         except (OSError, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
+        job = (self._job_start("add", len(items),
+                               lambda jid: self._check_added(jid, tid, items))
+               if items else "")
         self.log(f"→ добавлены ссылки VPN: {added} новых, "
-                 f"{len(profiles)} в наборе туннеля «{t['name']}»")
-        return {"ok": True, "profile": profile["id"], "tunnel": t["id"],
+                 f"{len(profiles)} в наборе туннеля «{name}»"
+                 + (", проверка прокси в фоне" if job else ""))
+        return {"ok": True, "profile": profile["id"], "tunnel": tid,
                 "place": place or "to", "added": added, "profiles": len(profiles),
-                "failed": failed, "invalid": parsed["invalid"], "duplicates": parsed["duplicates"]}
+                "job": job, "checking": bool(job),
+                "invalid": parsed["invalid"], "duplicates": parsed["duplicates"]}
 
     def _add_subscription(self, url, name="", allow_private=False, kind="auto"):
         try:
