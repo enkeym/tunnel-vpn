@@ -70,6 +70,18 @@ def test_json_файл_идёт_импортом_ссылок(monkeypatch, tmp_p
     assert "failed" not in [fn for fn, _ in shown]
 
 
+def test_список_ссылок_из_файла_идёт_импортом(monkeypatch, tmp_path):
+    txt = tmp_path / "nodes.txt"
+    txt.write_text(VLESS + "\n", encoding="utf-8")
+    api, admin, shown = _api(monkeypatch, [{"ok": True}])
+    monkeypatch.setattr(api, "_pick", lambda _types: str(txt))
+
+    api.send("add_config", {})
+
+    assert admin == [("add-link", {"link": VLESS + "\n", "tunnel": "", "place": ""})]
+    assert "failed" not in [fn for fn, _ in shown]
+
+
 def test_добавление_конфига_и_ссылок_не_применяет_vpn(monkeypatch):
     api, admin, _ = _api(monkeypatch, [
         {"ok": True, "place": "to"},

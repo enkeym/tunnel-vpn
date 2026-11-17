@@ -1568,29 +1568,6 @@ body.kbd :focus-visible {
   font-size: var(--fs-s);
   white-space: nowrap;
 }
-.subs-input {
-  width: 100%;
-  height: var(--hit);
-  padding: 0 var(--sp-3);
-  border-radius: var(--r-m);
-  background: var(--field);
-  color: var(--text);
-  border: 1px solid var(--line-strong);
-  font: var(--fs-m)/1.6 var(--sans);
-  transition:
-    border-color var(--t-fast) var(--ease),
-    box-shadow var(--t-fast) var(--ease);
-}
-.subs-input.mono {
-  font-family: var(--mono);
-}
-.subs-input:focus {
-  border-color: color-mix(in srgb, var(--white) 32%, transparent);
-}
-.subs-input.bad {
-  border-color: var(--err);
-  box-shadow: var(--glow) color-mix(in srgb, var(--err) 30%, transparent);
-}
 
 /* ------------------------------------------------------------------ журнал */
 #pane-log {

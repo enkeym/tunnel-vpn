@@ -19,7 +19,7 @@ import tempfile
 import threading
 import time
 
-from . import forwardproxy, instance, ipc, paths, portable, proxy, routelist, settings, tunnels, update
+from . import forwardproxy, instance, ipc, paths, portable, proxy, routelist, settings, subscriptions, tunnels, update
 
 POLL_EVERY = 2.0
 # Ход скачивания обновления — не чаще: куски по 256 КБ идут десятками в
@@ -79,7 +79,7 @@ WINDOW_LOG_MAX = 1 << 20
 # без точек, а кириллица на части сборок под \w не подходит. Из-за «site.env
 # (*.env)» и «Все файлы (*.*)» диалог падал с ValueError ещё до открытия —
 # держим строки латиницей и без точек в описании.
-_FILE_TYPES = ("Config files (*.conf;*.json)", "All files (*.*)")
+_FILE_TYPES = ("Config files (*.conf;*.json;*.txt)", "All files (*.*)")
 # Списки правил туннеля: JSON экспорта или текст списка.
 _RULES_TYPES = ("Rules (*.json;*.txt)", "All files (*.*)")
 _LINK_TYPES = ("Link files (*.txt)", "All files (*.*)")
@@ -905,8 +905,14 @@ class Api:
     def _add_file(self, path, tunnel="", place=""):
         with open(path, encoding="utf-8", errors="replace") as fh:
             text = fh.read()
-        if path.lower().endswith(".json"):
-            # sing-box JSON: outbounds профилей, как у «Вставить ссылки…».
+        try:
+            subscriptions.parse_import(text)
+            imports = True
+        except ValueError:
+            imports = text.lstrip().startswith("{")
+        if imports:
+            # Списки ссылок и sing-box JSON — как у «Вставить ссылки…»;
+            # разбор по содержимому, а не по расширению.
             reply = self._admin_call("add-link", link=text, tunnel=tunnel,
                                      place=place)
             if not reply.get("ok"):
