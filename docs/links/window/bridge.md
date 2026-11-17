@@ -81,6 +81,8 @@ paths:
   `refresh(full=True)`. Окно само `stop`/`start` не шлёт — иначе интернет падал бы на каждую правку.
   С `ask: true`: «всё» служба не делает, а отвечает `applied: "ask"` → `askFull()` (лист поверх любого
   открытого, в т. ч. «Туннелирования») → `send('apply_full')` + `PENDING` restart, как у «Перезапустить».
+  `remove-config`/`remove-profile` отвечают `main`; удаление не из активного основного окно шлёт с
+  `ask: false` — reconnect без вопроса, `askFull` и `PENDING` restart тогда не бывает.
   `roleOf(t, m)` в `lib/tunnelvpn/ui/js/cards.js` — «остальное → «основной»/напрямую» по тем же
   `main`/`direct` из `lib/tunnelvpn/ui/js/model.js:model`, что заголовок.
 - Импорт ссылок: `lib/tunnelvpn/service.py:_preview` возвращает `profiles, invalid, duplicates`,

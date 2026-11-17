@@ -57,6 +57,19 @@ def test_брошенный_conf_идёт_службе_как_добавлени
     assert "failed" not in [fn for fn, _ in shown]
 
 
+def test_json_файл_идёт_импортом_ссылок(monkeypatch, tmp_path):
+    cfg = tmp_path / "singbox.json"
+    cfg.write_text('{"outbounds": []}', encoding="utf-8")
+    api, admin, shown = _api(monkeypatch, [{"ok": True}])
+    monkeypatch.setattr(api, "_pick", lambda _types: str(cfg))
+
+    api.send("add_config", {})
+
+    assert admin == [("add-link", {"link": '{"outbounds": []}',
+                                   "tunnel": "", "place": ""})]
+    assert "failed" not in [fn for fn, _ in shown]
+
+
 def test_добавление_конфига_и_ссылок_не_применяет_vpn(monkeypatch):
     api, admin, _ = _api(monkeypatch, [
         {"ok": True, "place": "to"},
@@ -298,7 +311,7 @@ def test_вкладка_выключенного_не_применяется_к_
                                         "include": [], "exclude": [],
                                         "include_apps": [], "exclude_apps": []}])
     applied = []
-    monkeypatch.setattr(api, "_apply", lambda: applied.append(True))
+    monkeypatch.setattr(api, "_apply", lambda *a, **k: applied.append(True))
 
     got = api.send("set_mode", {"tunnel": "t2", "mode": "all", "keep_enabled": True})
 
@@ -311,7 +324,7 @@ def test_списки_выключенного_только_запоминают
                                              "include": ["a.ru"], "exclude": [],
                                              "include_apps": [], "exclude_apps": []}])
     applied = []
-    monkeypatch.setattr(api, "_apply", lambda *a: applied.append(True))
+    monkeypatch.setattr(api, "_apply", lambda *a, **k: applied.append(True))
 
     api.send("save_rules", {"tunnel": "t3", "include": "a.ru"})
 
@@ -509,7 +522,7 @@ VLESS = ("vless://00000000-0000-4000-8000-000000000001@example.com:443"
 
 def test_вставленная_ссылка_уходит_службе_и_закрывает_лист(monkeypatch):
     api, admin, shown = _api(monkeypatch, [{"ok": True, "tunnel": "v"}])
-    monkeypatch.setattr(api, "_apply", lambda: shown.append(("apply", None)))
+    monkeypatch.setattr(api, "_apply", lambda *a, **k: shown.append(("apply", None)))
 
     got = api.send("add_link", {"link": VLESS, "tunnel": "", "place": ""})
 
@@ -523,7 +536,7 @@ def test_вставленная_ссылка_уходит_службе_и_зак
 def test_отказ_ссылки_возвращается_и_лист_остаётся(monkeypatch):
     api, _, shown = _api(monkeypatch, [{"ok": False, "error": "Reality не поддерживается"}])
     applied = []
-    monkeypatch.setattr(api, "_apply", lambda: applied.append(True))
+    monkeypatch.setattr(api, "_apply", lambda *a, **k: applied.append(True))
 
     got = api.send("add_link", {"link": VLESS})
 
@@ -534,7 +547,7 @@ def test_отказ_ссылки_возвращается_и_лист_остаё
 
 def test_подписка_уходит_службе_с_флагом_частных_адресов(monkeypatch):
     api, admin, shown = _api(monkeypatch, [{"ok": True, "added": 2}])
-    monkeypatch.setattr(api, "_apply", lambda: shown.append(("apply", None)))
+    monkeypatch.setattr(api, "_apply", lambda *a, **k: shown.append(("apply", None)))
 
     got = api.send("add_subscription", {"url": "https://example.com/sub",
                                         "name": "Токио", "allow_private": True})
@@ -581,7 +594,7 @@ def test_правка_vless_профиля_отклоняется_подсказ
 def test_профиль_и_флаг_источника_без_лишнего_перезапуска(monkeypatch):
     api, admin, _ = _api(monkeypatch, [{"ok": True}, {"ok": True}])
     applied, refreshed = [], []
-    monkeypatch.setattr(api, "_apply", lambda: applied.append(True))
+    monkeypatch.setattr(api, "_apply", lambda *a, **k: applied.append(True))
     monkeypatch.setattr(api, "refresh", lambda full=False: refreshed.append(full))
 
     assert api.send("remove_profile", {"id": "p1"}) == {"ok": True}
@@ -595,7 +608,7 @@ def test_профиль_и_флаг_источника_без_лишнего_п�
 def test_обновление_подписки_применяется(monkeypatch):
     api, admin, _ = _api(monkeypatch, [{"ok": True, "added": 1}])
     applied = []
-    monkeypatch.setattr(api, "_apply", lambda: applied.append(True))
+    monkeypatch.setattr(api, "_apply", lambda *a, **k: applied.append(True))
 
     got = api.send("update_subscription", {"id": "s1"})
 
@@ -618,7 +631,7 @@ def test_предпросмотр_ссылки_уходит_службе_без_
              "host": "example.com", "port": 443, "profiles": 1}
     api, admin, shown = _api(monkeypatch, [reply])
     applied = []
-    monkeypatch.setattr(api, "_apply", lambda: applied.append(True))
+    monkeypatch.setattr(api, "_apply", lambda *a, **k: applied.append(True))
 
     assert api.send("preview", {"link": VLESS}) == reply
 
@@ -640,3 +653,47 @@ def test_предпросмотр_подписки_передаёт_имя_и_ф
                                   "name": "Моя", "allow_private": True,
                                   "kind": "auto"})]
     assert shown == []
+
+
+def _ipc_calls(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ipc, "call", lambda op, **kw: calls.append((op, kw)) or
+                        {"ok": True, "status": {}})
+    return calls
+
+
+def test_удаление_не_из_активного_основного_применяется_без_вопроса(monkeypatch):
+    api, _, shown = _api(monkeypatch, [{"ok": True, "main": False}])
+    calls = _ipc_calls(monkeypatch)
+
+    api.send("del_config", {"tunnel": "work", "name": "office"})
+
+    assert ("apply", {"ask": False}) in calls
+    assert "askFull" not in [fn for fn, _ in shown]
+
+
+def test_удаление_из_активного_основного_спрашивает_как_раньше(monkeypatch):
+    api, _, shown = _api(monkeypatch, [{"ok": True, "main": True}])
+    calls = []
+
+    def call(op, **kw):
+        calls.append((op, kw))
+        return ({"ok": True, "applied": "ask"} if kw.get("ask")
+                else {"ok": True, "status": {}})
+    monkeypatch.setattr(ipc, "call", call)
+
+    api.send("del_config", {"tunnel": "home", "name": "nl-1"})
+
+    assert ("apply", {"ask": True}) in calls
+    assert ("askFull", None) in shown
+
+
+def test_удаление_профиля_не_из_активного_основного_без_вопроса(monkeypatch):
+    api, admin, _ = _api(monkeypatch, [{"ok": True, "id": "p2", "main": False}])
+    calls = _ipc_calls(monkeypatch)
+
+    api.send("remove_profile", {"id": "p2", "tunnel": "t1"})
+
+    assert admin == [("remove-profile", {"id": "p2", "tunnel": "t1",
+                                         "drop_tunnel": False})]
+    assert ("apply", {"ask": False}) in calls

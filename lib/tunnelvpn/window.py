@@ -79,7 +79,7 @@ WINDOW_LOG_MAX = 1 << 20
 # без точек, а кириллица на части сборок под \w не подходит. Из-за «site.env
 # (*.env)» и «Все файлы (*.*)» диалог падал с ValueError ещё до открытия —
 # держим строки латиницей и без точек в описании.
-_FILE_TYPES = ("Config files (*.conf)", "All files (*.*)")
+_FILE_TYPES = ("Config files (*.conf;*.json)", "All files (*.*)")
 # Списки правил туннеля: JSON экспорта или текст списка.
 _RULES_TYPES = ("Rules (*.json;*.txt)", "All files (*.*)")
 _LINK_TYPES = ("Link files (*.txt)", "All files (*.*)")
@@ -322,11 +322,12 @@ class Api:
             finally:
                 self.refresh(full=True)
         elif name == "del_config":
-            self._guard(self._admin_call("remove-config", tunnel=arg["tunnel"],
-                                         name=arg["name"],
-                                         drop_tunnel=bool(arg.get("drop_tunnel"))))
+            reply = self._admin_call("remove-config", tunnel=arg["tunnel"],
+                                     name=arg["name"],
+                                     drop_tunnel=bool(arg.get("drop_tunnel")))
+            self._guard(reply)
             self.js("closeSheet")
-            self._apply()
+            self._apply(ask=reply.get("main", True))
         elif name == "del_tunnel":
             self._guard(self._admin_call("remove-tunnel", tunnel=arg))
             self._apply()
@@ -506,16 +507,18 @@ class Api:
         if not reply.get("ok"):
             raise RuntimeError(reply.get("error") or "служба отказала")
 
-    def _apply(self, saved=None):
+    def _apply(self, saved=None, ask=True):
         """Правка туннелей — на живой VPN через службу (решение #14): она
         перезапускает только процесс туннеля со сменившимся конфигом. Сменилось
         то, что держит основной процесс, — служба не перезапускает сама (ask),
         а страница спрашивает человека (askFull): сеть упадёт для всех приложений.
+        ask=False — правка принимается молча, полный reconnect сразу: затронуто
+        не активное основное, спрашивать не о ком.
         Выключенный не включает. saved(ответ) — что сказать странице до
         askFull: «Сохранено» листа правил — только когда правка уже на VPN или отложена."""
         try:
             try:
-                reply = ipc.call("apply", ask=True)
+                reply = ipc.call("apply", ask=ask)
             except ipc.NotRunning:
                 reply = {"ok": True, "applied": "off"}
             if saved is not None:
@@ -902,6 +905,15 @@ class Api:
     def _add_file(self, path, tunnel="", place=""):
         with open(path, encoding="utf-8", errors="replace") as fh:
             text = fh.read()
+        if path.lower().endswith(".json"):
+            # sing-box JSON: outbounds профилей, как у «Вставить ссылки…».
+            reply = self._admin_call("add-link", link=text, tunnel=tunnel,
+                                     place=place)
+            if not reply.get("ok"):
+                self.js("failed", reply.get("error") or "не удалось добавить")
+                return
+            self.refresh(full=True)
+            return
         # Имя чистит служба (tunnels.safe_name).
         name = os.path.splitext(os.path.basename(path))[0]
         self._send_config(name, text, tunnel, place)
@@ -1019,7 +1031,8 @@ class Api:
             return reply
         try:
             if apply:
-                self._apply()
+                self._apply(ask=reply.get("main", True)
+                            if op == "remove-profile" else True)
             else:
                 self.refresh(full=True)
         except Exception as exc:                       # noqa: BLE001

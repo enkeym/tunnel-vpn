@@ -2300,7 +2300,19 @@ class Core:
         return {"ok": True, "id": sid}
 
     def _remove_profile(self, pid, tunnel="", drop_tunnel=False):
+        """Удаляет профиль; main — как у _remove_config: активный основной по
+        нему судит окно, спрашивать ли человека о полном переподключении."""
         try:
+            data = tunnels.load()
+            main = tunnels.main_tunnel(data)
+            touch = False
+            if (main is not None and main.get("enabled", True)
+                    and main.get("proto", "wg") == "vless"):
+                chosen = main.get("active") or ""
+                if not chosen:
+                    only = subscriptions.list_profiles()
+                    chosen = only[0]["id"] if len(only) == 1 else ""
+                touch = bool(chosen) and chosen == pid
             subscriptions.remove_profile(pid)
             self._drop_profiles()
             if drop_tunnel and tunnel and not subscriptions.list_profiles():
@@ -2312,7 +2324,7 @@ class Core:
         except (OSError, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
         self.log(f"→ удалён профиль {pid}")
-        return {"ok": True, "id": pid}
+        return {"ok": True, "id": pid, "main": touch}
 
     def _set_allow_private(self, sid, on):
         try:
@@ -2345,7 +2357,9 @@ class Core:
 
     def _remove_config(self, name, kind="", tunnel="", drop_tunnel=False):
         """Удаляет конфиг; drop_tunnel — и сам туннель, если конфигов в нём
-        не осталось. Без него пустой туннель хранит правила до нового конфига."""
+        не осталось. Без него пустой туннель хранит правила до нового конфига.
+        main в ответе — затронут активный основной: его правку окно применяет
+        с вопросом, остальные — молча, секунды простоя допустимы."""
         try:
             data, t = self._load_target(tunnel, kind)
             if t.get("proto") == "vless":
@@ -2354,6 +2368,8 @@ class Core:
             os.remove(tunnels.conf_path(t["id"], name))
         except (OSError, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
+        main = tunnels.main_tunnel(data)
+        touch = main is not None and main.get("enabled", True) and t is main
         self.log(f"→ из туннеля «{t['name']}» удалён конфиг {name}.conf")
         if drop_tunnel and not tunnels.list_confs(t["id"]):
             data["tunnels"].remove(t)
@@ -2375,7 +2391,7 @@ class Core:
                 data = tunnels.save(data)
             except (OSError, ValueError) as exc:
                 return {"ok": False, "error": f"конфиг удалён, но выбор не записать: {exc}"}
-        return {"ok": True}
+        return {"ok": True, "main": touch}
 
     def _move_config(self, tunnel, name, to, drop_tunnel=False):
         """Полный конфиг (0.0.0.0/0) — между основным туннелем и своим «по списку».

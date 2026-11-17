@@ -153,6 +153,22 @@ def test_удаление_последнего_vless_профиля_может_�
     assert tunnels.load()["tunnels"] == []
 
 
+def test_удаление_профиля_помечает_затронут_ли_активный_основной():
+    core = _core()
+    first = core.handle("add-link", {"link": _link()}, True)
+    core.handle("add-link", {"link": _link(uuid=UUID2, name="Second",
+                                            path="/b")}, True)
+    data = tunnels.load()
+    data["tunnels"][0]["enabled"] = True
+    tunnels.save(data)
+    active = _tunnel(first)["active"]
+    spare = next(p["id"] for p in subscriptions.list_profiles()
+                 if p["id"] != active)
+
+    assert core.handle("remove-profile", {"id": spare}, True)["main"] is False
+    assert core.handle("remove-profile", {"id": active}, True)["main"] is True
+
+
 def test_place_new_заводит_второй_туннель_по_списку():
     core = _core()
     main = core.handle("add-link", {"link": _link()}, True)

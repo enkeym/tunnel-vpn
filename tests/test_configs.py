@@ -268,6 +268,30 @@ def test_удаление_несуществующего_ничего_не_ме�
     assert _active("home") == "nl-1"
 
 
+def test_удаление_из_основного_помечает_что_нужен_вопрос(core):
+    _put("home", "nl-1.conf")
+    _put("home", "nl-2.conf")
+
+    r = core._remove_config("nl-2", tunnel="home")
+
+    assert r["ok"] and r["main"]
+
+
+def test_удаление_не_из_активного_основного_помечается_без_вопроса(core):
+    _put("work", "corp.conf")
+    _put("work", "corp-2.conf")
+    _put("home", "nl-1.conf")
+
+    assert not core._remove_config("corp-2", tunnel="work")["main"]
+
+    data = tunnels.load()
+    tunnels.find(data, "home")["enabled"] = False
+    tunnels.save(data)
+    r = core._remove_config("nl-1", tunnel="home")
+
+    assert r["ok"] and not r["main"]
+
+
 def test_профиль_это_активный_конфиг_основного(core):
     _put("home", "nl-1.conf")
     _put("home", "nl-2.conf")
