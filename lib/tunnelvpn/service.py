@@ -47,14 +47,14 @@ LAST_CHECK_FILE = os.path.join(paths.STATE, "last-check.json")
 # Записей в одном списке правил через канал — тот же предел, что видит лист окна.
 MAX_RULES = routelist.MAX_RULES
 # Команды, что правят conf\ (load → изменить → save): идут целиком под tunnels.LOCK,
-# иначе параллельная правка из окна, трея или CLI затирала бы эту. apply, start и
-# stop сюда не входят: у них свой self.lock, а apply долгий — под замком файла ждали
-# бы и статус, и пробер.
+# иначе параллельная правка из окна, трея или CLI затирала бы эту. apply, start, stop
+# и команды, что качают сеть (add-link, add-subscription, update-subscription), сюда
+# не входят: у первых свой self.lock, а под замком файла ждали бы и статус, и пробер.
 CONF_OPS = frozenset({
     "set-profile", "set-active", "set-enabled", "add-config", "remove-config",
     "move-config", "add-tunnel", "set-tunnel", "remove-tunnel", "set-log-level",
-    "set-kill-switch", "add-subscription", "update-subscription",
-    "remove-subscription", "remove-profile", "set-allow-private"})
+    "set-kill-switch", "remove-subscription", "remove-profile",
+    "set-allow-private"})
 JOBS_KEPT = 20
 # Сколько кругов пробера (по FAST_EVERY) новая сеть должна продержаться,
 # прежде чем переподключаться: Wi-Fi при смене точки и пробуждении моргает,
@@ -2210,12 +2210,13 @@ class Core:
             profiles = subscriptions.list_profiles(sub["id"])
             tid = pid = ""
             if profiles:
-                data = tunnels.load()
-                t = self._attach_profile(data, profiles[0])
-                if not t["active"]:
-                    t["enabled"] = False
-                t["active"] = t["active"] or profiles[0]["id"]
-                tunnels.save(data)
+                with tunnels.LOCK:
+                    data = tunnels.load()
+                    t = self._attach_profile(data, profiles[0])
+                    if not t["active"]:
+                        t["enabled"] = False
+                    t["active"] = t["active"] or profiles[0]["id"]
+                    tunnels.save(data)
                 tid, pid = t["id"], profiles[0]["id"]
         except (OSError, ValueError) as exc:
             return {"ok": False, "error": str(exc)}

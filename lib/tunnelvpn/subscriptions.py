@@ -338,27 +338,28 @@ def add_profiles(text):
 
 
 def store_profiles(profiles):
-    data = load()
-    taken = {p["id"] for p in data["profiles"]}
-    known = {p["fingerprint"]: p for p in data["profiles"]}
-    records = []
-    added = 0
-    changed = False
-    for profile in profiles:
-        mark = proxy.fingerprint(profile)
-        record = known.get(mark)
-        if record is None:
-            record = _record(profile, {"manual": True}, taken)
-            data["profiles"].append(record)
-            known[mark] = record
-            added += 1
-            changed = True
-        elif record["missing"]:
-            record["missing"] = False
-            changed = True
-        records.append(record)
-    if changed:
-        save(data)
+    with LOCK:
+        data = load()
+        taken = {p["id"] for p in data["profiles"]}
+        known = {p["fingerprint"]: p for p in data["profiles"]}
+        records = []
+        added = 0
+        changed = False
+        for profile in profiles:
+            mark = proxy.fingerprint(profile)
+            record = known.get(mark)
+            if record is None:
+                record = _record(profile, {"manual": True}, taken)
+                data["profiles"].append(record)
+                known[mark] = record
+                added += 1
+                changed = True
+            elif record["missing"]:
+                record["missing"] = False
+                changed = True
+            records.append(record)
+        if changed:
+            save(data)
     return records, added
 
 
@@ -371,29 +372,30 @@ def _check_full_url(info):
 
 def add(url, name="", allow_private=False, kind="auto"):
     info, detected, profiles = fetch(url, allow_private, kind)
-    data = load()
-    source = url.strip()
-    key = _url_key(source)
-    if any(_url_key(item["url"]) == key for item in data["subscriptions"]):
-        raise ValueError("такая подписка уже добавлена")
-    taken = {s["id"] for s in data["subscriptions"]}
-    sid = _new_id("s_", taken)
-    profile_ids = {p["id"] for p in data["profiles"]}
-    known = {p["fingerprint"] for p in data["profiles"]}
-    for profile in profiles:
-        mark = proxy.fingerprint(profile)
-        if mark in known:
-            continue
-        known.add(mark)
-        data["profiles"].append(
-            _record(profile, {"subscription": sid}, profile_ids))
-    sub = {"id": sid, "name": _name(name, "Happ" if happ.is_link(source) else info["host"]),
-           "url": source,
-           "kind": detected, "allow_private": allow_private,
-           "updated_at": _now(), "last_error": ""}
-    data["subscriptions"].append(sub)
-    save(data)
-    return sub
+    with LOCK:
+        data = load()
+        source = url.strip()
+        key = _url_key(source)
+        if any(_url_key(item["url"]) == key for item in data["subscriptions"]):
+            raise ValueError("такая подписка уже добавлена")
+        taken = {s["id"] for s in data["subscriptions"]}
+        sid = _new_id("s_", taken)
+        profile_ids = {p["id"] for p in data["profiles"]}
+        known = {p["fingerprint"] for p in data["profiles"]}
+        for profile in profiles:
+            mark = proxy.fingerprint(profile)
+            if mark in known:
+                continue
+            known.add(mark)
+            data["profiles"].append(
+                _record(profile, {"subscription": sid}, profile_ids))
+        sub = {"id": sid, "name": _name(name, "Happ" if happ.is_link(source) else info["host"]),
+               "url": source,
+               "kind": detected, "allow_private": allow_private,
+               "updated_at": _now(), "last_error": ""}
+        data["subscriptions"].append(sub)
+        save(data)
+        return sub
 
 
 def fetch(url, allow_private=False, kind="auto"):
@@ -438,116 +440,128 @@ def refresh(sub_id, keep=()):
     try:
         _, _, profiles = fetch(sub["url"], sub["allow_private"], sub["kind"])
     except ValueError as exc:
-        sub["last_error"] = str(exc)
-        save(data)
+        with LOCK:
+            data = load()
+            sub = find(data, sub_id)
+            if sub is not None:
+                sub["last_error"] = str(exc)
+                save(data)
         raise
-    sub["last_error"] = ""
-    sub["updated_at"] = _now()
+    with LOCK:
+        data = load()
+        sub = find(data, sub_id)
+        if sub is None:
+            raise ValueError(f"нет подписки {sub_id}")
+        sub["last_error"] = ""
+        sub["updated_at"] = _now()
 
-    existing = [p for p in data["profiles"]
-                if p["source"] == {"subscription": sub_id}]
-    by_mark = {p["fingerprint"]: p for p in existing}
-    by_alias = {}
-    for record in existing:
-        alias = _alias_mark(record)
-        if alias is not None:
-            by_alias.setdefault(alias, []).append(record)
-    other_marks = {p["fingerprint"] for p in data["profiles"]
-                   if p["source"] != {"subscription": sub_id}}
-    taken = {p["id"] for p in data["profiles"]}
-    ordered = []
-    seen = set()
-    live_aliases = set()
-    used = set()
-    added = updated = 0
-    for profile in profiles:
-        mark = proxy.fingerprint(profile)
-        if mark in seen or mark in other_marks:
-            continue
-        seen.add(mark)
-        alias = _alias_mark(profile)
-        if alias is not None:
-            live_aliases.add(alias)
-        same = []
-        record = None
-        if alias is not None:
-            same = [p for p in by_alias.get(alias, [])
-                    if p["id"] not in used]
-            record = next((p for p in same if p["id"] in keep), None)
-        if record is None:
-            record = by_mark.get(mark)
-            if record is not None and record["id"] in used:
-                record = None
-        if record is None and same:
-            record = (next((p for p in same if not p["missing"]), None)
-                      or same[0])
-        if record is None:
-            record = _record(profile, {"subscription": sub_id}, taken)
-            added += 1
-        else:
-            record["fingerprint"] = mark
-            record["name"] = profile["name"]
-            record[profile["proto"]] = proxy.fields(profile)
-            record["missing"] = False
-            updated += 1
-        used.add(record["id"])
-        ordered.append(record)
+        existing = [p for p in data["profiles"]
+                    if p["source"] == {"subscription": sub_id}]
+        by_mark = {p["fingerprint"]: p for p in existing}
+        by_alias = {}
+        for record in existing:
+            alias = _alias_mark(record)
+            if alias is not None:
+                by_alias.setdefault(alias, []).append(record)
+        other_marks = {p["fingerprint"] for p in data["profiles"]
+                       if p["source"] != {"subscription": sub_id}}
+        taken = {p["id"] for p in data["profiles"]}
+        ordered = []
+        seen = set()
+        live_aliases = set()
+        used = set()
+        added = updated = 0
+        for profile in profiles:
+            mark = proxy.fingerprint(profile)
+            if mark in seen or mark in other_marks:
+                continue
+            seen.add(mark)
+            alias = _alias_mark(profile)
+            if alias is not None:
+                live_aliases.add(alias)
+            same = []
+            record = None
+            if alias is not None:
+                same = [p for p in by_alias.get(alias, [])
+                        if p["id"] not in used]
+                record = next((p for p in same if p["id"] in keep), None)
+            if record is None:
+                record = by_mark.get(mark)
+                if record is not None and record["id"] in used:
+                    record = None
+            if record is None and same:
+                record = (next((p for p in same if not p["missing"]), None)
+                          or same[0])
+            if record is None:
+                record = _record(profile, {"subscription": sub_id}, taken)
+                added += 1
+            else:
+                record["fingerprint"] = mark
+                record["name"] = profile["name"]
+                record[profile["proto"]] = proxy.fields(profile)
+                record["missing"] = False
+                updated += 1
+            used.add(record["id"])
+            ordered.append(record)
 
-    missing = 0
-    for record in existing:
-        if record["id"] in used:
-            continue
-        alias = _alias_mark(record)
-        if alias in live_aliases and record["id"] not in keep:
+        missing = 0
+        for record in existing:
+            if record["id"] in used:
+                continue
+            alias = _alias_mark(record)
+            if alias in live_aliases and record["id"] not in keep:
+                missing += 1
+                continue
+            record["missing"] = True
             missing += 1
-            continue
-        record["missing"] = True
-        missing += 1
-        ordered.append(record)
+            ordered.append(record)
 
-    others = [p for p in data["profiles"]
-              if p["source"] != {"subscription": sub_id}]
-    data["profiles"] = others + ordered
-    save(data)
+        others = [p for p in data["profiles"]
+                  if p["source"] != {"subscription": sub_id}]
+        data["profiles"] = others + ordered
+        save(data)
     return {"id": sub_id, "added": added, "updated": updated,
             "missing": missing, "total": len(ordered)}
 
 
 def delete(sub_id):
     sub_id = _check_sub_id(sub_id)
-    data = load()
-    if find(data, sub_id) is None:
-        return False
-    data["subscriptions"] = [s for s in data["subscriptions"]
-                             if s["id"] != sub_id]
-    data["profiles"] = [p for p in data["profiles"]
-                        if p["source"] != {"subscription": sub_id}]
-    save(data)
-    return True
+    with LOCK:
+        data = load()
+        if find(data, sub_id) is None:
+            return False
+        data["subscriptions"] = [s for s in data["subscriptions"]
+                                 if s["id"] != sub_id]
+        data["profiles"] = [p for p in data["profiles"]
+                            if p["source"] != {"subscription": sub_id}]
+        save(data)
+        return True
 
 
 def remove_profile(pid):
     pid = check_profile_id(pid)
-    data = load()
-    record = find_profile(data, pid)
-    if record is None:
-        raise ValueError(f"нет профиля {pid}")
-    data["profiles"].remove(record)
-    save(data)
-    return True
+    with LOCK:
+        data = load()
+        record = find_profile(data, pid)
+        if record is None:
+            raise ValueError(f"нет профиля {pid}")
+        data["profiles"].remove(record)
+        save(data)
+        return True
 
 
 def set_allow_private(sub_id, value):
     sub_id = _check_sub_id(sub_id)
     if not isinstance(value, bool):
         raise ValueError("allow_private должен быть true или false")
-    data = load()
-    sub = find(data, sub_id)
-    if sub is None:
-        raise ValueError(f"нет подписки {sub_id}")
-    sub["allow_private"] = value
-    save(data)
-    return sub
+    with LOCK:
+        data = load()
+        sub = find(data, sub_id)
+        if sub is None:
+            raise ValueError(f"нет подписки {sub_id}")
+        sub["allow_private"] = value
+        save(data)
+        return sub
 
 
 def list_subscriptions():

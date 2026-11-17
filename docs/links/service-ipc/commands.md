@@ -22,6 +22,11 @@ paths:
   выполняет под ним в `lib/tunnelvpn/service.py:_add_link`. Если держать замок во время проверки,
   `lib/tunnelvpn/service.py:_status` не отвечает, и `lib/tunnelvpn/tray.py:_maybe_heal`
   перезапускает службу с обрывом VPN.
+- `add-subscription` и `update-subscription` в `lib/tunnelvpn/service.py:CONF_OPS` не входят: качают
+  подписку (`lib/tunnelvpn/subscriptions.py:fetch`) без замков вовсе, а слияние и запись
+  `subscriptions.json` держат под `lib/tunnelvpn/subscriptions.py:LOCK` (сеть под ним — ждал бы
+  `add-link`); туннель `_add_subscription` правит точечно под `tunnels.LOCK`. Порядок замков один:
+  `tunnels.LOCK` → `subscriptions.LOCK`, обратного в `lib/tunnelvpn/subscriptions.py` нет.
 - Туннель в payload — ключ `tunnel` (id или имя), запасной — `kind` (`corp`/`personal`) у `add-config`,
   `remove-config`, `read-config`; `set-active` (USER_OPS) ↔ `lib/tunnelvpn/cli.py:main` (`use`).
 - `howto` (READ_OPS) ↔ `lib/tunnelvpn/window.py:_howto`: единственная команда, где ответ зависит от `is_admin`
