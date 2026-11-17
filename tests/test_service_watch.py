@@ -873,10 +873,11 @@ def test_правка_конфигов_ставит_круг_сторожа_на
 
 
 HOME_T = {"id": "home", "name": "Личный", "active": "nl-1"}
+WORK_T = {"id": "work", "name": "Работа", "active": "corp-1"}
 
 
-def _spare_confs(monkeypatch, core, answers, during=None):
-    """Запасные конфиги основного в порядке answers {имя: итог проверки}.
+def _spare_confs(monkeypatch, core, answers, during=None, t=HOME_T):
+    """Запасные конфиги туннеля t в порядке answers {имя: итог проверки}.
     (проверенные (имя, alone), сделанные активными (туннель, имя)); during — что
     случается, пока идёт проверка."""
     tried, made = [], []
@@ -887,7 +888,7 @@ def _spare_confs(monkeypatch, core, answers, during=None):
             during()
         return answers[name], ""
 
-    monkeypatch.setattr(core, "_spares", lambda tid: (HOME_T, list(answers)))
+    monkeypatch.setattr(core, "_spares", lambda tid: (t, list(answers)))
     monkeypatch.setattr(core, "_run_test", run_test)
     monkeypatch.setattr(core, "_conf_stamp", lambda tid, name, proto="wg": None)
     monkeypatch.setattr(core, "_set_active",
@@ -922,7 +923,7 @@ def test_основной_не_ожил_после_перезапуска_бер
     assert core.prober.snapshot()["out"] == HOME_VIA
     assert core.tunnel.restarts == ["home"]
     assert _said(core, "запасной nl-3.conf отвечает")
-    assert core._main_kicked is False
+    assert "home" not in core._kicked
 
 
 def test_запасные_не_отвечают_выход_остаётся_в_block(monkeypatch):
@@ -941,6 +942,46 @@ def test_запасные_не_отвечают_выход_остаётся_в_b
     core._back_at = 0.0                          # круг запасных — не чаще DEAD_GAP
     _rounds(core, 1, state)
     assert len(tried) == 2
+
+
+def test_туннель_по_списку_после_перезапуска_берёт_ответивший_запасной(monkeypatch, tmp_path):
+    core = _core(monkeypatch)
+    log = _side_log(core, tmp_path, "work")
+    asked = _corp_says(monkeypatch, core, "")
+    tried, made = _spare_confs(monkeypatch, core, {"corp-2": "up"}, t=WORK_T)
+    seen = _reload(monkeypatch, core, [(core.tunnel.work, "")])
+    _append(log, *_corp_dead())
+
+    state = _rounds(core, 1)
+    assert core.tunnel.restarts == ["work"] and tried == []
+
+    _append(log, *_corp_dead())
+    _rounds(core, 1, state)
+
+    assert tried == [("corp-2", True)] and made == [("work", "corp-2")]
+    assert len(seen) == 1 and seen[0]["locked"]
+    assert core.tunnel.outs == [] and core.tunnel.restarts == ["work"]
+    assert _said(core, "запасной corp-2.conf отвечает")
+    assert "work" not in core._kicked and "work" not in core._fallback_at
+
+
+def test_запасные_туннеля_по_списку_не_отвечают_выход_не_трогают(monkeypatch, tmp_path):
+    core = _core(monkeypatch)
+    log = _side_log(core, tmp_path, "work")
+    _corp_says(monkeypatch, core, "")
+    tried, made = _spare_confs(monkeypatch, core, {"corp-2": "error"}, t=WORK_T)
+    _append(log, *_corp_dead())
+
+    state = _rounds(core, 1)
+    assert core.tunnel.restarts == ["work"] and tried == []
+
+    _append(log, *_corp_dead())
+    _rounds(core, 1, state)
+
+    assert tried == [("corp-2", True)] and made == []
+    assert core.tunnel.outs == [] and core.tunnel.restarts == ["work"]
+    [line] = _said(core, "не отвечают")
+    assert "выход остаётся" not in line
 
 
 def test_не_поднявшийся_основной_тоже_уходит_на_запасной(monkeypatch):

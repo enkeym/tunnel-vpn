@@ -1680,6 +1680,19 @@ def test_ответ_отдельный_туннель(core):
     assert _files("work") == ["corp.conf"] and _files("t1") == ["wg-new.conf"]
 
 
+def test_полный_с_ответом_отдельный_кладётся_запасным_в_основной(core):
+    _put("home", "de.conf", FULL)
+    core._set_tunnel("home", {"exclude": "b.ru"})
+
+    r = core._add_config("nl", FULL, place="new")
+
+    assert r["ok"] and (r["tunnel"], r["place"]) == ("home", "all")
+    assert _ids() == ["work", "home"]
+    assert _files("home") == ["de.conf", "nl.conf"]
+    assert _active("home") == "de"
+    assert _tunnel("home")["exclude"] == ["b.ru"]
+
+
 def test_замена_без_туннеля_отказывает(core):
     r = core._add_config("wg-new", _wg("192.168.77.0/24"), place="replace")
 

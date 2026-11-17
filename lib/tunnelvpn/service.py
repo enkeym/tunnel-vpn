@@ -343,10 +343,10 @@ class Core:
     _dead_hits = ()
     # Когда в следующий раз проверять, везёт ли личный, пока выход напрямую.
     _back_at = 0.0
-    # Сторож перезапускал процесс основного, а выход через него так и не вернулся:
-    # тогда пробуем запасные конфиги (_fallback), круг — не раньше _fallback_at.
-    _main_kicked = False
-    _fallback_at = 0.0
+    # Сторож перезапускал процессы этих туннелей, а лучше не стало: тогда пробуем
+    # их запасные конфиги (_fallback), круг — не раньше _fallback_at этого туннеля.
+    _kicked = ()
+    _fallback_at = {}
     # Сколько ещё проверок основного после сна до переподключения (_wake_dead).
     _wake_left = 0
     # Шлюз пропадал при поднятом туннеле: его возврат в ту же сеть — как сон.
@@ -1086,7 +1086,7 @@ class Core:
             self._side_after, self._side_noted = {}, {}
             self._side_said = set()
             self._back_at = 0.0
-            self._main_kicked, self._fallback_at = False, 0.0
+            self._kicked, self._fallback_at = (), {}
             # Личный мог не подняться: проверка выхода на подъёме должна знать
             # это до первого круга сторожа, иначе увидит «утечку».
             self.prober.set(out=self.tunnel.out_now())
@@ -1251,8 +1251,8 @@ class Core:
         self._side_after.pop(side.tid, None)
         self._side_noted.pop(side.tid, None)
         self._side_said.discard(side.tid)
-        if side.tid == self.tunnel.main_id:
-            self._main_kicked = False
+        self._kicked = tuple(tid for tid in self._kicked if tid != side.tid)
+        self._fallback_at = {k: v for k, v in self._fallback_at.items() if k != side.tid}
 
     def _do_stop(self):
         """«Выключить» человека: идущее включение отменяет (_command)."""
@@ -1499,7 +1499,7 @@ class Core:
         DEAD_GAP. Пока основной не везёт, выход наружу напрямую: главное — чтобы
         интернет работал; с kill-switch — в block, мимо туннеля ничего (Tunnel.away).
         Везёт снова — выход обратно через него; не везёт и после перезапуска —
-        запасные конфиги основного (_fallback)."""
+        запасные конфиги туннеля (_fallback)."""
         # Круг идёт секундами. Выключили, включили или правили конфиги за это время —
         # его таймауты и замеры от прежних процессов: 9 октября так сторож после
         # перезапуска назвал свежий процесс «не запущенным» и увёл выход на 17 с напрямую.
@@ -1511,7 +1511,7 @@ class Core:
         if main and out in buildconfig.AWAY_TAGS and main.alive():
             out, carries = self._try_back(main, out)
         # Перезапуск не помог: вероятнее лежит сервер, а не процесс.
-        if (main and out in buildconfig.AWAY_TAGS and self._main_kicked
+        if (main and out in buildconfig.AWAY_TAGS and main.tid in self._kicked
                 and (carries is False or not main.alive()) and self._fallback(main)):
             return
         self.prober.set(out=out)
@@ -1542,6 +1542,8 @@ class Core:
                     self._back_at = time.monotonic() + BACK_EVERY
                     self.prober.set(out=out)
                     self.prober.remeasure()
+            if side.tid in self._kicked and self._fallback(side):
+                continue
             now = time.monotonic()
             after = self._side_after.get(side.tid, 0.0)
             if now < after:
@@ -1600,35 +1602,37 @@ class Core:
             return out, False
         if not self.tunnel.set_out(tag):
             return out, True
-        self._main_kicked = False
+        self._kicked = tuple(tid for tid in self._kicked if tid != main.tid)
         self.log(f"→ «{main.title}» везёт (проверка за {ms} мс) — выход снова через него")
         self.prober.remeasure()
         return tag, True
 
-    def _fallback(self, main):
-        """Основной main не везёт и после перезапуска сторожем — остальные
+    def _fallback(self, side):
+        """Туннель side не везёт и после перезапуска сторожем — остальные
         его конфиги по порядку (_spares) проверяются временным sing-box, первый
         ответивший становится активным (_take_spare). True — переключились, круг
-        дальше не нужен. Ни один не ответил — выход остаётся Tunnel.away() (block с
-        kill-switch, иначе напрямую), а основной сторож перезапускает как раньше.
-        Круг проверок долгий (до секунд на конфиг) — не чаще DEAD_GAP. Назад на
-        прежний конфиг сам не возвращается: это решает человек."""
+        дальше не нужен. Ни один не ответил — у основного выход остаётся
+        Tunnel.away() (block с kill-switch, иначе напрямую), сторож перезапускает
+        его как раньше. Круг проверок долгий (до секунд на конфиг) — не чаще
+        DEAD_GAP на туннель. Назад на прежний конфиг сам не возвращается: это
+        решает человек."""
         now = time.monotonic()
-        if now < self._fallback_at:
+        if now < self._fallback_at.get(side.tid, 0.0):
             return False
-        self._fallback_at = now + DEAD_GAP
-        t, names = self._spares(main.tid)
+        self._fallback_at = {**self._fallback_at, side.tid: now + DEAD_GAP}
+        t, names = self._spares(side.tid)
         if not names:
             return False
-        self.log(f"!! «{main.title}» не везёт и после перезапуска — пробую запасные "
+        self.log(f"!! «{side.title}» не везёт и после перезапуска — пробую запасные "
                  f"конфиги: {', '.join(names)}")
         for name in names:
             if self._round_human != self._human or self.prober.stop_event.is_set():
                 return False
             if self._finish_test(t, name, alone=True)["result"] == "up":
                 return self._take_spare(t, name)
-        self.log(f"!! запасные конфиги «{main.title}» не отвечают — выход "
-                 f"остаётся {self.tunnel.away()}")
+        away = (f" — выход остаётся {self.tunnel.away()}"
+                if side is self.tunnel.main else "")
+        self.log(f"!! запасные конфиги «{side.title}» не отвечают{away}")
         return False
 
     @staticmethod
@@ -1666,8 +1670,8 @@ class Core:
                 self.log(f"!! запасной {name}.conf не применить: {r.get('error', '')}")
             main = self.tunnel.main
             out = self.tunnel.out_now()
-            if (r.get("applied") == "sides" and main and main.alive()
-                    and out in buildconfig.AWAY_TAGS):
+            if (r.get("applied") == "sides" and main and t["id"] == main.tid
+                    and main.alive() and out in buildconfig.AWAY_TAGS):
                 self._back_at = 0.0
                 out, _ = self._try_back(main, out)
                 self.prober.set(out=out)
@@ -1686,8 +1690,8 @@ class Core:
                 return
             self.busy = f"перезапускаю туннель «{side.title}»"
             err = self.tunnel.restart_side(side)
-            if side is self.tunnel.main:
-                self._main_kicked = True
+            if side.tid not in self._kicked:
+                self._kicked = self._kicked + (side.tid,)
             if err:
                 self.log(f"!! {err}")
             elif side is not self.tunnel.main:
@@ -1966,7 +1970,9 @@ class Core:
         try:
             data = tunnels.load()
             if place == "new":
-                where, t = "list", None
+                where, t = (("all", self._proto_main(data, "wg"))
+                            if buildconfig.is_full(buildconfig.parse_text(text))
+                            else ("list", None))
             elif tunnel or kind or place == "replace":
                 # replace без туннеля — отказ _target, а не авто: заменять — значит где-то.
                 t = self._target(data, tunnel, kind)
@@ -2060,7 +2066,7 @@ class Core:
                 raise ValueError(f"«{t['name']}» — не туннель с подписками")
             return t
         if place != "new":
-            t = next((x for x in data["tunnels"] if x.get("proto") == "vless"), None)
+            t = self._proto_main(data, "vless")
             if t is not None:
                 return t
         if len(data["tunnels"]) >= tunnels.MAX_TUNNELS:

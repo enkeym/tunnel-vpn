@@ -12,6 +12,7 @@ from tunnelvpn.service import Core
 
 UUID1 = "00000000-0000-4000-8000-000000000001"
 UUID2 = "00000000-0000-4000-8000-000000000002"
+UUID3 = "00000000-0000-4000-8000-000000000003"
 HOST = "vpn.example.test"
 SUB = "https://sub.example.test/sub"
 
@@ -211,6 +212,25 @@ def test_вторая_ссылка_не_трогает_основной_и_ег�
     assert (main["mode"], main["enabled"], main["exclude"], main["active"]) == (
         "all", False, ["bank.example"], first["profile"])
     assert tunnels.find(data, "home")["mode"] == "all"
+
+
+def test_ссылка_идёт_в_основную_группу_а_не_в_туннель_по_списку():
+    core = _core()
+    main = core.handle("add-link", {"link": _link()}, True)
+    listed = core.handle("add-link",
+                         {"link": _link(uuid=UUID2, name="Second", path="/b"),
+                          "place": "new"}, True)
+    assert _tunnel(listed)["mode"] == "list"
+    data = tunnels.load()
+    data["tunnels"].reverse()
+    tunnels.save(data)
+
+    added = core.handle("add-link", {"link": _link(uuid=UUID3, name="Third",
+                                                    path="/c")}, True)
+
+    assert added["ok"] and added["tunnel"] == main["tunnel"]
+    assert len(tunnels.load()["tunnels"]) == 2
+    assert _tunnel(listed)["active"] == listed["profile"]
 
 
 def test_подписка_делает_первый_профиль_активным(monkeypatch):

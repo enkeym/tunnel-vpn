@@ -25,13 +25,15 @@ paths:
 - Возврат выхода на основной (из `direct` и из `block`) — `lib/tunnelvpn/service.py:_try_back(main, out)` зовёт `lib/tunnelvpn/tunnel.py:delay`
   (`DELAY_URL` через `via-<id основного>` в clash_api основного — замер идёт через выбранный слот). Без `clash_api` в `config.json` выход
   останется на `direct` навсегда.
-- Запасной конфиг основного — `lib/tunnelvpn/service.py:_fallback` из `_mind_sides`: сторож перезапускал основной
-  (`Core._main_kicked` ставит `_restart_side`, сбрасывают `_try_back` при возврате, `_forget_side`, `_do_start`), а
+- Запасные конфиги туннеля — `lib/tunnelvpn/service.py:_fallback` из `_mind_sides` (основного — до цикла по сторонам,
+  остальных туннелей — в цикле после перезапуска): сторож перезапускал процесс туннеля
+  (`Core._kicked` ставит `_restart_side`, сбрасывают `_try_back` при возврате, `_forget_side`, `_do_start`), а
   `_try_back` не дошёл или процесс лежит → `_spares` (остальные `.conf` по кругу после `active`) → `_finish_test(…,
   alone=True)` (всегда `Tunnel.trial`, не `side_with_key`: тот же ключ у не везущего основного) → первый `up` —
-  `_take_spare`: `_set_active` + `_apply_locked` (тело `_apply` под тем же замком, взятым без ожидания) + `_try_back`
-  без паузы. Круг — не чаще `DEAD_GAP` (`_fallback_at`); ни один — выход остаётся `away()`. Итоги проверок — в
-  `tests[имя]` плиток (`_note_test`), `active` в `tunnels.json` меняет служба, не окно.
+  `_take_spare`: `_set_active` + `_apply_locked` (тело `_apply` под тем же замком, взятым без ожидания) + у основного
+  `_try_back` без паузы. Круг — не чаще `DEAD_GAP` на туннель (`_fallback_at[tid]`); ни один — у основного выход
+  остаётся `away()`. Итоги проверок — в `tests[имя]` плиток (`_note_test`), `active` в `tunnels.json` меняет служба,
+  не окно.
 - Команда `log` — `lib/tunnelvpn/service.py:_tail_log` сводит `vpn-*`, `tunnel-<id>-*` и журналы проверок
   `trial-<id>-*` (`tunnel.TRIAL_PREFIX`) по `STAMP_RE` (штамп строки sing-box и заголовка `open_log`), строки
   туннелей с меткой `[имя туннеля] `. Туннели — из `Tunnel.sides`, до первого включения — из `tunnels.json`;
