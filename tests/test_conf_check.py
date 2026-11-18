@@ -571,6 +571,37 @@ def test_заменённый_файл_прежний_итог_не_показы
     assert core._tests_of("t1", ["w1"]) == {}
 
 
+def test_старая_проверка_не_стирает_новую_после_замены_файла(core, monkeypatch):
+    _tunnel(monkeypatch)
+    pending = []
+
+    def defer(*, target, args, kwargs, daemon):
+        return types.SimpleNamespace(
+            start=lambda: pending.append(lambda: target(*args, **kwargs)))
+
+    def check(*args):
+        if not pending:
+            path = tunnels.conf_path("t1", "w1")
+            st = os.stat(path)
+            os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
+            assert core._test_conf("t1", "w1", wait=False)["ok"]
+            return "error", "старый результат"
+        return "up", "новый результат"
+
+    monkeypatch.setattr(service.threading, "Thread", defer)
+    monkeypatch.setattr(probe, "trial_check", check)
+
+    assert core._test_conf("t1", "w1")["test"]["result"] == "error"
+    assert core._tests_of("t1", ["w1"])["w1"]["checking"] is True
+
+    pending[0]()
+
+    result = core._tests_of("t1", ["w1"])["w1"]
+    assert result["result"] == "up"
+    assert result["answer"] == "новый результат"
+    assert result["checking"] is False
+
+
 # -------------------------------------------------------------- Tunnel.trial
 
 class _Proc:

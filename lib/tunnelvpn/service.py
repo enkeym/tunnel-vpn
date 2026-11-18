@@ -779,6 +779,8 @@ class Core:
         """Запись проверки key: новым словарём, прежний итог — если файл тот же."""
         with self._tests_lock:
             old = self._conf_checks.get(key) or {}
+            if old and old.get("stamp") != rec.get("stamp") and not rec.get("checking"):
+                return
             base = old if old.get("stamp") == rec.get("stamp") else {}
             self._conf_checks = {**self._conf_checks, key: {**base, **rec}}
 
