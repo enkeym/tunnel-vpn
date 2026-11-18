@@ -127,6 +127,7 @@ def _core(monkeypatch):
     core._side_said = set()
     core._tests_lock, core._trial_locks = threading.Lock(), {}
     core._test_queues, core._test_workers = {}, {}
+    core._test_busy = set()
     core.prober = probe.Prober()
     core.tunnel = _Tunnel(core.prober)
     core.logged = []

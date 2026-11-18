@@ -324,6 +324,7 @@ class Core:
         self._trial_locks = {}
         self._test_queues = {}
         self._test_workers = {}
+        self._test_busy = set()
         self._jobs = {}
         self._jobs_lock = threading.Lock()
         self._jobs_done = {}
@@ -836,12 +837,21 @@ class Core:
 
     def _queue_test(self, t, name, swap=0.0):
         tid = t["id"]
-        live = bool(swap or self._swap_from(tid, name))
+        live = bool(self._swap_from(tid, name))
         job = (t, name, swap)
         with self._tests_lock:
             q = self._test_queues.setdefault(tid, collections.deque())
-            if live:
+            if swap:
                 q.appendleft(job)
+            elif live and (tid, name) in self._test_busy:
+                return
+            elif live:
+                rest = [job for job in q if job[1] != name]
+                q.clear()
+                q.extend(rest)
+                threading.Thread(target=self._test_job, args=(t, name),
+                                 daemon=True).start()
+                return
             else:
                 q.append(job)
             worker = self._test_workers.get(tid)
@@ -861,10 +871,19 @@ class Core:
                         del self._test_workers[tid]
                     return
                 t, name, swap = q.popleft()
-            try:
-                self._finish_test(t, name, swap=swap, settle=True)
-            except Exception as exc:                   # noqa: BLE001
-                self.log(f"!! проверка {name} упала: {exc!r}")
+            self._test_job(t, name, swap)
+
+    def _test_job(self, t, name, swap=0.0):
+        key = (t["id"], name)
+        with self._tests_lock:
+            self._test_busy.add(key)
+        try:
+            self._finish_test(t, name, swap=swap, settle=True)
+        except Exception as exc:                       # noqa: BLE001
+            self.log(f"!! проверка {name} упала: {exc!r}")
+        finally:
+            with self._tests_lock:
+                self._test_busy.discard(key)
 
     def _finish_test(self, t, name, alone=False, swap=0.0, settle=False):
         """Проверка после _test_conf: итог в _conf_checks и в журнал, его же — наружу.

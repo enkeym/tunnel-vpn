@@ -331,6 +331,7 @@ def core(monkeypatch):
     core = service.Core.__new__(service.Core)
     core._tests_lock, core._trial_locks = threading.Lock(), {}
     core._test_queues, core._test_workers = {}, {}
+    core._test_busy = set()
     core.log = lambda line: None
     core.tunnel = _Tunnel()
     core.prober = probe.Prober()
@@ -659,12 +660,15 @@ def test_живой_конфиг_обходит_запасные_в_очеред
     order = []
     started = threading.Event()
     hold = threading.Event()
+    live = threading.Event()
 
     def run(t, name, alone=False, settle=False):
         order.append(name)
         if name == "w2":
             started.set()
             assert hold.wait(5), "очередь отпустила первую проверку сама"
+        if name == "w1":
+            live.set()
         return "up", ""
 
     monkeypatch.setattr(core, "_run_test", run)
@@ -674,12 +678,51 @@ def test_живой_конфиг_обходит_запасные_в_очеред
     assert core._test_conf("t1", "w3", wait=False)["ok"]
     assert core._test_conf("t1", "w1", wait=False)["ok"]
 
+    assert live.wait(2), "живой конфиг ждёт уже начатую пробу запасного"
+    assert order == ["w2", "w1"]
+
     hold.set()
     deadline = time.monotonic() + 5
-    while "t1" in core._test_workers and time.monotonic() < deadline:
+    while (("t1" in core._test_workers or core._test_busy)
+           and time.monotonic() < deadline):
         time.sleep(0.02)
 
     assert order == ["w2", "w1", "w3"]
+
+
+def test_живой_конфиг_не_проверяется_дважды_сразу(core, monkeypatch):
+    t = _tunnel(monkeypatch)
+    t["active"] = "w1"
+    side = tunnel.Side("t1", "Работа")
+    side.proc = types.SimpleNamespace(poll=lambda: None)
+    side.started = time.monotonic()
+    core.tunnel = tunnel.Tunnel(core.log)
+    core.tunnel.sides = [side]
+    order = []
+    started = threading.Event()
+    hold = threading.Event()
+
+    def run(t, name, alone=False, settle=False):
+        order.append(name)
+        started.set()
+        assert hold.wait(5), "повторная проверка отпустила первую саму"
+        return "up", ""
+
+    monkeypatch.setattr(core, "_run_test", run)
+
+    assert core._test_conf("t1", "w1", wait=False)["ok"]
+    assert started.wait(2)
+    assert core._test_conf("t1", "w1", wait=False)["ok"]
+    time.sleep(0.05)
+    assert order == ["w1"]
+
+    hold.set()
+    deadline = time.monotonic() + 5
+    while core._test_busy and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+    tests = core._tests_of("t1", ["w1"])
+    assert tests["w1"]["result"] == "up" and tests["w1"]["checking"] is False
 
 
 def test_заменённый_файл_прежний_итог_не_показывает(core, monkeypatch):
