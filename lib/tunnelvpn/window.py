@@ -906,12 +906,16 @@ class Api:
         with open(path, encoding="utf-8", errors="replace") as fh:
             text = fh.read()
         try:
-            subscriptions.parse_import(text)
-            imports = True
+            vpn = subscriptions.vpn_key(text) is not None
         except ValueError as exc:
-            if str(exc) == subscriptions.VPN_IMPORT_ERROR:
-                self.js("failed", str(exc))
-                return
+            self.js("failed", str(exc))
+            return
+        try:
+            imports = vpn
+            if not vpn:
+                subscriptions.parse_import(text)
+                imports = True
+        except ValueError:
             imports = text.lstrip().startswith("{")
         if imports:
             # Списки ссылок и sing-box JSON — как у «Вставить ссылки…»;

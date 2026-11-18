@@ -16,7 +16,7 @@ VERSION = 1
 KINDS = ("uri-list", "base64", "singbox")
 VPN_SCHEME = "vpn://"
 _VPN_HEADER = b"\x00\x00\x00\xff"
-VPN_IMPORT_ERROR = "импорт конфигов по ключу vpn:// пока не поддерживается"
+VPN_IMPORT_ERROR = "ключ vpn://: конфиги выдаёт шлюз Amnezia, добавьте ключ файлом или ссылкой"
 ADAPTIVE_KINDS = ("auto",) + KINDS
 NAME_MAX_LEN = 80
 MAX_IMPORT = 2000
@@ -242,7 +242,7 @@ def _decode_base64(text):
         raise ValueError("base64-подписка не в UTF-8") from None
 
 
-def decode_vpn_key(text):
+def vpn_payload(text):
     body = ""
     for line in text.splitlines():
         line = line.strip()
@@ -262,6 +262,13 @@ def decode_vpn_key(text):
         cfg = json.loads(zlib.decompress(raw[len(_VPN_HEADER):]))
     except (zlib.error, UnicodeDecodeError, ValueError):
         raise ValueError("тело ключа vpn:// повреждено") from None
+    if not isinstance(cfg, dict):
+        raise ValueError("тело ключа vpn:// повреждено")
+    return cfg
+
+
+def decode_vpn_key(text):
+    cfg = vpn_payload(text)
     api = cfg.get("api_config") or {}
     if api.get("service_type") != "amnezia-premium":
         raise ValueError(f"ключ vpn:// не от Amnezia Premium: "
@@ -273,6 +280,13 @@ def decode_vpn_key(text):
             "service_protocol": api.get("service_protocol", ""),
             "user_country_code": api.get("user_country_code", ""),
             "name": _name(cfg.get("name"), "Amnezia Premium")}
+
+
+def vpn_key(text):
+    text = _decode(text)
+    if VPN_SCHEME not in text.strip().lower():
+        return None
+    return decode_vpn_key(text)
 
 
 def detect_kind(body):

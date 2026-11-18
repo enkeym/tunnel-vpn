@@ -16,7 +16,8 @@ import types
 
 import pytest
 
-from tunnelvpn import buildconfig, paths, probe, service, tunnel, tunnels
+from conftest import vpn_key
+from tunnelvpn import buildconfig, gateway, paths, probe, service, tunnel, tunnels
 from tunnelvpn.service import Core
 
 WG = ("[Interface]\nPrivateKey = x\nAddress = 10.0.0.2/32\n\n[Peer]\nPublicKey = y\n"
@@ -2001,3 +2002,56 @@ def test_v6_конфига_по_адресу_в_interface(core, monkeypatch, add
     _put("home", "nl-1.conf", FULL.replace("Address = 10.0.0.2/32", f"Address = {address}"))
 
     assert service._conf_facts("home", "nl-1")["v6"] is v6
+
+
+def test_ключ_vpn_добавляет_конфиги_шлюза(core, monkeypatch):
+    fetched = [{"name": "Amnezia Молдова", "conf": FULL},
+               {"name": "Amnezia Молдова 2",
+                "conf": FULL.replace("203.0.113.9", "203.0.113.10")}]
+    monkeypatch.setattr(gateway, "all_profiles", lambda *args: fetched)
+    checked = []
+    core._test_conf = lambda *args, **kw: checked.append(args)
+    core._swap_from = lambda *args: ""
+
+    reply = core._add_link(vpn_key())
+
+    assert reply["ok"] is True
+    assert reply["added"] == 2 and reply["profiles"] == 2
+    assert reply["tunnel"] == "home" and reply["place"] == "all"
+    assert reply["checking"] is True
+    assert len(checked) == 2
+    assert sorted(_files("home")) == ["Amnezia Молдова 2.conf",
+                                      "Amnezia Молдова.conf"]
+
+
+def test_отказ_шлюза_виден_в_ответе(core, monkeypatch):
+    def boom(*args):
+        raise ValueError("шлюз Amnezia недоступен")
+
+    monkeypatch.setattr(gateway, "all_profiles", boom)
+
+    assert core._add_link(vpn_key()) == {"ok": False,
+                                         "error": "шлюз Amnezia недоступен"}
+    assert _files("home") == [] and _files("work") == []
+
+
+def test_превью_ключа_vpn(core, monkeypatch):
+    monkeypatch.setattr(
+        gateway, "probe",
+        lambda *args: {"profiles": [{"name": "Amnezia Молдова", "conf": FULL}],
+                       "countries": ["de", "kz"]})
+
+    assert core._preview(link=vpn_key()) == {
+        "ok": True, "type": "link", "name": "Amnezia Молдова",
+        "host": "203.0.113.9", "port": 51820, "profiles": 3,
+        "invalid": 0, "duplicates": 0}
+
+
+def test_превью_ключа_vpn_с_отказом_шлюза(core, monkeypatch):
+    def boom(*args):
+        raise ValueError("api key expired")
+
+    monkeypatch.setattr(gateway, "probe", boom)
+
+    assert core._preview(link=vpn_key()) == {"ok": False,
+                                             "error": "api key expired"}

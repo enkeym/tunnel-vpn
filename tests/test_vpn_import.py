@@ -60,6 +60,30 @@ def test_импорт_отказывается_одним_сообщением()
     assert str(exc1.value) == str(exc2.value) == subscriptions.VPN_IMPORT_ERROR
 
 
+def test_vpn_key_разбирает_ключ():
+    assert subscriptions.vpn_key(vpn_key()) == subscriptions.decode_vpn_key(
+        vpn_key())
+
+
+def test_vpn_key_отдаёт_none_для_чужого_текста():
+    assert subscriptions.vpn_key("") is None
+    assert subscriptions.vpn_key("vless://uuid@host:443") is None
+    assert subscriptions.vpn_key('{"outbounds": []}') is None
+
+
+def test_vpn_key_с_битым_телом():
+    with pytest.raises(ValueError, match="base64"):
+        subscriptions.vpn_key("vpn://!!!!")
+
+
+def test_vpn_key_без_api_key():
+    cfg = {"config_version": 2,
+           "api_config": {"service_type": "amnezia-premium"},
+           "auth_data": {"api_key": ""}}
+    with pytest.raises(ValueError, match="нет api_key"):
+        subscriptions.vpn_key(vpn_key(cfg))
+
+
 def test_обычные_форматы_остались_на_месте():
     assert subscriptions.detect_kind('{"outbounds": []}') == "singbox"
     assert subscriptions.detect_kind("vless://uuid@host:443") == "uri-list"

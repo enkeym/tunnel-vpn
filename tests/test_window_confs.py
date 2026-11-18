@@ -2,7 +2,7 @@
 последнего, списки правил из файла."""
 
 from conftest import NoTimer, SyncThread, vpn_key
-from tunnelvpn import ipc, subscriptions, window
+from tunnelvpn import ipc, window
 
 WG = "[Interface]\nAddress = 10.53.0.4/32\n[Peer]\nAllowedIPs = 10.53.0.0/16\n"
 
@@ -110,16 +110,41 @@ def test_брошенный_не_conf_объясняется_и_не_шлётс�
     assert shown == [("failed", "Нужен файл .conf или .vpn")]
 
 
-def test_брошенный_vpn_объясняется_и_не_шлётся(monkeypatch, tmp_path):
+def test_брошенный_vpn_идёт_импортом(monkeypatch, tmp_path):
+    key = tmp_path / "config.vpn"
+    text = vpn_key() + "\n"
+    key.write_text(text, encoding="utf-8")
+    api, admin, shown = _api(monkeypatch, [{"ok": True}])
+
+    api._drop({"type": "drop", "dataTransfer": {"files": [
+        {"name": "config.vpn", "pywebviewFullPath": str(key)}]}})
+
+    assert admin == [("add-link", {"link": text, "tunnel": "", "place": ""})]
+    assert "failed" not in [fn for fn, _ in shown]
+
+
+def test_отказ_шлюза_у_брошенного_vpn_виден(monkeypatch, tmp_path):
     key = tmp_path / "config.vpn"
     key.write_text(vpn_key() + "\n", encoding="utf-8")
+    api, _, shown = _api(
+        monkeypatch, [{"ok": False, "error": "шлюз Amnezia недоступен"}])
+
+    api._drop({"type": "drop", "dataTransfer": {"files": [
+        {"name": "config.vpn", "pywebviewFullPath": str(key)}]}})
+
+    assert shown == [("failed", "шлюз Amnezia недоступен")]
+
+
+def test_брошенный_битый_vpn_объясняется_и_не_шлётся(monkeypatch, tmp_path):
+    key = tmp_path / "config.vpn"
+    key.write_text("vpn://!!!!\n", encoding="utf-8")
     api, admin, shown = _api(monkeypatch, [])
 
     api._drop({"type": "drop", "dataTransfer": {"files": [
         {"name": "config.vpn", "pywebviewFullPath": str(key)}]}})
 
     assert admin == []
-    assert shown == [("failed", subscriptions.VPN_IMPORT_ERROR)]
+    assert shown == [("failed", "ключ vpn:// не декодируется из base64")]
 
 
 def test_диалог_файла_предлагает_vpn(monkeypatch):

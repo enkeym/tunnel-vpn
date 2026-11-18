@@ -362,6 +362,103 @@ def test_поднялся_на_повторе_повторы_прекращаю�
     assert core._retry_left == 0
 
 
+def _mains_data():
+    return {"tunnels": [
+        {"id": "t1", "name": "Первый", "mode": "all", "proto": "wg", "enabled": True},
+        {"id": "t2", "name": "Второй", "mode": "all", "proto": "wg", "enabled": False},
+        {"id": "s1", "name": "Боковой", "mode": "split", "proto": "wg", "enabled": True},
+    ]}
+
+
+def _failover_env(core, monkeypatch, data, confs=None, only_err=""):
+    switched = []
+    monkeypatch.setattr(service.tunnels, "load", lambda: data)
+    monkeypatch.setattr(service.tunnels, "list_confs",
+                        confs or (lambda tid, proto: ["c"]))
+
+    def only(tid):
+        switched.append(tid)
+        if only_err:
+            return None, only_err
+        was = {x["id"]: x["enabled"] for x in data["tunnels"]}
+        for x in data["tunnels"]:
+            x["enabled"] = x["id"] == tid
+        return was, ""
+
+    monkeypatch.setattr(core, "_only", only)
+    return switched
+
+
+def test_основной_не_поднялся_основным_становится_следующий(monkeypatch):
+    core = _core(monkeypatch)
+    data = _mains_data()
+    switched = _failover_env(core, monkeypatch, data)
+    core.tunnel.fail = True
+    _net(core, HOME)
+
+    state = _rounds(core, service.UPLINK_SETTLE + service.RECONNECT_TRIES + 1)
+
+    assert switched == ["t2"]
+    assert any("основным ставлю «Второй»" in m for m in core.logged)
+    assert data["tunnels"][0]["enabled"] is False
+    assert data["tunnels"][1]["enabled"] is True
+
+    _rounds(core, service.RECONNECT_TRIES + 1, state)
+
+    assert switched == ["t2"]
+    assert core._main_tried == frozenset({"t1", "t2"})
+    assert core._retry_left == 0
+
+
+def test_полных_основных_больше_нет_переключения_нет(monkeypatch):
+    core = _core(monkeypatch)
+    data = _mains_data()
+    switched = _failover_env(core, monkeypatch, data,
+                             confs=lambda tid, proto: ["c"] if tid == "t1" else [])
+    core.tunnel.fail = True
+    _net(core, HOME)
+
+    _rounds(core, service.UPLINK_SETTLE + service.RECONNECT_TRIES + 1)
+
+    assert switched == []
+    assert core._main_tried == frozenset({"t1"})
+    assert not any("основным ставлю" in m for m in core.logged)
+    assert data["tunnels"][0]["enabled"] is True
+
+
+def test_поднявшийся_туннель_сбрасывает_пробы_основных(monkeypatch):
+    core = _core(monkeypatch)
+    data = _mains_data()
+    switched = _failover_env(core, monkeypatch, data)
+    core.tunnel.fail = True
+    _net(core, HOME)
+    state = _rounds(core, service.UPLINK_SETTLE + service.RECONNECT_TRIES + 1)
+    assert switched == ["t2"]
+    assert core._main_tried == frozenset({"t1"})
+
+    core.tunnel.fail = False
+    _rounds(core, 2, state)
+
+    assert core.tunnel.uplink == HOME
+    assert core._main_tried == frozenset()
+    assert core._retry_left == 0
+
+
+def test_флаги_не_переключить_основной_остаётся(monkeypatch):
+    core = _core(monkeypatch)
+    data = _mains_data()
+    switched = _failover_env(core, monkeypatch, data, only_err="VPN уже включён")
+    core.tunnel.fail = True
+    _net(core, HOME)
+
+    _rounds(core, service.UPLINK_SETTLE + service.RECONNECT_TRIES + 1)
+
+    assert switched == ["t2"]
+    assert any("основной не переключить" in m for m in core.logged)
+    assert data["tunnels"][0]["enabled"] is True
+    assert core._main_tried == frozenset({"t1"})
+
+
 def test_автоподключение_без_сети_ждёт_шлюз_и_повторяет(monkeypatch, wfp):
     """Служба стартует при загрузке раньше сети: 9 октября первая попытка упала
     на «нет маршрута по умолчанию», и VPN стоял выключенным до ручного включения."""

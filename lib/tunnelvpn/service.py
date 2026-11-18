@@ -23,8 +23,8 @@ import sys
 import threading
 import time
 
-from . import (buildconfig, forwardproxy, ipc, killguard, paths, probe, proxy, routelist,
-               subscriptions, tunnel, tunnels, winnet)
+from . import (buildconfig, forwardproxy, gateway, ipc, killguard, paths,
+               probe, proxy, routelist, subscriptions, tunnel, tunnels, winnet)
 
 AUTOSTART_FILE = os.path.join(paths.STATE, "autostart")
 # Ответ «Включить», когда ни у одного туннеля нет .conf: не сбой, last_error не ставится.
@@ -327,6 +327,7 @@ class Core:
     # Сколько ещё попыток поднять туннель после неудачного переподключения.
     # Команда человека (start/stop) их отменяет: он уже решил сам.
     _retry_left = 0
+    _main_tried = frozenset()
     # Номер последней команды человека и тот, что сторож видел в начале круга:
     # круг ждёт проверок по нескольку секунд, и решение, принятое до «Выключить»,
     # после него уже не в силе.
@@ -478,14 +479,10 @@ class Core:
             self.set_autostart(bool(payload.get("on")))
             return {"ok": True, "autostart": self.autostart_enabled()}
         if op == "add-config":
-            reply = self._add_config(payload.get("name", ""),
-                                     payload.get("text", ""),
-                                     payload.get("kind", ""), tid,
-                                     payload.get("place", ""))
-            if reply.get("ok"):
-                self._test_conf(reply["tunnel"], reply["name"], wait=False,
-                                swap=self._swap_from(reply["tunnel"], reply["name"]))
-            return reply
+            return self._write_config(payload.get("name", ""),
+                                      payload.get("text", ""),
+                                      payload.get("kind", ""), tid,
+                                      payload.get("place", ""))
         if op == "test-config":
             return self._test_conf(tid, payload.get("name", ""))
         if op == "remove-config":
@@ -1098,6 +1095,7 @@ class Core:
             # старой сети. Иначе два таймаута через мёртвый кабель и один на Wi-Fi
             # перезапускали свежий туннель, а упавший на новой сети ждал DEAD_GAP.
             self._dead_hits = ()
+            self._main_tried = frozenset()
             self._side_after, self._side_noted = {}, {}
             self._side_said = set()
             self._back_at = 0.0
@@ -1377,6 +1375,8 @@ class Core:
                 self.log(f"→ ещё раз поднимаю туннель: повтор "
                          f"{RECONNECT_TRIES - self._retry_left} из {RECONNECT_TRIES}")
                 retry_at = self._reconnect(retries=0)
+                if not self._retry_left and self.tunnel.uplink is None:
+                    retry_at = self._failover_main() or retry_at
             return None, 0, retry_at
 
         if not had:
@@ -1460,6 +1460,32 @@ class Core:
             return False
         self.log(f"!! после сна «{main.title}» не отвечает — переподключаю")
         return True
+
+    @staticmethod
+    def _mains(data):
+        return [t for t in data["tunnels"] if t["mode"] == "all"
+                and tunnels.list_confs(t["id"], t.get("proto", "wg"))]
+
+    def _failover_main(self):
+        try:
+            data = tunnels.load()
+        except ValueError:
+            return None
+        cur = tunnels.main_tunnel(data)
+        if cur is None:
+            return None
+        tried = self._main_tried | {cur["id"]}
+        self._main_tried = tried
+        nxt = next((t for t in self._mains(data) if t["id"] not in tried), None)
+        if nxt is None:
+            return None
+        self.log(f"!! «{cur['name']}» не поднялся после повторов — основным ставлю "
+                 f"«{nxt['name']}»")
+        err = self._only(nxt["id"])[1]
+        if err:
+            self.log(f"!! основной не переключить: {err}")
+            return None
+        return self._reconnect()
 
     def _read_logs(self):
         """Новые строки: (основного журнала, журналов обоих туннелей). Порознь:
@@ -2074,6 +2100,13 @@ class Core:
                     self.log(f"→ не удалить {old}.conf: {exc}")
         return {"ok": True, "name": name, "tunnel": t["id"], "place": where}
 
+    def _write_config(self, name, text, kind="", tunnel="", place=""):
+        reply = self._add_config(name, text, kind, tunnel, place)
+        if reply.get("ok"):
+            self._test_conf(reply["tunnel"], reply["name"], wait=False,
+                            swap=self._swap_from(reply["tunnel"], reply["name"]))
+        return reply
+
     def _attach_profile(self, data, profile, tunnel="", place=""):
         if tunnel:
             t = self._target(data, tunnel)
@@ -2189,6 +2222,9 @@ class Core:
 
     def _add_link(self, link, tunnel="", place=""):
         try:
+            key = subscriptions.vpn_key(link)
+            if key is not None:
+                return self._add_amnezia(key, tunnel, place)
             parsed = subscriptions.parse_import(link)
             with tunnels.LOCK:
                 known = {p["fingerprint"] for p in subscriptions.load()["profiles"]}
@@ -2219,6 +2255,27 @@ class Core:
                 "job": job, "checking": bool(job),
                 "invalid": parsed["invalid"], "duplicates": parsed["duplicates"]}
 
+    def _add_amnezia(self, key, tunnel="", place=""):
+        try:
+            fetched = gateway.all_profiles(key["api_key"],
+                                           key["user_country_code"],
+                                           key["service_protocol"])
+            replies = []
+            for number, profile in enumerate(fetched):
+                reply = self._write_config(profile["name"], profile["conf"], "",
+                                           tunnel if not number else "",
+                                           place if not number else "")
+                replies.append(reply)
+                if not reply.get("ok"):
+                    return reply
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        self.log(f"→ добавлены конфиги Amnezia Premium: {len(replies)}")
+        first = replies[0]
+        return {"ok": True, "tunnel": first["tunnel"], "place": first["place"],
+                "added": len(replies), "profiles": len(replies),
+                "checking": True, "invalid": 0, "duplicates": 0}
+
     def _add_subscription(self, url, name="", allow_private=False, kind="auto"):
         try:
             sub = subscriptions.add(url, name, allow_private, kind)
@@ -2243,6 +2300,19 @@ class Core:
     def _preview(self, link="", url="", name="", allow_private=False, kind="auto"):
         try:
             if link:
+                key = subscriptions.vpn_key(link)
+                if key is not None:
+                    probed = gateway.probe(key["api_key"],
+                                           key["user_country_code"],
+                                           key["service_protocol"])
+                    fetched = probed["profiles"]
+                    conf = buildconfig.parse_text(fetched[0]["conf"])
+                    host, _, port = conf["peer"]["endpoint"].rpartition(":")
+                    return {"ok": True, "type": "link",
+                            "name": fetched[0]["name"], "host": host,
+                            "port": int(port),
+                            "profiles": len(fetched) + len(probed["countries"]),
+                            "invalid": 0, "duplicates": 0}
                 parsed = subscriptions.parse_import(link)
                 profiles = parsed["profiles"]
                 profile = profiles[0]
