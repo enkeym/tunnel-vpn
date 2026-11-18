@@ -5,7 +5,7 @@ paths:
 ---
 
 ## Команды канала: проверка, флаги, запуск
-- `test-config` {`tunnel`, `name`} (USER_OPS: ответ без ключей и адресов сети) → `lib/tunnelvpn/service.py:_test_conf`
+- `test-config` {`tunnel`, `name`, `wait`: bool} (USER_OPS: ответ без ключей и адресов сети) → `lib/tunnelvpn/service.py:_test_conf`
   → `{ok, test: {result, answer, at, checking}}`; удачные `add-config` и `set-tunnel` (с `include`/`mode`,
   `_test_active`) запускают её сами в потоке; у `add-config` конфиг, с которым `_apply` окна перезапустит живой
   боковой (`_swap_from`), поток проверяет после перезапуска (`_await_swap` ждёт смены `Side.started` до
@@ -15,10 +15,14 @@ paths:
   иначе `lib/tunnelvpn/tunnel.py:trial` (`state\run\trial-<id>.json` из `buildconfig.trial_config`, http-вход,
   журнал `trial-<id>-*.log`, при живом VPN host-маршрут к пиру без записи в `owned`, общий у проверок с одним
   пиром — счётчик `Tunnel._trial_routes`) → `probe.trial_check`. Файлы на id ↔ замок на id
-  `Core._trial_locks` в `_finish_test`: разные туннели проверяются разом, конфиги одного — по одному
+  `Core._trial_locks` (временный процесс — в `_test_slot`) и одна очередь `Core._test_queues`/`_test_worker`
+  на туннель через `_queue_test`: разные туннели проверяются разом, конфиги одного — по одному, живой
+  конфиг (`_swap_from`) встаёт в её начало
   (`_dns_via_proxy` — CONNECT на DNS:53, `Prober._http_code(url, proxy)`). Итоги те же, что у `check`
-  (`up`/`rules`/`error`/`none`); ответ при DNS — `probe.BY_DNS`, не адрес. Отправитель — ↻ на плитке: `send('test_config')` →
-  `lib/tunnelvpn/window.py:_test_config`; итог `tests[имя]` читают `cardState`/`spareState`/`testState`
+  (`up`/`rules`/`error`/`none`); ответ при DNS — `probe.BY_DNS`, не адрес. Отправитель — ↻ на плитке
+  `send('test_config')` и «Проверить все» `send('test_group', {tunnel, names})` →
+  `lib/tunnelvpn/window.py:_test_config`/`_test_group` с `wait=False`: ответ сразу, канал не держится
+  до конца замера; итог `tests[имя]` читают `cardState`/`spareState`/`testState`
   в `lib/tunnelvpn/ui/js/cards.js`, `checking` держит там «проверяю…».
 - `set-enabled` {`tunnel`, `on`: bool} (USER_OPS, как `stop`) → `lib/tunnelvpn/service.py:_set_enabled`: любой
   туннель, основной тоже (выключенный остаётся основным, `tunnels.main_on` — None), пишет `enabled` в

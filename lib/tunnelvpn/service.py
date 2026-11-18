@@ -11,6 +11,7 @@
 """
 
 import collections
+import contextlib
 import datetime
 import ipaddress
 import json
@@ -321,6 +322,8 @@ class Core:
         # них по id, а разные туннели — «Проверить все» без VPN — проверяются разом.
         self._tests_lock = threading.Lock()
         self._trial_locks = {}
+        self._test_queues = {}
+        self._test_workers = {}
         self._jobs = {}
         self._jobs_lock = threading.Lock()
         self._jobs_done = {}
@@ -494,7 +497,8 @@ class Core:
                                       payload.get("kind", ""), tid,
                                       payload.get("place", ""))
         if op == "test-config":
-            return self._test_conf(tid, payload.get("name", ""))
+            return self._test_conf(tid, payload.get("name", ""),
+                                   wait=payload.get("wait", True))
         if op == "remove-config":
             return self._remove_config(payload.get("name", ""),
                                        payload.get("kind", ""), tid,
@@ -826,10 +830,41 @@ class Core:
         key = (t["id"], name)
         self._note_test(key, stamp=self._conf_stamp(*key, proto), checking=True)
         if not wait:
-            threading.Thread(target=self._finish_test, args=(t, name),
-                             kwargs={"swap": swap, "settle": True}, daemon=True).start()
+            self._queue_test(t, name, swap)
             return {"ok": True}
         return {"ok": True, "test": self._finish_test(t, name, settle=True)}
+
+    def _queue_test(self, t, name, swap=0.0):
+        tid = t["id"]
+        live = bool(swap or self._swap_from(tid, name))
+        job = (t, name, swap)
+        with self._tests_lock:
+            q = self._test_queues.setdefault(tid, collections.deque())
+            if live:
+                q.appendleft(job)
+            else:
+                q.append(job)
+            worker = self._test_workers.get(tid)
+            if worker is None or not worker.is_alive():
+                worker = threading.Thread(target=self._test_worker, args=(tid,),
+                                          daemon=True)
+                self._test_workers[tid] = worker
+                worker.start()
+
+    def _test_worker(self, tid):
+        while True:
+            with self._tests_lock:
+                q = self._test_queues.get(tid)
+                if not q:
+                    self._test_queues.pop(tid, None)
+                    if self._test_workers.get(tid) is threading.current_thread():
+                        del self._test_workers[tid]
+                    return
+                t, name, swap = q.popleft()
+            try:
+                self._finish_test(t, name, swap=swap, settle=True)
+            except Exception as exc:                   # noqa: BLE001
+                self.log(f"!! проверка {name} упала: {exc!r}")
 
     def _finish_test(self, t, name, alone=False, swap=0.0, settle=False):
         """Проверка после _test_conf: итог в _conf_checks и в журнал, его же — наружу.
@@ -839,10 +874,7 @@ class Core:
         if swap:
             self._await_swap(t["id"], swap)
         try:
-            with self._tests_lock:
-                lock = self._trial_locks.setdefault(t["id"], threading.Lock())
-            with lock:
-                result, answer = self._run_test(t, name, alone, settle)
+            result, answer = self._run_test(t, name, alone, settle)
         except Exception as exc:
             self.log(f"!! проверка {name} упала: {exc!r}")
             result, answer = "error", "проверка упала"
@@ -883,6 +915,33 @@ class Core:
             left = min(s.started + probe.SIDE_SETTLE - now for s in fresh)
             time.sleep(min(left, probe.SETTLE_PAUSE))
 
+    def _trial_lock(self, tid):
+        with self._tests_lock:
+            return self._trial_locks.setdefault(tid, threading.Lock())
+
+    def _test_running(self, t, config, what, alone):
+        if alone:
+            return None
+        twin = (self._side_with_profile(config) if t.get("proto") == "vless" else
+                self.tunnel.side_with_key(config["interface"].get("privatekey")))
+        if twin:
+            self.log(what + f"работающий процесс {twin} — спрашиваю его")
+            return self.prober.check_one(twin, self.tunnel.delay)
+        return None
+
+    @contextlib.contextmanager
+    def _test_slot(self, t, config, what, alone):
+        lock = self._trial_lock(t["id"])
+        while not lock.acquire(timeout=probe.SETTLE_PAUSE):
+            running = self._test_running(t, config, what, alone)
+            if running is not None:
+                yield running
+                return
+        try:
+            yield None
+        finally:
+            lock.release()
+
     def _run_test(self, t, name, alone=False, settle=False):
         """(итог, ответ) конфига name туннеля t.
 
@@ -898,29 +957,33 @@ class Core:
         conf = _read_conf(t["id"], name)
         if conf is None:
             return "error", "конфиг не читается"
-        twin = (None if alone else
-                self.tunnel.side_with_key(conf["interface"].get("privatekey")))
         what = f"→ проверка {name}.conf («{t['name']}»): "
-        if twin:
-            self.log(what + f"тот же ключ у работающего процесса {twin} — спрашиваю его")
-            return self.prober.check_one(twin, self.tunnel.delay)
+        running = self._test_running(t, conf, what, alone)
+        if running is not None:
+            return running
         full = t["mode"] == "all" or buildconfig.is_full(conf)
         host = probe._probe_host(t) if t["mode"] == "list" else ""
         dns = next(iter(buildconfig.conf_dns(conf)), "")
         if not (full or dns or host):
             return "none", ""
-        if settle:
-            self._await_settled()
         # Что именно спрашиваем (probe.trial_check): без этого «сервер не отвечает»
         # не отличить мёртвый сервер от молчащего DNS или сайта.
         self.log(what + "временный sing-box, " + (
             "HTTP 204 через туннель" if full
             else f"DNS туннеля {dns} — имя {host or probe.DNS_ASK_NAME}" if dns
             else f"HTTPS к {host}"))
-        with self.tunnel.trial(t["id"], conf) as (link, err):
-            if err:
-                return "error", err
-            return probe.trial_check(link, full, host, dns)
+        with self._test_slot(t, conf, what, alone) as running:
+            if running is not None:
+                return running
+            if settle:
+                self._await_settled()
+            running = self._test_running(t, conf, what, alone)
+            if running is not None:
+                return running
+            with self.tunnel.trial(t["id"], conf) as (link, err):
+                if err:
+                    return "error", err
+                return probe.trial_check(link, full, host, dns)
 
     def _run_test_vless(self, t, name, alone=False, settle=False):
         try:
@@ -930,18 +993,23 @@ class Core:
         if profile is None:
             return "error", "профиль не найден"
         what = f"→ проверка {name} («{t['name']}»): "
-        twin = None if alone else self._side_with_profile(profile)
-        if twin:
-            self.log(what + f"тот же профиль у работающего процесса {twin} — спрашиваю его")
-            return self.prober.check_one(twin, self.tunnel.delay)
-        if settle:
-            self._await_settled()
+        running = self._test_running(t, profile, what, alone)
+        if running is not None:
+            return running
         v = proxy.fields(profile)
         self.log(what + f"временный sing-box, {profile['proto']} {v['server']}:{v['server_port']}")
-        with self.tunnel.trial_vless(t["id"], profile) as (link, err):
-            if err:
-                return "error", err
-            return probe.trial_check(link, True, "", "")
+        with self._test_slot(t, profile, what, alone) as running:
+            if running is not None:
+                return running
+            if settle:
+                self._await_settled()
+            running = self._test_running(t, profile, what, alone)
+            if running is not None:
+                return running
+            with self.tunnel.trial_vless(t["id"], profile) as (link, err):
+                if err:
+                    return "error", err
+                return probe.trial_check(link, True, "", "")
 
     def _side_with_profile(self, profile):
         if self.tunnel.uplink is None:
@@ -995,7 +1063,7 @@ class Core:
         if not self.lock.acquire(blocking=False):
             return {"ok": False, "error": f"уже идёт: {self.busy or 'операция'}"}
         try:
-            return self._start_locked(profile, reconnect=True, retries=retries)
+            return self._start_locked(profile, reconnect=True, retries=retries, only=only)
         finally:
             self.lock.release()
 
@@ -1504,7 +1572,7 @@ class Core:
         return [t for t in data["tunnels"] if t["mode"] == "all"
                 and tunnels.list_confs(t["id"], t.get("proto", "wg"))]
 
-    def _failover_main(self):
+    def _failover_main(self, verify=False):
         try:
             data = tunnels.load()
         except ValueError:
@@ -1514,16 +1582,52 @@ class Core:
             return None
         tried = self._main_tried | {cur["id"]}
         self._main_tried = tried
-        nxt = next((t for t in self._mains(data) if t["id"] not in tried), None)
+        nxt = None
+        for candidate in self._mains(data):
+            if candidate["id"] in tried:
+                continue
+            if verify:
+                if (self._round_human != self._human or self.tunnel.cancel.is_set()
+                        or self.prober.stop_event.is_set()):
+                    return None
+                name = self._in_use(data).get(candidate["id"])
+                if not name:
+                    continue
+                stamp = self._conf_stamp(candidate["id"], name, candidate.get("proto", "wg"))
+                result = self._finish_test(candidate, name, alone=True)
+                if (self._round_human != self._human or self.tunnel.cancel.is_set()
+                        or self.prober.stop_event.is_set()
+                        or data != tunnels.load()
+                        or stamp != self._conf_stamp(
+                            candidate["id"], name, candidate.get("proto", "wg"))):
+                    return None
+                if result["result"] != "up":
+                    tried = tried | {candidate["id"]}
+                    self._main_tried = tried
+                    continue
+            nxt = candidate
+            break
         if nxt is None:
             return None
-        self.log(f"!! «{cur['name']}» не поднялся после повторов — основным ставлю "
+        if verify and self._spare_works(cur["id"]):
+            self._kicked = tuple(tid for tid in self._kicked if tid != cur["id"])
+            self._main_tried = frozenset()
+            self.last_error = ""
+            self.log(f"→ «{cur['name']}» снова везёт — другой основной не включаю")
+            return time.monotonic() + RECONNECT_GAP
+        self.log(f"!! «{cur['name']}» не работает после повторов — основным ставлю "
                  f"«{nxt['name']}»")
-        err = self._only(nxt["id"])[1]
-        if err:
-            self.log(f"!! основной не переключить: {err}")
-            return None
-        return self._reconnect()
+        if verify:
+            retry_at = self._reconnect(only=nxt["id"])
+        else:
+            err = self._only(nxt["id"])[1]
+            if err:
+                self.log(f"!! основной не переключить: {err}")
+                return None
+            retry_at = self._reconnect()
+        if verify and not self._spare_works(nxt["id"]):
+            self._main_tried = tried
+        return retry_at
 
     def _read_logs(self):
         """Новые строки: (основного журнала, журналов обоих туннелей). Порознь:
@@ -1626,6 +1730,8 @@ class Core:
                     self.prober.set(out=out)
                     self.prober.remeasure()
             if side.tid in self._kicked and self._fallback(side):
+                if side is main:
+                    return
                 continue
             now = time.monotonic()
             after = self._side_after.get(side.tid, 0.0)
@@ -1725,24 +1831,41 @@ class Core:
             return False
         self._fallback_at = {**self._fallback_at, side.tid: now + DEAD_GAP}
         t, names = self._spares(side.tid)
-        if not names:
+        if t is None:
             return False
-        self.log(f"!! «{side.title}» не везёт и после перезапуска — пробую запасные "
-                 f"конфиги: {', '.join(names)}")
-        result = self._try_spares(
-                side.tid, self._take_spare,
-                lambda: (self._round_human != self._human
-                         or self.prober.stop_event.is_set()
-                         or self.tunnel.cancel.is_set()))
+        recovered = False
+
+        def cancelled():
+            nonlocal recovered
+            if (self._round_human != self._human or self.prober.stop_event.is_set()
+                    or self.tunnel.cancel.is_set()):
+                return True
+            out = self.tunnel.out_now()
+            if side is self.tunnel.main and side.alive() and out in buildconfig.AWAY_TAGS:
+                out, _ = self._try_back(side, out)
+                recovered = out not in buildconfig.AWAY_TAGS
+            return recovered
+
+        if cancelled():
+            return recovered
+        if names:
+            self.log(f"!! «{side.title}» не везёт и после перезапуска — пробую запасные "
+                     f"конфиги: {', '.join(names)}")
+            result = self._try_spares(side.tid, self._take_spare, cancelled)
+        else:
+            result = {"ok": False,
+                      "error": f"Нет запасных конфигов туннеля «{t['name']}»"}
         if result["ok"]:
             self.last_error = ""
             return True
         if result.get("cancelled"):
-            return False
+            return recovered
         away = (f" — выход остаётся {self.tunnel.away()}"
                 if side is self.tunnel.main else "")
         self.log(f"!! запасные конфиги «{side.title}» не отвечают{away}")
         self.last_error = result["error"]
+        if side is self.tunnel.main:
+            return self._failover_main(verify=True) is not None
         return False
 
     def _try_spares(self, tid, take, cancelled):
@@ -1980,10 +2103,10 @@ class Core:
         except Exception as exc:                           # noqa: BLE001
             self.log(f"!! статистика адресов: {exc}")
 
-    def _reconnect(self, retries=RECONNECT_TRIES):
+    def _reconnect(self, retries=RECONNECT_TRIES, only=""):
         """Туннель заново на текущей сети; не поднялся — взводит retries
         повторов. Возвращает, когда пробовать в следующий раз."""
-        if self._do_start(reconnect=True, retries=retries).get("ok"):
+        if self._do_start(reconnect=True, retries=retries, only=only).get("ok"):
             self.prober.remeasure()
         return time.monotonic() + RECONNECT_GAP
 

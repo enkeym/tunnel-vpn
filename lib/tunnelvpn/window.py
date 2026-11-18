@@ -270,6 +270,8 @@ class Api:
             threading.Thread(target=self._check, daemon=True).start()
         elif name == "test_config":
             threading.Thread(target=self._test_config, args=(arg,), daemon=True).start()
+        elif name == "test_group":
+            threading.Thread(target=self._test_group, args=(arg,), daemon=True).start()
         elif name in ("start", "stop", "restart"):
             # Статус — сразу по ответу службы: без этого «работает» ждало
             # следующего опроса, и включение казалось дольше на POLL_EVERY.
@@ -642,12 +644,18 @@ class Api:
             self.refresh()
             self.js("checkDone")
 
+    def _test_group(self, arg):
+        for name in arg["names"]:
+            self._test_config({"tunnel": arg["tunnel"], "name": name})
+
     def _test_config(self, arg):
-        """↻ на плитке: служба проверяет один конфиг и держит ответ до итога —
-        секунды, поэтому поток, а не мост. Итог страница берёт из статуса
-        (tunnels[].tests); статус — раньше testDone, иначе мигнёт прошлый ответ."""
+        """↻ на плитке: служба сразу отмечает проверку и доканчивает её в своём
+        потоке. Итог страница берёт из статуса (tunnels[].tests), поэтому окно не
+        держит канал до конца замера; статус — раньше testDone, иначе мигнёт
+        прошлый ответ."""
         try:
-            self._guard(ipc.call("test-config", tunnel=arg["tunnel"], name=arg["name"]))
+            self._guard(ipc.call("test-config", tunnel=arg["tunnel"],
+                                 name=arg["name"], wait=False))
         except Exception as exc:                       # noqa: BLE001
             self.js("failed", str(exc))
         finally:

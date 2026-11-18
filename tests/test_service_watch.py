@@ -126,6 +126,7 @@ def _core(monkeypatch):
     core._log_at, core._side_after, core._side_noted = {}, {}, {}
     core._side_said = set()
     core._tests_lock, core._trial_locks = threading.Lock(), {}
+    core._test_queues, core._test_workers = {}, {}
     core.prober = probe.Prober()
     core.tunnel = _Tunnel(core.prober)
     core.logged = []
@@ -1170,6 +1171,85 @@ def test_запасные_упорядочены_по_действительны
     }
 
     assert core._spares("home")[1] == ["a", "d", "e", "c"]
+
+
+def test_восстановившийся_основной_останавливает_перебор(monkeypatch):
+    core = _core(monkeypatch)
+    core.tunnel.out = buildconfig.BLOCK_TAG
+    core.tunnel.delay_ms = None
+    core._back_at = 0
+
+    def during():
+        core.tunnel.delay_ms = 25
+        core._back_at = 0
+
+    tried, made = _spare_confs(
+        monkeypatch, core, {"nl-2": "error", "nl-3": "up"}, during=during)
+
+    assert core._fallback(core.tunnel.home)
+    assert tried == [("nl-2", True)]
+    assert made == []
+    assert core.tunnel.out_now() == HOME_VIA
+    assert core.last_error == ""
+
+
+@pytest.mark.parametrize("answer", ["up", "error"])
+@pytest.mark.parametrize("source", ["t1", "t2"])
+def test_другой_основной_после_потери_выхода_только_после_пробы(
+        monkeypatch, answer, source):
+    core = _core(monkeypatch)
+    data = _mains_data()
+    for t in data["tunnels"]:
+        t["enabled"] = t["id"] == source
+        t["active"] = "chosen"
+    switched = _failover_env(core, monkeypatch, data)
+    core.tunnel.out = buildconfig.BLOCK_TAG
+    tried = []
+    monkeypatch.setattr(core, "_finish_test", lambda t, name, **kw:
+                        tried.append((t["id"], name, kw)) or {"result": answer})
+    monkeypatch.setattr(core, "_conf_stamp", lambda *args: "same")
+    monkeypatch.setattr(core, "_in_use", lambda data=None:
+                        {t["id"]: t["active"] for t in (data or tunnels.load())["tunnels"]})
+    monkeypatch.setattr(core, "_reconnect", lambda **kw: switched.append(kw["only"]) or 100)
+    target = "t2" if source == "t1" else "t1"
+
+    result = core._failover_main(verify=True)
+
+    assert tried == [(target, "chosen", {"alone": True})]
+    assert switched == ([target] if answer == "up" else [])
+    assert result == (100 if answer == "up" else None)
+
+
+def test_смена_основной_карточки_останавливает_vpn_до_записи_флагов(monkeypatch):
+    core = _core(monkeypatch)
+    selected = []
+
+    def only(tid):
+        assert core.lock.locked()
+        assert core.tunnel.uplink is None
+        selected.append(tid)
+        return {}, ""
+
+    monkeypatch.setattr(core, "_only", only)
+
+    reply = core._do_start(reconnect=True, only="t2")
+
+    assert reply["ok"]
+    assert selected == ["t2"]
+    assert not core.lock.locked()
+
+
+def test_исчерпание_запасных_проверяет_другую_основную_карточку(monkeypatch):
+    core = _core(monkeypatch)
+    tried, made = _spare_confs(monkeypatch, core, {"nl-2": "error"})
+    switched = []
+    monkeypatch.setattr(core, "_failover_main",
+                        lambda **kw: switched.append(kw) or 100)
+
+    assert core._fallback(core.tunnel.home)
+    assert tried == [("nl-2", True)]
+    assert made == []
+    assert switched == [{"verify": True}]
 
 
 @pytest.mark.parametrize("change", ["command", "active", "file"])

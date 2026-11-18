@@ -419,7 +419,7 @@ def test_проверка_конфига_без_прав_статус_раньш
     api._test_config(arg)
 
     # test-config в USER_OPS: ↻ не спрашивает UAC.
-    assert calls[0] == ("test-config", arg)
+    assert calls[0] == ("test-config", {**arg, "wait": False})
     assert admin == []
     # Иначе testDone перерисовал бы плитку прошлым статусом.
     assert [fn for fn, _ in shown] == ["render", "testDone"]
@@ -435,6 +435,18 @@ def test_отказ_проверки_виден_и_кнопка_отпускае
 
     assert ("failed", "нет конфига x.conf") in shown
     assert shown[-1] == ("testDone", {"tunnel": "home", "name": "x"})
+
+
+def test_группа_проверяется_последовательно_выбранный_первым(monkeypatch):
+    api, _, shown = _api(monkeypatch, [])
+    calls = []
+    monkeypatch.setattr(ipc, "call", lambda op, **kw: calls.append((op, kw)) or
+                        {"ok": True, "status": {}})
+
+    api._test_group({"tunnel": "home", "names": ["pt", "de", "nl"]})
+
+    assert [kw["name"] for op, kw in calls if op == "test-config"] == ["pt", "de", "nl"]
+    assert [arg["name"] for fn, arg in shown if fn == "testDone"] == ["pt", "de", "nl"]
 
 
 def test_галочка_журнала_отпускается_и_при_отказе(monkeypatch):

@@ -32,7 +32,8 @@ paths:
   Пока дышат (`m.settling`) или плитка включённого туннеля с выбранным конфигом пишет «проверяю…» (`m.waiting`:
   без `check` или `checking`), `headOf` пишет «Проверяю…», а не «Всё работает»: условие `waiting` правится вместе с
   веткой `busy` в `cardState`. «Проверить все»
-  (`checkAll`): VPN работает — `send('check')`, выключен — `testStart` выбранного конфига каждой плитки (`cards.js`);
+  (`checkAll`): VPN работает — `send('check')`, выключен — `testGroup` каждой плитки (`cards.js`),
+  одной командой `test_group` на туннель;
   крутится только за свою проверку — `CHECKING && CHECK_BY_HAND` или `testingAny(s) && TEST_ALL`, а заблокирована
   при любой (`CHECKING || testingAny(s)`); `TESTING`, `TEST_ALL` — в `model.js`: `topbar.js` грузится раньше `cards.js`.
   Проверку после включения и при открытии окна показывает ↻ плиток: в `paintCard` он крутится, пока `cardState` даёт

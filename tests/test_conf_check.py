@@ -6,6 +6,7 @@ import os
 import socket
 import struct
 import threading
+import time
 import types
 
 import pytest
@@ -329,6 +330,7 @@ class _Tunnel:
 def core(monkeypatch):
     core = service.Core.__new__(service.Core)
     core._tests_lock, core._trial_locks = threading.Lock(), {}
+    core._test_queues, core._test_workers = {}, {}
     core.log = lambda line: None
     core.tunnel = _Tunnel()
     core.prober = probe.Prober()
@@ -388,6 +390,36 @@ def test_тот_же_ключ_в_живом_процессе_проверяет_
     monkeypatch.setattr(core.prober, "check_one", lambda tid, delay: ("up", "по DNS"))
 
     assert core._test_conf("t1", "w1")["test"]["result"] == "up"
+    assert core.tunnel.trials == []
+
+
+@pytest.mark.parametrize("already_running", [True, False])
+def test_живой_конфиг_не_ждёт_очередь_временных_проб(core, monkeypatch, already_running):
+    _tunnel(monkeypatch)
+    core.tunnel = _Tunnel(twin="t1" if already_running else None)
+    monkeypatch.setattr(core.prober, "check_one", lambda tid, delay: ("up", "по DNS"))
+    lock = threading.Lock()
+    core._trial_locks["t1"] = lock
+    finished = threading.Event()
+    queried = threading.Event()
+    monkeypatch.setattr(core.tunnel, "side_with_key",
+                        lambda key: queried.set() or core.tunnel.twin)
+    reply = []
+
+    def check():
+        reply.append(core._test_conf("t1", "w1"))
+        finished.set()
+
+    with lock:
+        worker = threading.Thread(target=check, daemon=True)
+        worker.start()
+        assert queried.wait(1)
+        core.tunnel.twin = "t1"
+        ready = finished.wait(2)
+    worker.join(2)
+
+    assert ready
+    assert reply[0]["test"]["result"] == "up"
     assert core.tunnel.trials == []
 
 
@@ -572,6 +604,84 @@ def test_разные_туннели_проверяются_разом(core, mon
     assert [got[i]["result"] for i in ("t1", "t2")] == ["up", "up"]
 
 
+def test_очередь_проверок_одного_туннеля_не_переставляется(core, monkeypatch):
+    """«Проверить все» идёт списком: следующая проверка ждёт своей очереди,
+    а не меряется параллельно и не обгоняет ту, что попросили раньше."""
+    _tunnel(monkeypatch)
+    for name in ("w2", "w3"):
+        with open(tunnels.conf_path("t1", name), "w", encoding="utf-8") as fh:
+            fh.write(CONF)
+    order = []
+    started = threading.Event()
+    hold = threading.Event()
+
+    def run(t, name, alone=False, settle=False):
+        order.append(name)
+        if name == "w2":
+            started.set()
+            assert hold.wait(5), "очередь отпустила первую проверку сама"
+        return "up", ""
+
+    monkeypatch.setattr(core, "_run_test", run)
+
+    assert core._test_conf("t1", "w2", wait=False)["ok"]
+    assert started.wait(2)
+    for name in ("w1", "w3"):
+        assert core._test_conf("t1", name, wait=False)["ok"]
+
+    time.sleep(0.05)
+    assert order == ["w2"], "остальные стартуют параллельно с первой"
+
+    hold.set()
+    deadline = time.monotonic() + 5
+    while "t1" in core._test_workers and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+    assert order == ["w2", "w1", "w3"]
+    tests = core._tests_of("t1", ["w1", "w2", "w3"])
+    assert all(tests[n]["result"] == "up" and tests[n]["checking"] is False
+               for n in ("w1", "w2", "w3"))
+
+
+def test_живой_конфиг_обходит_запасные_в_очереди(core, monkeypatch):
+    """↻ на работающей плитке: запрос не встаёт в хвост за временными пробами
+    запасных, которые успели в очередь раньше него."""
+    t = _tunnel(monkeypatch)
+    for name in ("w2", "w3"):
+        with open(tunnels.conf_path("t1", name), "w", encoding="utf-8") as fh:
+            fh.write(CONF)
+    t["active"] = "w1"
+    side = tunnel.Side("t1", "Работа")
+    side.proc = types.SimpleNamespace(poll=lambda: None)
+    side.started = time.monotonic()
+    core.tunnel = tunnel.Tunnel(core.log)
+    core.tunnel.sides = [side]
+    order = []
+    started = threading.Event()
+    hold = threading.Event()
+
+    def run(t, name, alone=False, settle=False):
+        order.append(name)
+        if name == "w2":
+            started.set()
+            assert hold.wait(5), "очередь отпустила первую проверку сама"
+        return "up", ""
+
+    monkeypatch.setattr(core, "_run_test", run)
+
+    assert core._test_conf("t1", "w2", wait=False)["ok"]
+    assert started.wait(2)
+    assert core._test_conf("t1", "w3", wait=False)["ok"]
+    assert core._test_conf("t1", "w1", wait=False)["ok"]
+
+    hold.set()
+    deadline = time.monotonic() + 5
+    while "t1" in core._test_workers and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+    assert order == ["w2", "w1", "w3"]
+
+
 def test_заменённый_файл_прежний_итог_не_показывает(core, monkeypatch):
     _tunnel(monkeypatch)
     monkeypatch.setattr(probe, "trial_check", lambda *a: ("up", "по DNS"))
@@ -586,7 +696,8 @@ def test_старая_проверка_не_стирает_новую_после
     _tunnel(monkeypatch)
     pending = []
 
-    def defer(*, target, args, kwargs, daemon):
+    def defer(*, target, args=(), kwargs=None, daemon):
+        kwargs = kwargs or {}
         return types.SimpleNamespace(
             start=lambda: pending.append(lambda: target(*args, **kwargs)))
 
