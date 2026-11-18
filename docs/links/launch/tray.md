@@ -20,7 +20,7 @@ paths:
   трей, остаётся спрятанной сиротой, а следующий трей открывает второе.
 - Порт DevTools: `installer/dev/cdp-window.ps1` ставит `TUNNELVPN_DEVTOOLS_PORT` ↔
   `lib/tunnelvpn/window.py:DEVTOOLS_PORT_ENV` → `_devtools_port` → `webview.settings["REMOTE_DEBUGGING_PORT"]`
-  в `open_window`; тот же порт — `--cdp-endpoint` сервера playwright-cdp (`claude mcp`, local) и `docs/dev/testing.md`. Разошлось имя
+  в `open_window`; тот же порт — `--cdp-endpoint` сервера playwright-cdp (`claude mcp`, local) и `docs/dev/playwright.md`. Разошлось имя
   или порт — playwright-cdp не цепляется. Проверку `sys.frozen` убрали — сборка открывает порт любому.
 - Код выхода `READY_LOST` в `lib/tunnelvpn/window.py` ↔ `lib/tunnelvpn/tray.py:_watch_window`: по нему трей
   один раз перезапускает окно, у которого не поднялся WebView2.

@@ -27,8 +27,8 @@ traffic goes through `amnezia`, not TunnelVPN.
 | What changed | How to check |
 | --- | --- |
 | Python logic: service, tunnels, update, settings, tray menu | `python.exe -m pytest tests -q -n auto` (~20 s; `-n` needs `pip install pytest-xdist`, without it ~50 s); one test: `python.exe -m pytest tests/<file>.py -q -k <name>` |
-| Window: layout, texts, states, bridge calls | mock page in Playwright (below) |
-| Window against the live service | the app window over CDP (below) |
+| Window: layout, texts, states, bridge calls | mock page in Playwright — [playwright.md](playwright.md) |
+| Window against the live service | the app window over CDP — [playwright.md](playwright.md) |
 | Real wizard, uninstaller, tray menu, toasts: clicks, texts, states | Windows-MCP (below) |
 | Wizard and uninstaller pages: look, texts | `installer/dev/mock/index.html?page=<id>` in Playwright — [README](../../installer/dev/mock/README.md) |
 | Real wizard window, one page | `installer/dev/snap.ps1 [-Script probe.iss] [-Pages N] [-SetupArgs …]` — builds, starts, screenshots into `installer/dev/screenshots/` |
@@ -36,42 +36,8 @@ traffic goes through `amnezia`, not TunnelVPN.
 
 ## Window in Playwright
 
-1. `python3 -m http.server -b 127.0.0.1 -d lib/tunnelvpn/ui 8765` via Bash `run_in_background`.
-2. `browser_resize` 1040×720 (the window size), then `http://127.0.0.1:8765/index.html?mock=<scenario>`.
-   Scenarios, `tab`, `open`, `tick`, `upd`, `outcome` — header of `lib/tunnelvpn/ui/dev/mock-api.js`.
-3. Screenshots into `.playwright-mcp/<topic>-*.png`; console must show nothing but the `favicon.ico` 404.
-
-No `playwright` in `claude mcp list` (new machine):
-`claude mcp add -s local playwright -- "$(command -v playwright-mcp)" --headless --browser chromium --isolated --timeout-settle 200`.
-
-`mock-api.js` repeats what `lib/tunnelvpn/window.py` returns: change a bridge answer or a text in Python →
-change the fixture in the same commit. A changed user-facing string → `grep -rn` it in `tests/`.
-
-## Window over CDP
-
-1. `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(wslpath -w installer/dev/cdp-window.ps1)"` —
-   asks UAC, opens the window from source against the live service with DevTools on `127.0.0.1:9222`.
-   The installed tray and window stay untouched.
-2. Wait for the port: `Get-NetTCPConnection -State Listen -LocalPort 9222` from `powershell.exe` (a few seconds
-   after the script returns).
-3. Drive it:
-   - In `awg-term` — `installer/dev/cdp.ps1` from Windows:
-     `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(wslpath -w installer/dev/cdp.ps1)" -EvalFile "$(wslpath -w /tmp/cdp/x.js)" -Shot "$(wslpath -w /tmp/cdp)\\s1.png"`.
-     JS with quotes goes in a file (`-EvalFile`, written with `Write`), an async IIFE returning what to check;
-     click by selector (`button.power[aria-label*="…"]`, `[data-tab="log"]`), read the PNG with `Read`. Hidden rows
-     keep their `textContent`: filter on `hidden` and `.closest('[hidden]')`, not on `innerText`.
-   - Or the `playwright-cdp` MCP server tools: it attaches on the first call, so window first.
-   Screenshots and console — as in the mock page.
-4. Done → close the window: `cdp.ps1 -Close` (asks UAC); by hand the cross ends the process (no `--resident`).
-   Do not leave it open: its WebView2 dies later and shows as a black frame.
-
-The port comes from `TUNNELVPN_DEVTOOLS_PORT`, read only when running from source (`window._devtools_port`):
-`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` does not open it, pywebview sets its own `AdditionalBrowserArguments`.
-A build never opens the port: anyone local could drive the window. The script also gives the window its own
-`LOCALAPPDATA`, so WebView2 gets a separate data folder.
-
-No `playwright-cdp` in `claude mcp list` (new machine; Node on Windows):
-`claude mcp add -s local playwright-cdp -- powershell.exe -NoProfile -Command 'Set-Location $env:TEMP; npx.cmd -y @playwright/mcp@0.0.81 --cdp-endpoint http://127.0.0.1:9222 --timeout-settle 200'`.
+Mock page and live window over CDP moved to [playwright.md](playwright.md): the page, opening the
+«Туннелирование» sheet for a check, screenshots, console, MCP registration.
 
 ## Windows-MCP: wizard and tray
 
