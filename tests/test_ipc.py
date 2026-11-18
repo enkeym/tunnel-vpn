@@ -125,6 +125,61 @@ def test_долгие_команды_ждут_ответа_не_обрываяс
     assert ipc.call("start") == {"ok": True}
 
 
+@pytest.mark.parametrize("wait_error", [None, 121])
+@pytest.mark.parametrize("available_after", [0.6, None])
+def test_занятый_канал_ждёт_подключения_но_не_бесконечно(
+        win, monkeypatch, wait_error, available_after):
+    clock = [0.0]
+    win.reads.append(b'{"ok": true}\n')
+    monkeypatch.setattr(ipc.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(ipc.time, "sleep", lambda delay: clock.__setitem__(0, clock[0] + delay))
+
+    def create(*_args):
+        if available_after is None or clock[0] < available_after:
+            raise _WinError(231)
+        return "h"
+
+    def wait(*_args):
+        if wait_error:
+            clock[0] += 0.2
+            raise _WinError(wait_error)
+
+    monkeypatch.setattr(sys.modules["win32file"], "CreateFile", create)
+    monkeypatch.setattr(sys.modules["win32pipe"], "WaitNamedPipe", wait)
+
+    if available_after is None:
+        with pytest.raises(ipc.NotRunning, match="канал занят"):
+            ipc.call("check")
+        assert clock[0] == pytest.approx(4.0)
+        assert win.calls == []
+    else:
+        assert ipc.call("check") == {"ok": True}
+        assert available_after <= clock[0] <= 4.0
+        assert win.calls[-1] == "CloseHandle"
+
+
+@pytest.mark.parametrize("failed_operation", ["CreateFile", "WaitNamedPipe"])
+def test_ошибка_доступа_к_каналу_не_повторяется(win, monkeypatch, failed_operation):
+    attempts = []
+
+    def create(*_args):
+        attempts.append("create")
+        raise _WinError(5 if failed_operation == "CreateFile" else 231)
+
+    def wait(*_args):
+        raise _WinError(5)
+
+    monkeypatch.setattr(sys.modules["win32file"], "CreateFile", create)
+    monkeypatch.setattr(sys.modules["win32pipe"], "WaitNamedPipe", wait)
+
+    with pytest.raises(ipc.NotRunning) as error:
+        ipc.call("check")
+
+    assert error.value.__cause__.winerror == 5
+    assert attempts == ["create"]
+    assert win.calls == []
+
+
 def test_молчащая_служба_на_start_обрывается_по_op_таймауту(win, monkeypatch):
     monkeypatch.setattr(ipc, "OP_TIMEOUT", 0.1)
     monkeypatch.setattr(ipc, "_PEEK_EVERY", 0.01)

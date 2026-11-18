@@ -55,6 +55,8 @@ def requires_admin(op):
 
 _BUF = 65536
 _MAX_REQUEST = 1024 * 1024
+_CONNECT_ATTEMPTS = 20
+_CONNECT_WAIT_MS = 200
 
 
 class Server:
@@ -268,7 +270,7 @@ def call(op, **payload):
         # если трей опрашивает статус ровно в момент, когда открылось окно.
         # WaitNamedPipe ждёт освобождения; на 20 попыток по 200мс — секунды
         # четыре суммарно, дальше уже не «занято», а действительно не отвечает.
-        for _ in range(20):
+        for _ in range(_CONNECT_ATTEMPTS):
             try:
                 handle = win32file.CreateFile(
                     paths.PIPE_NAME,
@@ -278,7 +280,13 @@ def call(op, **payload):
             except pywintypes.error as exc:
                 if exc.winerror != 231:          # не ERROR_PIPE_BUSY — сразу наружу
                     raise
-                win32pipe.WaitNamedPipe(paths.PIPE_NAME, 200)
+                deadline = time.monotonic() + _CONNECT_WAIT_MS / 1000
+                try:
+                    win32pipe.WaitNamedPipe(paths.PIPE_NAME, _CONNECT_WAIT_MS)
+                except pywintypes.error as wait_exc:
+                    if wait_exc.winerror != 121:
+                        raise
+                time.sleep(max(0.0, deadline - time.monotonic()))
         if handle is None:
             raise NotRunning(
                 f"служба {paths.SERVICE_NAME} не отвечает: канал занят")
