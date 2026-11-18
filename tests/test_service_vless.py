@@ -128,7 +128,7 @@ def test_массовая_вставка_создаёт_запасные_и_ос
     assert reply["profiles"] == reply["added"] == 2
     assert _tunnel(reply)["active"] == reply["profile"]
     assert len(subscriptions.list_profiles()) == 2
-    assert service.Core._spares(reply["tunnel"])[1] == [subscriptions.list_profiles()[1]["id"]]
+    assert core._spares(reply["tunnel"])[1] == [subscriptions.list_profiles()[1]["id"]]
 
 
 def test_удаление_последнего_vless_профиля_может_сохранить_или_убрать_правила():

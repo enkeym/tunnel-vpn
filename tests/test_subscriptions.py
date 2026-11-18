@@ -65,6 +65,28 @@ def test_неверный_reality_ключ_отклоняется():
         subscriptions.parse_body("uri-list", _reality_link().replace("pbk=", "pbk=x"))
 
 
+def _hysteria2_userpass_link(insecure="0"):
+    query = {"sni": HOST, "insecure": insecure, "obfs": "salamander",
+             "obfs-password": "obfs-secret"}
+    return f"hysteria2://Peer:peer-secret@{HOST}:443/?{urlencode(query)}#Peer"
+
+
+def test_подписка_vpn_new_hysteria2_логин_пароль():
+    body = _b64(_hysteria2_userpass_link())
+    profiles = subscriptions.parse_body("base64", body)
+
+    assert [p["proto"] for p in profiles] == ["hysteria2"]
+    assert profiles[0]["hysteria2"]["password"] == "Peer:peer-secret"
+    assert profiles[0]["hysteria2"]["sni"] == HOST
+    again = proxy.parse_link(proxy.canonical(profiles[0]))
+    assert again["hysteria2"] == profiles[0]["hysteria2"]
+
+
+def test_hysteria2_insecure_отклоняется():
+    with pytest.raises(ValueError, match="проверкой сертификата"):
+        subscriptions.parse_body("uri-list", _hysteria2_userpass_link("1"))
+
+
 def _b64url(text):
     return (base64.urlsafe_b64encode(text.encode("utf-8"))
             .decode("ascii").rstrip("="))

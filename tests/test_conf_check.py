@@ -118,8 +118,16 @@ LINK = {"port": 1, "username": "u", "password": "p"}
 
 
 def test_полный_работает_по_204(monkeypatch):
-    monkeypatch.setattr(probe.Prober, "_http_code", staticmethod(lambda url, proxy="": "204"))
-    assert probe.trial_check(LINK, True, "", "") == ("up", "HTTP 204")
+    clock = threading.local()
+    monkeypatch.setattr(probe.time, "monotonic", lambda: getattr(clock, "now", 0.0))
+
+    def code(url, proxy=""):
+        clock.now = 0.042
+        return "204"
+
+    monkeypatch.setattr(probe.Prober, "_http_code", staticmethod(code))
+
+    assert probe.trial_check(LINK, True, "", "") == ("up", "42 мс")
 
 
 def test_полный_молчит(monkeypatch):
@@ -143,7 +151,10 @@ def test_полный_висячий_адрес_не_держит_ответив
     t.start()
     try:
         t.join(5)
-        assert not t.is_alive() and got == [("up", "HTTP 204")]
+        assert not t.is_alive()
+        assert got[0][0] == "up"
+        assert got[0][1].endswith(" мс")
+        assert int(got[0][1].split()[0]) > 0
     finally:
         release.set()
 

@@ -4,7 +4,8 @@ from urllib.parse import quote, urlsplit
 from . import vless
 
 PROTO = "hysteria2"
-_LINK_KEYS = frozenset({"alpn", "fp", "obfs", "obfs-password", "security", "sni"})
+_LINK_KEYS = frozenset({"alpn", "fp", "insecure", "obfs", "obfs-password",
+                        "security", "sni"})
 
 
 def _profile(name, server, port, password, sni, alpn, fp, obfs, obfs_password):
@@ -14,7 +15,8 @@ def _profile(name, server, port, password, sni, alpn, fp, obfs, obfs_password):
         raise ValueError("Hysteria2 требует пароль")
     sni = vless._check_host(sni, "sni") if sni else ""
     fp = vless._check_fp(fp)
-    if not isinstance(alpn, str) or any(not x.strip() for x in alpn.split(",")):
+    if not isinstance(alpn, str) or (alpn
+                                     and any(not x.strip() for x in alpn.split(","))):
         raise ValueError("неверный ALPN")
     if obfs not in ("", "salamander"):
         raise ValueError("поддерживается только obfs=salamander")
@@ -42,9 +44,16 @@ def parse_link(text):
         raise ValueError("неверная ссылка hysteria2://") from None
     if parts.scheme.lower() != PROTO or not server or not port or parts.path not in ("", "/"):
         raise ValueError("неверная ссылка hysteria2://")
-    if parts.username is None or parts.password is not None:
+    if parts.username is None:
         raise ValueError("Hysteria2 требует пароль в ссылке")
-    password = vless._unquote(parts.username, "пароль")
+    if parts.password is None:
+        password = vless._unquote(parts.username, "пароль")
+    else:
+        login = vless._unquote(parts.username, "логин")
+        secret = vless._unquote(parts.password, "пароль")
+        if not login or not secret:
+            raise ValueError("неверная ссылка hysteria2://")
+        password = f"{login}:{secret}"
     if len(parts.query) > 4096 or vless._BAD_PERCENT.search(parts.query):
         raise ValueError("неверное percent-кодирование в ссылке")
     from urllib.parse import parse_qsl
@@ -60,6 +69,8 @@ def parse_link(text):
         values[key] = value
     if values.get("security", "tls").lower() != "tls":
         raise ValueError("Hysteria2 требует TLS")
+    if values.get("insecure", "0").lower() not in ("0", "false"):
+        raise ValueError("Hysteria2 требует TLS с проверкой сертификата")
     return _profile(vless._unquote(parts.fragment, "имя") if parts.fragment else "",
                     server, port, password, values.get("sni", ""),
                     values.get("alpn", ""), values.get("fp", ""),

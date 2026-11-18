@@ -1355,18 +1355,20 @@ class Tunnel:
         """Задержка до DELAY_URL (иначе до DELAY_FALLBACK_URL) через выход tag
         в мс; None — не дошло ни до одного. Один недоступный адрес не делает
         вердикт «сервер не отвечает»: туннель мог везти остальное."""
-        for url in (DELAY_URL, DELAY_FALLBACK_URL):
+        def check(url):
             query = urllib.parse.urlencode({"url": url, "timeout": timeout_ms})
             try:
                 reply = self._clash(
                     f"/proxies/{urllib.parse.quote(tag)}/delay?{query}",
                     timeout=timeout_ms / 1000 + 2)
             except (OSError, ValueError):
-                continue
+                return None
             ms = reply.get("delay")
             if isinstance(ms, int) and ms > 0:
                 return ms
-        return None
+            return None
+
+        return probe._race((DELAY_URL, DELAY_FALLBACK_URL), check) or None
 
     def _keep_awake(self, on):
         try:

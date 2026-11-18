@@ -257,7 +257,6 @@ button:disabled {
 }
 .btn.working .spin {
   display: block;
-  animation: spin var(--t-spin) linear infinite;
 }
 .btn.working .ic:not(.spin) {
   display: none;
@@ -286,9 +285,6 @@ button:disabled {
 }
 .ibtn:disabled {
   opacity: 0.4;
-}
-.ibtn.working .ic {
-  animation: spin var(--t-spin) linear infinite;
 }
 
 .link {
@@ -367,14 +363,6 @@ body.kbd :focus-visible {
 .switch:disabled {
   opacity: 0.45;
 }
-.switch.pending::after {
-  animation: pulse 1s var(--ease) infinite alternate;
-}
-@keyframes pulse {
-  to {
-    opacity: 0.35;
-  }
-}
 
 /* Сегментированный контрол — вкладки и чипы-фильтры. */
 .seg {
@@ -431,9 +419,6 @@ body.kbd :focus-visible {
 }
 .orb.st-ok::after {
   opacity: 0.9;
-}
-.orb.st-busy .ic {
-  animation: spin var(--t-spin) linear infinite;
 }
 .orb.big {
   width: 22px;
@@ -573,10 +558,6 @@ body.kbd :focus-visible {
   opacity: 0.9;
   display: none;
   filter: opacity(0);
-  animation: pulse 1s var(--ease) infinite alternate;
-  transition:
-    filter var(--t-mid) var(--ease),
-    display var(--t-mid) allow-discrete;
 }
 #btn-toggle.working::before,
 .power.working::before {
@@ -1053,9 +1034,7 @@ body.kbd :focus-visible {
   display: flex;
   align-items: center;
   gap: var(--sp-1);
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 50%;
+  flex: none;
   color: var(--dim);
   font-size: var(--fs-s);
 }

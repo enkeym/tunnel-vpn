@@ -32,6 +32,12 @@ def _timeout(addr, tag="wg-home"):
             f"context deadline exceeded\n")
 
 
+def _vless_timeout(addr):
+    return (f"+0300 2026-11-18 09:16:23 ERROR [2343778703 5.0s] connection: open "
+            f"connection to {addr} using outbound/vless[vless-out]: "
+            f"dial tcp 157.228.74.184:41559: i/o timeout\n")
+
+
 class _Proc:
     returncode = 1
 
@@ -360,6 +366,63 @@ def test_поднялся_на_повторе_повторы_прекращаю�
     assert core.tunnel.starts == 2
     assert core.tunnel.uplink == HOME
     assert core._retry_left == 0
+
+
+def test_запасные_перебираются_после_ошибки_применения(monkeypatch):
+    core = _core(monkeypatch)
+    t = {"id": "home", "name": "Личный", "active": "old", "proto": "wg"}
+    monkeypatch.setattr(core, "_spares", lambda tid: (t, ["bad", "good"]))
+    monkeypatch.setattr(core, "_finish_test",
+                        lambda *args, **kwargs: {"result": "up"})
+    attempted = []
+
+    def take(target, name):
+        attempted.append(name)
+        return {"ok": name == "good", "retry": name != "good"}
+
+    monkeypatch.setattr(core, "_take_spare", take)
+
+    assert core._fallback(core.tunnel.home)
+    assert attempted == ["bad", "good"]
+
+
+@pytest.mark.parametrize("ready_at", [0.0, 10.0, None])
+def test_готовность_проверяется_сразу_без_ожидания_соседнего(
+        monkeypatch, ready_at):
+    core = _core(monkeypatch)
+    clock = [100.0]
+    core.tunnel.home.started = clock[0]
+    core.tunnel.work.started = clock[0] + 10
+    monkeypatch.setattr(service.time, "monotonic", lambda: clock[0])
+
+    def wait(seconds):
+        clock[0] += seconds
+        return False
+
+    monkeypatch.setattr(service.time, "sleep", wait)
+    monkeypatch.setattr(core.tunnel.cancel, "wait", wait)
+    monkeypatch.setattr(core.tunnel, "delay",
+                        lambda tag: 25 if ready_at is not None
+                        and clock[0] >= 100 + ready_at else None)
+
+    assert core._spare_works("home") is (ready_at is not None)
+    assert clock[0] - 100 == (probe.SIDE_SETTLE if ready_at is None else ready_at)
+
+
+def test_отмена_во_время_ожидания_готовности_не_переключает_выход(monkeypatch):
+    core = _core(monkeypatch)
+    core.tunnel.home.started = service.time.monotonic()
+    core.tunnel.out = buildconfig.BLOCK_TAG
+
+    def cancel(seconds):
+        core.tunnel.cancel.set()
+        return True
+
+    monkeypatch.setattr(core.tunnel.cancel, "wait", cancel)
+    monkeypatch.setattr(service.time, "sleep", cancel)
+
+    assert not core._spare_works("home")
+    assert core.tunnel.outs == []
 
 
 def _mains_data():
@@ -734,6 +797,19 @@ def test_таймауты_к_одному_адресу_без_задержки_�
     assert core.tunnel.outs == [buildconfig.DIRECT_TAG]
 
 
+def test_таймауты_vless_уводят_выход_и_перезапускают_основной(monkeypatch, tmp_path):
+    """18 ноября: VLESS-основной писал «dial ... i/o timeout», а сторож ждал
+    только «context deadline exceeded» и мёртвого туннеля не видел."""
+    core = _core(monkeypatch)
+    log = _side_log(core, tmp_path)
+    _append(log, *[_vless_timeout("43.134.158.182:443")] * 3)
+
+    _rounds(core, 1)
+
+    assert core.tunnel.restarts == ["home"]
+    assert core.tunnel.outs == [buildconfig.DIRECT_TAG]
+
+
 def test_таймауты_разных_туннелей_не_складываются(monkeypatch, tmp_path):
     core = _core(monkeypatch)
     _append(_side_log(core, tmp_path, "work"), _timeout("10.10.0.5:443", "wg-work"))
@@ -978,6 +1054,7 @@ def _spare_confs(monkeypatch, core, answers, during=None, t=HOME_T):
     (проверенные (имя, alone), сделанные активными (туннель, имя)); during — что
     случается, пока идёт проверка."""
     tried, made = [], []
+    t = dict(t)
 
     def run_test(t, name, alone=False, settle=False):
         tried.append((name, alone))
@@ -988,9 +1065,153 @@ def _spare_confs(monkeypatch, core, answers, during=None, t=HOME_T):
     monkeypatch.setattr(core, "_spares", lambda tid: (t, list(answers)))
     monkeypatch.setattr(core, "_run_test", run_test)
     monkeypatch.setattr(core, "_conf_stamp", lambda tid, name, proto="wg": None)
-    monkeypatch.setattr(core, "_set_active",
-                        lambda name, tunnel="": made.append((tunnel, name)) or {"ok": True})
+    def set_active(name, tunnel=""):
+        made.append((tunnel, name))
+        t["active"] = name
+        return {"ok": True}
+
+    monkeypatch.setattr(core, "_set_active", set_active)
     return tried, made
+
+
+@pytest.mark.parametrize("failed_apply", [True, False])
+@pytest.mark.parametrize("manual", [True, False])
+def test_перебор_продолжается_после_неудачного_запасного(
+        monkeypatch, failed_apply, manual):
+    core = _core(monkeypatch)
+    home = core.tunnel.home
+    core.tunnel.sides = [home]
+    core.tunnel.out = buildconfig.BLOCK_TAG
+    core.tunnel.kill_switch = True
+    if manual:
+        core.tunnel.uplink = None
+        home.proc = _Proc()
+    tried, made = _spare_confs(
+        monkeypatch, core, {"nl-2": "up", "nl-3": "up"})
+    applied = []
+
+    def reload():
+        assert core.last_error == ""
+        assert core.lock.locked()
+        applied.append(made[-1][1])
+        if len(applied) == 1:
+            assert core.tunnel.out_now() == buildconfig.BLOCK_TAG
+            return [(home, "не поднялся" if failed_apply else "")]
+        home.proc = _Alive()
+        core.tunnel.delay_ms = 25
+        return [(home, "")]
+
+    _reload(monkeypatch, core, reload)
+
+    reply = core._do_start() if manual else {"ok": core._fallback(home)}
+
+    assert reply["ok"]
+    assert tried == [("nl-2", True), ("nl-3", True)]
+    assert made == [("home", "nl-2"), ("home", "nl-3")]
+    assert applied == ["nl-2", "nl-3"]
+    assert core.last_error == ""
+    assert core.tunnel.out_now() == HOME_VIA
+    assert not core.lock.locked()
+
+
+@pytest.mark.parametrize("manual", [True, False])
+def test_ошибка_только_после_исчерпания_группы(monkeypatch, manual):
+    core = _core(monkeypatch)
+    home = core.tunnel.home
+    core.tunnel.sides = [home]
+    if manual:
+        core.tunnel.uplink = None
+
+    def during():
+        assert core.last_error == ""
+
+    tried, made = _spare_confs(
+        monkeypatch, core, {"nl-2": "error", "nl-3": "error"}, during=during)
+
+    reply = core._do_start() if manual else {"ok": core._fallback(home)}
+
+    assert not reply["ok"]
+    assert tried == [("nl-2", True), ("nl-3", True)]
+    assert made == []
+    assert "Ни один конфиг" in core.last_error
+    if manual:
+        assert core.tunnel.uplink is None
+
+
+def test_последняя_успешная_проба_не_дублируется_перед_применением(monkeypatch):
+    core = _core(monkeypatch)
+    tried, made = _spare_confs(monkeypatch, core, {"nl-2": "up"})
+    core._conf_checks = {("home", "nl-2"): {"stamp": None, "result": "up"}}
+
+    def reload():
+        core.tunnel.delay_ms = 25
+        return [(core.tunnel.home, "")]
+
+    _reload(monkeypatch, core, reload)
+
+    assert core._fallback(core.tunnel.home)
+    assert tried == []
+    assert made == [("home", "nl-2")]
+
+
+def test_запасные_упорядочены_по_действительным_пробам(monkeypatch):
+    core = _core(monkeypatch)
+    monkeypatch.setattr(core, "_spares", service.Core._spares.__get__(core))
+    data = tunnels.validate({"tunnels": [
+        {"id": "home", "name": "Личный", "mode": "all", "active": "b"}]})
+    monkeypatch.setattr(service.tunnels, "load", lambda: data)
+    monkeypatch.setattr(service.tunnels, "list_confs",
+                        lambda tid, proto: ["a", "b", "c", "d", "e"])
+    monkeypatch.setattr(core, "_conf_stamp", lambda *args: "current")
+    core._conf_checks = {
+        ("home", "a"): {"stamp": "current", "result": "up"},
+        ("home", "c"): {"stamp": "current", "result": "error"},
+        ("home", "e"): {"stamp": "old", "result": "up"},
+    }
+
+    assert core._spares("home")[1] == ["a", "d", "e", "c"]
+
+
+@pytest.mark.parametrize("change", ["command", "active", "file"])
+def test_изменение_во_время_пробы_отменяет_перебор(monkeypatch, change):
+    core = _core(monkeypatch)
+    stamp = [1]
+
+    def during():
+        if change == "command":
+            core._cmd += 1
+            core._human += 1
+        elif change == "active":
+            target, _ = core._spares("home")
+            target["active"] = "human"
+        else:
+            stamp[0] += 1
+
+    tried, made = _spare_confs(
+        monkeypatch, core, {"nl-2": "up", "nl-3": "up"}, during=during)
+    monkeypatch.setattr(core, "_conf_stamp", lambda *args: stamp[0])
+
+    assert not core._fallback(core.tunnel.home)
+    assert tried == [("nl-2", True)]
+    assert made == []
+    assert core.last_error == ""
+
+
+def test_ошибка_kill_switch_не_запускает_следующего_кандидата(monkeypatch):
+    core = _core(monkeypatch)
+    tried, made = _spare_confs(
+        monkeypatch, core, {"nl-2": "up", "nl-3": "up"})
+    _reload(monkeypatch, core, [])
+
+    def reject(*args):
+        raise OSError("WFP недоступен")
+
+    monkeypatch.setattr(service.killguard, "apply", reject)
+
+    assert not core._fallback(core.tunnel.home)
+    assert tried == [("nl-2", True)]
+    assert made == [("home", "nl-2")]
+    assert "системную блокировку" in core.last_error
 
 
 def test_основной_не_ожил_после_перезапуска_берётся_ответивший_запасной(monkeypatch):
@@ -1046,6 +1267,11 @@ def test_туннель_по_списку_после_перезапуска_бе
     log = _side_log(core, tmp_path, "work")
     asked = _corp_says(monkeypatch, core, "")
     tried, made = _spare_confs(monkeypatch, core, {"corp-2": "up"}, t=WORK_T)
+    monkeypatch.setattr(core.prober, "check_plan", lambda: [
+        {"id": "work", "name": "Работа", "mode": "list", "running": True,
+         "dns": "10.0.0.1", "host": ""}])
+    monkeypatch.setattr(core.prober, "_slow_dns",
+                        lambda p, quick=False: "10.20.0.4")
     seen = _reload(monkeypatch, core, [(core.tunnel.work, "")])
     _append(log, *_corp_dead())
 
@@ -1111,18 +1337,20 @@ def test_команда_человека_посреди_проверки_зап�
 
 
 def test_запасные_по_кругу_после_активного(monkeypatch):
+    core = _core(monkeypatch)
+    monkeypatch.setattr(core, "_spares", service.Core._spares.__get__(core))
     data = tunnels.validate({"tunnels": [{"id": "home", "name": "Личный", "mode": "all",
                                           "active": "b"}]})
     monkeypatch.setattr(service.tunnels, "load", lambda: data)
     monkeypatch.setattr(service.tunnels, "list_confs",
                         lambda tid, proto="wg": ["a", "b", "c"])
 
-    t, names = service.Core._spares("home")
+    t, names = core._spares("home")
     assert t["id"] == "home" and names == ["c", "a"]
 
     data["tunnels"][0]["active"] = ""
-    assert service.Core._spares("home")[1] == ["a", "b", "c"]
-    assert service.Core._spares("нет")[1] == []
+    assert core._spares("home")[1] == ["a", "b", "c"]
+    assert core._spares("нет")[1] == []
 
 
 # ------------------------------------------------------- правка конфигов
@@ -1156,7 +1384,7 @@ def test_правка_при_выключенном_vpn_ничего_не_под
 def test_правка_перезапускает_только_сменившийся_туннель(monkeypatch):
     core = _core(monkeypatch)
     home, work = core.tunnel.home, core.tunnel.work
-    core._dead_hits = ((0.0, home.tag, "1.1.1.1"), (0.0, work.tag, "10.53.0.4"))
+    core._dead_hits = ((0.0, home.tid, "1.1.1.1"), (0.0, work.tid, "10.53.0.4"))
     core._side_after = {"home": 9e9, "work": 9e9}
     core._side_noted = {"home": 9e9, "work": 9e9}
     seen = _reload(monkeypatch, core, [(home, "")])
@@ -1169,7 +1397,7 @@ def test_правка_перезапускает_только_сменивший
     assert seen == [{"busy": "", "locked": True, "plan": "plan"}]
     assert core.tunnel.starts == 0
     # Таймауты и пауза перезапуска были у прежнего конфига.
-    assert [h[1] for h in core._dead_hits] == [work.tag]
+    assert [h[1] for h in core._dead_hits] == [work.tid]
     assert core._side_after == {"work": 9e9} and core._side_noted == {"work": 9e9}
     assert core.prober._remeasure.is_set()
 

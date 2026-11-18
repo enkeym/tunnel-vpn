@@ -747,6 +747,17 @@ def test_удаление_из_активного_основного_спраш�
     assert ("askFull", None) in shown
 
 
+def test_удаление_всех_конфигов_разом(monkeypatch):
+    api, admin, shown = _api(monkeypatch, [{"ok": True, "main": False, "removed": 3}])
+    calls = _ipc_calls(monkeypatch)
+
+    api.send("del_configs", {"tunnel": "work", "drop_tunnel": True})
+
+    assert admin == [("remove-configs", {"tunnel": "work", "drop_tunnel": True})]
+    assert ("closeSheet", None) in shown
+    assert ("apply", {"ask": False}) in calls
+
+
 def test_удаление_профиля_не_из_активного_основного_без_вопроса(monkeypatch):
     api, admin, _ = _api(monkeypatch, [{"ok": True, "id": "p2", "main": False}])
     calls = _ipc_calls(monkeypatch)

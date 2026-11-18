@@ -293,6 +293,43 @@ def test_удаление_не_из_активного_основного_пом
     assert r["ok"] and not r["main"]
 
 
+def test_удаление_всех_конфигов_разом(core):
+    _put("work", "corp.conf")
+    _put("work", "corp-2.conf")
+    _put("work", "corp-3.conf")
+
+    r = core._remove_configs("work")
+
+    assert r["ok"] and r["removed"] == 3
+    assert _files("work") == []
+    assert "work" in _ids()
+
+
+def test_удаление_всех_конфигов_с_туннелем_убирает_и_его(core):
+    _put("work", "corp.conf")
+    _put("work", "corp-2.conf")
+
+    r = core._remove_configs("work", drop_tunnel=True)
+
+    assert r["ok"] and r["removed"] == 2
+    assert "work" not in _ids()
+
+
+def test_удаление_всех_конфигов_основного_помечает_вопрос(core):
+    _put("home", "nl-1.conf")
+    _put("home", "nl-2.conf")
+
+    r = core._remove_configs("home")
+
+    assert r["ok"] and r["main"] and r["removed"] == 2
+
+
+def test_удаление_всех_без_конфигов_отказывает(core):
+    r = core._remove_configs("work")
+
+    assert not r["ok"] and "нет конфигов" in r["error"]
+
+
 def test_профиль_это_активный_конфиг_основного(core):
     _put("home", "nl-1.conf")
     _put("home", "nl-2.conf")
@@ -592,6 +629,7 @@ class _Up:
 
     def __init__(self):
         self.seen = []
+        self.sides = []
         self.uplink = None
         self.err = ""
         self.cancel = threading.Event()

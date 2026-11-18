@@ -383,12 +383,45 @@ def test_json_без_uTLS_оставляет_пустой_fp():
 @pytest.mark.parametrize("top", [
     {"inbounds": [{"type": "tun", "tag": "tun-in"}]},
     {"endpoints": []},
+])
+def test_json_игнорирует_полный_конфиг(top):
+    profiles = vless.parse_singbox_json(_json(_outbound(), **top))
+
+    assert [p["proto"] for p in profiles] == ["vless"]
+
+
+@pytest.mark.parametrize("top", [
     {"experimental": {}},
     {"clash_api": {}},
 ])
-def test_json_отклоняет_полный_конфиг(top):
+def test_json_отклоняет_служебные_поля(top):
     with pytest.raises(ValueError):
         vless.parse_singbox_json(_json(_outbound(), **top))
+
+
+def test_json_полный_конфиг_vpn_new_импортирует_reality():
+    config = _json(
+        _outbound(tag="Reality · 95.181.175.65", transport=None,
+                  flow="xtls-rprx-vision",
+                  domain_resolver={"server": "dns-bootstrap",
+                                   "strategy": "prefer_ipv4"},
+                  tls={"enabled": True, "server_name": "r.enkeym.site",
+                       "utls": {"enabled": True, "fingerprint": "chrome"},
+                       "reality": {
+                           "enabled": True,
+                           "public_key": "hOcduJ7nqTNH7pokyo-sax3IJbyicMtK0cBhraRJ200",
+                           "short_id": "4f38af1528d65068"}}),
+        {"type": "selector", "tag": "select",
+         "outbounds": ["Reality · 95.181.175.65"]},
+        inbounds=[{"type": "tun", "tag": "tun-in", "auto_route": True}],
+        dns={"servers": [{"type": "https", "server": "1.1.1.1"}]},
+        route={"final": "select"})
+
+    profiles = vless.parse_singbox_json(config)
+
+    assert [p["proto"] for p in profiles] == ["vless"]
+    assert profiles[0]["vless"]["security"] == "reality"
+    assert profiles[0]["vless"]["flow"] == "xtls-rprx-vision"
 
 
 @pytest.mark.parametrize("top", [
@@ -429,6 +462,33 @@ def test_json_отклоняет_insecure():
 
     with pytest.raises(ValueError, match="сертификат"):
         vless.parse_singbox_json(_json(_outbound(tls=tls)))
+
+
+def _hysteria2_outbound(**over):
+    ob = {"type": "hysteria2", "tag": "hy2", "server": "example.com",
+          "server_port": 443, "password": "Peer:peer-secret",
+          "obfs": {"type": "salamander", "password": "obfs-secret"},
+          "tls": {"enabled": True, "server_name": "example.com"}}
+    ob.update(over)
+    return ob
+
+
+def test_json_импортирует_hysteria2():
+    profiles = vless.parse_singbox_json(_json(_hysteria2_outbound()))
+
+    assert [p["proto"] for p in profiles] == ["hysteria2"]
+    assert profiles[0]["hysteria2"]["password"] == "Peer:peer-secret"
+    assert profiles[0]["hysteria2"]["obfs"] == "salamander"
+
+
+def test_json_через_селектор_vless_и_hysteria2():
+    selector = {"type": "selector", "tag": "select",
+                "outbounds": ["cdn", "hy2"], "default": "cdn",
+                "interrupt_exist_connections": True}
+    profiles = vless.parse_singbox_json(
+        _json(_outbound(), _hysteria2_outbound(), selector))
+
+    assert [p["proto"] for p in profiles] == ["vless", "hysteria2"]
 
 
 def test_json_отклоняет_tcp():

@@ -283,11 +283,13 @@ def trial_check(link, full, host, dns):
         codes = {}
 
         def check(url):
+            started = time.monotonic()
             codes[url] = said = Prober._http_code(url, proxy)
-            return "204" if said == "204" else ""
+            return f"{max(1, round((time.monotonic() - started) * 1000))} мс" if said == "204" else ""
 
-        if _race((TRIAL_URL, CHECK_FALLBACK_URL), check):
-            return "up", "HTTP 204"
+        answer = _race((TRIAL_URL, CHECK_FALLBACK_URL), check)
+        if answer:
+            return "up", answer
         code = codes.get(CHECK_FALLBACK_URL) or codes.get(TRIAL_URL) or ""
         return "error", f"HTTP {code}" if code else "сервер не отвечает"
     p = {"id": "", "mode": "list", "host": host, "dns": dns}

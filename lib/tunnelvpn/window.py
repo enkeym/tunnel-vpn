@@ -156,7 +156,7 @@ def _service_installed():
 
 QUEUED_OPS = frozenset({
     "start", "stop", "restart", "start_only", "use_config", "set_enabled",
-    "apply_full", "del_config", "del_tunnel", "move_config",
+    "apply_full", "del_config", "del_configs", "del_tunnel", "move_config",
     "set_autostart", "log_level", "kill_switch", "show_config", "place_config",
     "tunnel_rules", "save_rules", "logs",
 })
@@ -324,6 +324,12 @@ class Api:
         elif name == "del_config":
             reply = self._admin_call("remove-config", tunnel=arg["tunnel"],
                                      name=arg["name"],
+                                     drop_tunnel=bool(arg.get("drop_tunnel")))
+            self._guard(reply)
+            self.js("closeSheet")
+            self._apply(ask=reply.get("main", True))
+        elif name == "del_configs":
+            reply = self._admin_call("remove-configs", tunnel=arg["tunnel"],
                                      drop_tunnel=bool(arg.get("drop_tunnel")))
             self._guard(reply)
             self.js("closeSheet")

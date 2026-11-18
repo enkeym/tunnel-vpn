@@ -19,10 +19,10 @@ _LINK_KEYS = frozenset({
     "allowinsecure", "headertype", "flow", "pbk", "sid", "spx",
     "support-x25519mlkem768", "servicename", "mode",
 })
-_TOP_KEYS = frozenset({"outbounds", "log", "dns", "route"})
-_TOP_BLOCKED = ("inbounds", "endpoints", "experimental",
-                "clash_api", "cache_file", "ntp", "certificate",
-                "certificate_providers")
+_TOP_KEYS = frozenset({"outbounds", "log", "dns", "route", "inbounds",
+                       "endpoints"})
+_TOP_BLOCKED = ("experimental", "clash_api", "cache_file", "ntp",
+                "certificate", "certificate_providers")
 _OUT_KEYS = frozenset({
     "type", "tag", "server", "server_port", "uuid", "flow", "network",
     "tls", "transport", "domain_resolver",
@@ -33,7 +33,8 @@ _WS_KEYS = frozenset({
     "type", "path", "headers", "max_early_data", "early_data_header_name",
     "service_name",
 })
-_NODE_TYPES = frozenset({"vless", "selector", "urltest", "direct", "block"})
+_NODE_TYPES = frozenset({"vless", "hysteria2", "selector", "urltest",
+                         "direct", "block"})
 
 _BAD_PERCENT = re.compile(r"%(?![0-9A-Fa-f]{2})")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
@@ -571,16 +572,12 @@ def parse_singbox_json(text):
         raise ValueError("JSON sing-box: ожидаю объект")
     for key in _TOP_BLOCKED:
         if key in doc:
-            if key in ("inbounds", "endpoints"):
-                raise ValueError("это полная конфигурация sing-box "
-                                 "(inbounds/TUN); импортируются только VLESS "
-                                 "outbounds — возьмите обычную подписку")
             raise ValueError(f"поле {key} в JSON не импортируется: "
-                             f"только VLESS outbounds")
+                             f"только VLESS и Hysteria2 outbounds")
     for key in doc:
         if key not in _TOP_KEYS:
             raise ValueError(f"поле {key} в JSON не импортируется: "
-                             f"только VLESS outbounds")
+                             f"только VLESS и Hysteria2 outbounds")
     raw = doc.get("outbounds")
     if not isinstance(raw, list) or not raw:
         raise ValueError("в JSON нет outbounds")
@@ -595,7 +592,7 @@ def parse_singbox_json(text):
         kind = item.get("type")
         if kind not in _NODE_TYPES:
             raise ValueError(f"outbound {kind!r} не поддерживается: "
-                             f"только VLESS")
+                             f"только VLESS и Hysteria2")
         tag = item.get("tag")
         if tag is not None:
             if not isinstance(tag, str) or not tag.strip():
@@ -612,17 +609,18 @@ def parse_singbox_json(text):
     elif urltests:
         roots = urltests
     else:
-        roots = [item for item in order if item.get("type") == "vless"]
+        roots = [item for item in order
+                 if item.get("type") in ("vless", "hysteria2")]
 
     def resolve(node, stack):
         kind = node.get("type")
-        if kind == "vless":
+        if kind in ("vless", "hysteria2"):
             return [node]
         if kind in ("direct", "block"):
             return []
         if kind not in ("selector", "urltest"):
             raise ValueError(f"outbound {kind!r} не поддерживается: "
-                             f"только VLESS")
+                             f"только VLESS и Hysteria2")
         tag = node.get("tag")
         if tag is None:
             raise ValueError(f"у {kind} нет tag")
@@ -646,12 +644,17 @@ def parse_singbox_json(text):
     seen = set()
     for root in roots:
         for outbound in resolve(root, frozenset()):
-            profile = from_outbound(outbound)
-            mark = fingerprint(profile)
+            if outbound.get("type") == "hysteria2":
+                from . import hysteria2
+                profile = hysteria2.from_outbound(outbound)
+                mark = hysteria2.fingerprint(profile)
+            else:
+                profile = from_outbound(outbound)
+                mark = fingerprint(profile)
             if mark in seen:
                 continue
             seen.add(mark)
             profiles.append(profile)
     if not profiles:
-        raise ValueError("в JSON нет VLESS outbounds")
+        raise ValueError("в JSON нет VLESS или Hysteria2 outbounds")
     return profiles
