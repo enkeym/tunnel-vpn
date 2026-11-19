@@ -351,6 +351,7 @@ class Core:
     _cmd_lock = threading.Lock()
     _running = None
     _job_last = None
+    _job_now = None
 
     # Таймауты (время, тег, адрес) за DEAD_WINDOW.
     _dead_hits = ()
@@ -654,7 +655,7 @@ class Core:
         st["log_level"] = data["log_level"]
         # Галочка kill-switch: пишет set-kill-switch (администратор), читать — любому.
         st["kill_switch"] = data["kill_switch"]
-        st["job"] = self._job_last
+        st["job"] = self._job_now or self._job_last
         return st
 
     @staticmethod
@@ -790,7 +791,11 @@ class Core:
         for (owner, name), rec in self._conf_checks.items():
             if (owner == tid and name in confs
                     and rec.get("stamp") == self._conf_stamp(tid, name, proto)):
-                out[name] = {k: rec.get(k) for k in ("result", "answer", "at", "checking")}
+                if not (rec.get("result") or rec.get("checking")):
+                    continue
+                out[name] = {"result": rec.get("result"), "answer": rec.get("answer"),
+                             "at": rec.get("at"),
+                             "checking": bool(rec.get("checking"))}
         return out
 
     def _note_test(self, key, **rec):
@@ -829,10 +834,12 @@ class Core:
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
         key = (t["id"], name)
-        self._note_test(key, stamp=self._conf_stamp(*key, proto), checking=True)
+        stamp = self._conf_stamp(*key, proto)
         if not wait:
+            self._note_test(key, stamp=stamp, checking=True, queued=True)
             self._queue_test(t, name, swap)
             return {"ok": True}
+        self._note_test(key, stamp=stamp, checking=True)
         return {"ok": True, "test": self._finish_test(t, name, settle=True)}
 
     def _queue_test(self, t, name, swap=0.0):
@@ -843,12 +850,11 @@ class Core:
             q = self._test_queues.setdefault(tid, collections.deque())
             if swap:
                 q.appendleft(job)
-            elif live and (tid, name) in self._test_busy:
+            elif ((tid, name) in self._test_busy
+                  or any(queued[1] == name for queued in q)):
                 return
             elif live:
-                rest = [job for job in q if job[1] != name]
-                q.clear()
-                q.extend(rest)
+                self._test_busy.add((tid, name))
                 threading.Thread(target=self._test_job, args=(t, name),
                                  daemon=True).start()
                 return
@@ -871,12 +877,16 @@ class Core:
                         del self._test_workers[tid]
                     return
                 t, name, swap = q.popleft()
+                self._test_busy.add((tid, name))
             self._test_job(t, name, swap)
 
     def _test_job(self, t, name, swap=0.0):
         key = (t["id"], name)
         with self._tests_lock:
             self._test_busy.add(key)
+        self._note_test(key, stamp=self._conf_stamp(t["id"], name,
+                                                   t.get("proto", "wg")),
+                        checking=True, queued=False)
         try:
             self._finish_test(t, name, swap=swap, settle=True)
         except Exception as exc:                       # noqa: BLE001
@@ -898,7 +908,7 @@ class Core:
             self.log(f"!! проверка {name} упала: {exc!r}")
             result, answer = "error", "проверка упала"
         rec = {"result": result, "answer": answer, "at": time.time()}
-        self._note_test(key, stamp=stamp, checking=False, **rec)
+        self._note_test(key, stamp=stamp, checking=False, queued=False, **rec)
         # Не ответил — предупреждение: окно покажет его в фильтре «Предупреждения».
         sign = "→" if result in ("up", "none") else "!!"
         self.log(f"{sign} проверка {name} («{t['name']}»): {result or 'нет итога'}"
@@ -1228,6 +1238,9 @@ class Core:
             # Личный мог не подняться: проверка выхода на подъёме должна знать
             # это до первого круга сторожа, иначе увидит «утечку».
             self.prober.set(out=self.tunnel.out_now())
+            for side in self.tunnel.sides:
+                if side.alive():
+                    self._test_active(side.tid)
             return {"ok": True}
         finally:
             self._probe_now()
@@ -2424,6 +2437,7 @@ class Core:
             self._jobs[jid] = {"id": jid, "kind": kind, "state": "running",
                                "total": total, "done": 0, "added": 0,
                                "failed": 0, "problems": [], "error": ""}
+            self._job_now = dict(self._jobs[jid])
             self._jobs_done[jid] = threading.Event()
             finished = [k for k in self._jobs
                         if k != jid and self._jobs[k]["state"] != "running"]
@@ -2454,6 +2468,7 @@ class Core:
             if job is None:
                 return None
             job.update(fields)
+            self._job_now = dict(job, problems=list(job["problems"]))
             return dict(job, problems=list(job["problems"]))
 
     def _job_finish(self, jid, state="done", **fields):
@@ -2462,6 +2477,8 @@ class Core:
             return None
         with self._jobs_lock:
             self._job_last = snapshot
+            if (self._job_now or {}).get("id") == jid:
+                self._job_now = None
             done = self._jobs_done.pop(jid, None)
         if done is not None:
             done.set()
@@ -2545,25 +2562,206 @@ class Core:
 
     def _add_amnezia(self, key, tunnel="", place=""):
         try:
-            fetched = gateway.all_profiles(key["api_key"],
-                                           key["user_country_code"],
-                                           key["service_protocol"])
-            replies = []
-            for number, profile in enumerate(fetched):
-                reply = self._write_config(profile["name"], profile["conf"], "",
-                                           tunnel if not number else "",
-                                           place if not number else "")
-                replies.append(reply)
-                if not reply.get("ok"):
-                    return reply
+            result = gateway.probe(key["api_key"], key["user_country_code"],
+                                   key["service_protocol"])
         except (OSError, ValueError) as exc:
             self.log(f"!! конфиги Amnezia Premium не получены: {exc}")
             return {"ok": False, "error": str(exc)}
-        self.log(f"→ добавлены конфиги Amnezia Premium: {len(replies)}")
+        replies = []
+        for number, profile in enumerate(result["profiles"]):
+            reply = self._add_config(profile["name"], profile["conf"], "",
+                                     tunnel if not number else "",
+                                     place if not number else "")
+            if not reply.get("ok"):
+                self.log(f"!! конфиг Amnezia Premium не добавлен: "
+                         f"{reply.get('error')}")
+                return reply
+            replies.append(reply)
+        if not replies:
+            return {"ok": False, "error": "шлюз Amnezia не вернул конфигов"}
+        default = result["country"]
+        codes = {profile["name"]: default for profile in result["profiles"]}
+        items = [(reply["tunnel"], reply["name"]) for reply in replies]
+        job = self._job_start("add", len(result["countries"]) + 1,
+                              lambda jid: self._import_amnezia(
+                                  jid, key, items, codes, result["countries"]))
+        self.log(f"→ Amnezia Premium: конфигов {len(replies)}, стран ещё "
+                 f"{len(result['countries'])} — добавляю и проверяю по одному")
         first = replies[0]
         return {"ok": True, "tunnel": first["tunnel"], "place": first["place"],
                 "added": len(replies), "profiles": len(replies),
-                "checking": True, "invalid": 0, "duplicates": 0}
+                "job": job, "checking": True, "invalid": 0, "duplicates": 0,
+                "refused": 0}
+
+    def _import_amnezia(self, jid, key, items, codes, countries):
+        """Страны шлюза по одной: выдал — сразу проверил, потом следующая.
+
+        Новая выдача гасит ещё не проверенный конфиг (замер 2026-11-19), а
+        повторная выдача страны — прежний её конфиг, поэтому проверка идёт до
+        следующего запроса, а не общей пачкой в конце."""
+        if not os.path.isfile(paths.SINGBOX):
+            self._job_finish(jid, state="error",
+                             error="нет sing-box — переустановите приложение")
+            return
+        problems = []
+        self._test_amnezia(items)
+        self._job_progress(jid, done=1, added=len(items))
+        for step, code in enumerate(countries, 2):
+            try:
+                fetched, _ = gateway._fetch(key["api_key"],
+                                            key["user_country_code"],
+                                            key["service_protocol"], code,
+                                            gateway.DEFAULT_TIMEOUT)
+            except (OSError, ValueError) as exc:
+                problems.append({"name": code, "reason": str(exc)})
+                self.log(f"→ Amnezia Premium: {code} — {exc}")
+            else:
+                added = []
+                for profile in fetched:
+                    reply = self._add_config(profile["name"], profile["conf"])
+                    if not reply.get("ok"):
+                        problems.append({"name": profile["name"],
+                                         "reason": reply.get("error")
+                                         or "конфиг не добавлен"})
+                        self.log(f"!! конфиг Amnezia Premium не добавлен: "
+                                 f"{reply.get('error')}")
+                        continue
+                    codes[reply["name"]] = code
+                    added.append((reply["tunnel"], reply["name"]))
+                items.extend(added)
+                self._test_amnezia(added)
+            self._job_progress(jid, done=step, added=len(items),
+                               failed=len(problems), problems=list(problems))
+        self._amnezia_finish(jid, items, key, codes, problems)
+
+    def _test_amnezia(self, items):
+        for tid, name in items:
+            self._test_conf(tid, name, wait=True,
+                            swap=self._swap_from(tid, name))
+
+    def _amnezia_finish(self, jid, items, key, codes, problems):
+        stale = self._silent_errors(items)
+        if stale:
+            self._retest(jid, stale)
+        if key:
+            for tid, name in self._silent_errors(items):
+                if self._refresh_amnezia(tid, name, key, codes):
+                    self._test_conf(tid, name, wait=True,
+                                    swap=self._swap_from(tid, name))
+        verdicts = []
+        for tid, name in items:
+            with self._tests_lock:
+                record = dict(self._conf_checks.get((tid, name)) or {})
+            answer = record.get("answer") or ""
+            result = None if record.get("checking") else record.get("result")
+            silent = (result == "error"
+                      and (answer == "сервер не отвечает"
+                           or answer.startswith("HTTP ")))
+            verdicts.append((tid, name, result, answer, silent))
+        silent = [v for v in verdicts if v[4]]
+        mass = (not any(v[2] in ("up", "none") for v in verdicts)) and bool(silent)
+        if mass:
+            self.log(f"!! Amnezia Premium: ни один из {len(verdicts)} конфигов "
+                     f"не ответил — подозрение на общий сбой, конфиги оставлены")
+        kept = 0
+        for tid, name, result, answer, final in verdicts:
+            if result in (None, "up", "none"):
+                kept += 1
+            elif mass or not final:
+                kept += 1
+                problems.append({"name": name, "reason": answer or "нет итога"})
+            else:
+                reason = answer or "сервер не отвечает"
+                reply = self._remove_config(name, tunnel=tid, drop_tunnel=True)
+                if not reply["ok"]:
+                    kept += 1
+                    reason = f"{reason}; конфиг остался: {reply['error']}"
+                problems.append({"name": name, "reason": reason})
+            self._job_progress(jid, added=kept, failed=len(problems),
+                               problems=list(problems))
+        self._job_finish(jid, state="done", added=kept,
+                         failed=len(problems), problems=problems)
+
+    def _await_tests(self, jid, items):
+        keys = set(items)
+        deadline = time.monotonic() + probe.CHECK_WAIT * len(keys) + APPLY_WAIT
+        while time.monotonic() < deadline:
+            with self._tests_lock:
+                queued = {(tid, job[1]) for tid, q in self._test_queues.items()
+                          for job in q}
+                busy = set(self._test_busy)
+                waiting = {key for key in keys
+                           if (self._conf_checks.get(key) or {}).get("checking")}
+            pending = (queued | busy | waiting) & keys
+            if not pending:
+                return
+            self._job_progress(jid, done=len(keys) - len(pending))
+            time.sleep(0.5)
+
+    def _check_amnezia(self, jid, items, key=None, codes=None):
+        if not os.path.isfile(paths.SINGBOX):
+            self._job_finish(jid, state="error",
+                             error="нет sing-box — переустановите приложение")
+            return
+        queued = []
+        for tid, name in items:
+            reply = self._test_conf(tid, name, wait=False,
+                                    swap=self._swap_from(tid, name))
+            if reply.get("ok"):
+                queued.append((tid, name))
+        self._await_tests(jid, queued)
+        self._amnezia_finish(jid, queued, key, codes, [])
+
+    def _silent_errors(self, items):
+        out = []
+        for tid, name in items:
+            with self._tests_lock:
+                record = dict(self._conf_checks.get((tid, name)) or {})
+            answer = record.get("answer") or ""
+            if (record.get("result") == "error" and not record.get("checking")
+                    and (answer == "сервер не отвечает"
+                         or answer.startswith("HTTP "))):
+                out.append((tid, name))
+        return out
+
+    def _retest(self, jid, items):
+        again = []
+        for tid, name in items:
+            reply = self._test_conf(tid, name, wait=False,
+                                    swap=self._swap_from(tid, name))
+            if reply.get("ok"):
+                again.append((tid, name))
+        if again:
+            self._await_tests(jid, again)
+
+    def _refresh_amnezia(self, tid, name, key, codes):
+        code = (codes or {}).get(name)
+        if not code:
+            return False
+        try:
+            fetched, _ = gateway._fetch(key["api_key"], key["user_country_code"],
+                                        key["service_protocol"], code,
+                                        gateway.DEFAULT_TIMEOUT)
+        except (OSError, ValueError) as exc:
+            self.log(f"→ Amnezia Premium: {name} — обновить конфиг не вышло: {exc}")
+            return False
+        profile = next((p for p in fetched if p["name"] == name), None)
+        if profile is None:
+            return False
+        try:
+            with open(tunnels.conf_path(tid, name), encoding="utf-8") as fh:
+                old = fh.read()
+        except (OSError, ValueError):
+            return False
+        if profile["conf"].strip() == old.strip():
+            return False
+        try:
+            self._write_conf(tid, name, profile["conf"])
+        except OSError as exc:
+            self.log(f"!! Amnezia Premium: {name} — конфиг не обновлён: {exc}")
+            return False
+        self.log(f"→ Amnezia Premium: конфиг {name} обновлён с сервера — проверяю заново")
+        return True
 
     def _add_subscription(self, url, name="", allow_private=False, kind="auto"):
         try:
@@ -2602,6 +2800,7 @@ class Core:
                             "name": fetched[0]["name"], "host": host,
                             "port": int(port),
                             "profiles": len(fetched) + len(probed["countries"]),
+                            "countries": len(probed["countries"]) + 1,
                             "invalid": 0, "duplicates": 0}
                 parsed = subscriptions.parse_import(link)
                 profiles = parsed["profiles"]
@@ -2772,6 +2971,14 @@ class Core:
         main = tunnels.main_tunnel(data)
         touch = main is not None and main.get("enabled", True) and t is main
         self.log(f"→ из туннеля «{t['name']}» удалён конфиг {name}.conf")
+        with self._tests_lock:
+            self._conf_checks.pop((t["id"], name), None)
+            self._test_busy.discard((t["id"], name))
+            queued = self._test_queues.get(t["id"])
+            if queued:
+                rest = [job for job in queued if job[1] != name]
+                queued.clear()
+                queued.extend(rest)
         if drop_tunnel and not tunnels.list_confs(t["id"]):
             data["tunnels"].remove(t)
             up = self._promote(data) if t["mode"] == "all" else None

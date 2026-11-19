@@ -57,6 +57,10 @@ def _core():
     core.logged = []
     core.log = core.logged.append
     core.prober = probe.Prober()
+    core._conf_checks = {}
+    core._tests_lock = threading.Lock()
+    core._test_queues = {}
+    core._test_busy = set()
     return core
 
 
@@ -247,6 +251,21 @@ def test_удаление_невыбранного_выбор_не_трогае�
     core._remove_config("nl-2", "personal")
 
     assert _active("home") == "nl-1"
+
+
+def test_удаление_конфига_чистит_проверки_и_очередь(core):
+    core._add_config("nl-2", WG, kind="personal")
+    core._add_config("nl-1", WG, kind="personal")
+    core._conf_checks[("home", "nl-2")] = {"result": "error", "checking": True}
+    core._test_busy.add(("home", "nl-2"))
+    core._test_queues["home"] = [({"id": "home"}, "nl-2", 0.0),
+                                 ({"id": "home"}, "nl-1", 0.0)]
+
+    core._remove_config("nl-2", "personal")
+
+    assert ("home", "nl-2") not in core._conf_checks
+    assert ("home", "nl-2") not in core._test_busy
+    assert [job[1] for job in core._test_queues["home"]] == ["nl-1"]
 
 
 def test_удаление_рабочего_профиль_не_трогает(core):
@@ -2046,18 +2065,19 @@ def test_ключ_vpn_добавляет_конфиги_шлюза(core, monkeyp
     fetched = [{"name": "Amnezia Молдова", "conf": FULL},
                {"name": "Amnezia Молдова 2",
                 "conf": FULL.replace("203.0.113.9", "203.0.113.10")}]
-    monkeypatch.setattr(gateway, "all_profiles", lambda *args: fetched)
-    checked = []
-    core._test_conf = lambda *args, **kw: checked.append(args)
-    core._swap_from = lambda *args: ""
+    monkeypatch.setattr(gateway, "probe",
+                        lambda *args: {"profiles": fetched, "countries": [],
+                                       "country": "md"})
+    jobs = []
+    core._job_start = lambda kind, total, work: jobs.append((kind, total)) or "1"
 
     reply = core._add_link(vpn_key())
 
     assert reply["ok"] is True
     assert reply["added"] == 2 and reply["profiles"] == 2
     assert reply["tunnel"] == "home" and reply["place"] == "all"
-    assert reply["checking"] is True
-    assert len(checked) == 2
+    assert reply["checking"] is True and reply["job"] == "1"
+    assert jobs == [("add", 1)]
     assert sorted(_files("home")) == ["Amnezia Молдова 2.conf",
                                       "Amnezia Молдова.conf"]
 
@@ -2066,7 +2086,7 @@ def test_отказ_шлюза_виден_в_ответе(core, monkeypatch):
     def boom(*args):
         raise ValueError("шлюз Amnezia недоступен")
 
-    monkeypatch.setattr(gateway, "all_profiles", boom)
+    monkeypatch.setattr(gateway, "probe", boom)
 
     assert core._add_link(vpn_key()) == {"ok": False,
                                          "error": "шлюз Amnezia недоступен"}
@@ -2081,7 +2101,7 @@ def test_превью_ключа_vpn(core, monkeypatch):
 
     assert core._preview(link=vpn_key()) == {
         "ok": True, "type": "link", "name": "Amnezia Молдова",
-        "host": "203.0.113.9", "port": 51820, "profiles": 3,
+        "host": "203.0.113.9", "port": 51820, "profiles": 3, "countries": 3,
         "invalid": 0, "duplicates": 0}
 
 

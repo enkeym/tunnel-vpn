@@ -609,6 +609,10 @@ body.kbd :focus-visible {
 .ibtn.test.working .ic {
   filter: drop-shadow(0 0 4px var(--busy));
 }
+#btn-check.working .ic,
+.ibtn.test.working .ic {
+  animation: spin var(--t-spin) linear infinite;
+}
 
 /* Узкое окно: вспомогательные кнопки — значками с подсказкой, у главной
    подпись остаётся; у пилюли — только числа. */

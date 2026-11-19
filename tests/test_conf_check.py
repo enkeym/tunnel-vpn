@@ -712,6 +712,7 @@ def test_живой_конфиг_не_проверяется_дважды_сра
 
     assert core._test_conf("t1", "w1", wait=False)["ok"]
     assert started.wait(2)
+    assert core._tests_of("t1", ["w1"])["w1"]["checking"] is True
     assert core._test_conf("t1", "w1", wait=False)["ok"]
     time.sleep(0.05)
     assert order == ["w1"]
@@ -723,6 +724,38 @@ def test_живой_конфиг_не_проверяется_дважды_сра
 
     tests = core._tests_of("t1", ["w1"])
     assert tests["w1"]["result"] == "up" and tests["w1"]["checking"] is False
+
+
+def test_поставленный_в_очередь_конфиг_остаётся_проверяемым(core, monkeypatch):
+    _tunnel(monkeypatch)
+    started = threading.Event()
+    hold = threading.Event()
+
+    def run(t, name, alone=False, settle=False):
+        if name == "w1":
+            started.set()
+            assert hold.wait(5), "очередь отпустила первую проверку сама"
+        return "up", ""
+
+    monkeypatch.setattr(core, "_run_test", run)
+
+    assert core._test_conf("t1", "w1", wait=False)["ok"]
+    assert started.wait(2)
+    assert core._test_conf("t1", "w2", wait=False)["ok"]
+
+    tests = core._tests_of("t1", ["w1", "w2"])
+    assert tests["w1"]["checking"] is True
+    assert tests["w2"]["checking"] is True and tests["w2"]["result"] is None
+
+    hold.set()
+    deadline = time.monotonic() + 5
+    while (("t1" in core._test_workers or core._test_busy)
+           and time.monotonic() < deadline):
+        time.sleep(0.02)
+
+    tests = core._tests_of("t1", ["w1", "w2"])
+    assert all(tests[n]["result"] == "up" and tests[n]["checking"] is False
+               for n in ("w1", "w2"))
 
 
 def test_заменённый_файл_прежний_итог_не_показывает(core, monkeypatch):
@@ -757,7 +790,8 @@ def test_старая_проверка_не_стирает_новую_после
     monkeypatch.setattr(probe, "trial_check", check)
 
     assert core._test_conf("t1", "w1")["test"]["result"] == "error"
-    assert core._tests_of("t1", ["w1"])["w1"]["checking"] is True
+    queued = core._tests_of("t1", ["w1"])["w1"]
+    assert queued["checking"] is True and queued["result"] is None
 
     pending[0]()
 

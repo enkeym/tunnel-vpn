@@ -4,6 +4,7 @@ import json
 import os
 import platform
 import secrets
+import time
 import uuid
 
 from cryptography.hazmat.primitives import serialization
@@ -37,6 +38,11 @@ AES_SALT_LEN = 8
 BLOCK = 16
 MAX_BODY = 1 << 20
 DEFAULT_TIMEOUT = 20.0
+# «too many requests» — не отказ ключа, а просьба подождать: шлюз режет частые
+# выдачи по одному ключу. Такую страну досылаем через паузу, а не записываем
+# в недоступные.
+RATE_LIMIT_RETRIES = 3
+RATE_LIMIT_WAIT = 5.0
 PRIV_KEY_PLACEHOLDER = "$WIREGUARD_CLIENT_PRIVATE_KEY"
 
 # Открытый ключ шлюза: base64 от PEM, как его кладёт в свою сборку Amnezia.
@@ -180,6 +186,11 @@ def _post(body, timeout):
         conn.close()
 
 
+def _rate_limited(reason):
+    """Шлюз просит подождать, а не отказывает по ключу."""
+    return "too many requests" in reason.casefold()
+
+
 def _client_key():
     """Пара Curve25519: публичную отдаём шлюзу, приватную он вернёт в конфиге."""
     private = X25519PrivateKey.generate()
@@ -248,10 +259,17 @@ def _fetch(api_key, country, protocol, server_country, timeout):
     }
     if server_country:
         payload["server_country_code"] = server_country
-    body, key, iv = _envelope(json.dumps(payload).encode(), _public_key())
-    status, raw = _post(body, timeout)
-    if status != 200:
-        raise ValueError(_reason(status, raw, key, iv))
+    packed = json.dumps(payload).encode()
+    body, key, iv = _envelope(packed, _public_key())
+    for attempt in range(RATE_LIMIT_RETRIES + 1):
+        status, raw = _post(body, timeout)
+        if status == 200:
+            break
+        reason = _reason(status, raw, key, iv)
+        if attempt == RATE_LIMIT_RETRIES or not _rate_limited(reason):
+            raise ValueError(reason)
+        time.sleep(RATE_LIMIT_WAIT * (attempt + 1))
+        body, key, iv = _envelope(packed, _public_key())
     text = _decrypt(raw, key, iv).get("config")
     if not isinstance(text, str):
         raise ValueError("шлюз Amnezia не вернул конфиг")
@@ -307,21 +325,7 @@ def probe(api_key, country="", protocol="", timeout=DEFAULT_TIMEOUT):
     default = str(config.get("server_country_code", "")).strip().lower()
     codes = [c for c in _country_codes(config, protocol or PROTOCOL)
              if c != default]
-    return {"profiles": fetched, "countries": codes}
+    return {"profiles": fetched, "countries": codes, "country": default}
 
 
-def all_profiles(api_key, country="", protocol="", timeout=DEFAULT_TIMEOUT):
-    first = probe(api_key, country, protocol, timeout)
-    out = first["profiles"]
-    known = {p["name"] for p in out}
-    for code in first["countries"]:
-        try:
-            fetched, _ = _fetch(api_key, country, protocol, code, timeout)
-        except ValueError:
-            continue
-        for profile in fetched:
-            if profile["name"] in known:
-                continue
-            known.add(profile["name"])
-            out.append(profile)
-    return out
+

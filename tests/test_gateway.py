@@ -216,37 +216,27 @@ def test_проба_даёт_профиль_по_умолчанию_и_коды_
     assert probed["countries"] == ["de"]
 
 
-def test_все_страны_запрашиваются_по_очереди(monkeypatch):
-    seen = _country_gateway(monkeypatch, {
-        "": _country("md", "Молдова", countries=COUNTRIES),
-        "de": _country("de", "Германия", countries=COUNTRIES,
-                       conf=CONF.replace("198.51.100.7", "198.51.100.8"))})
+def test_частая_выдача_повторяется_после_паузы(monkeypatch):
+    private = _rsa()
+    answers = [json.dumps({"error": "too many requests"}).encode()][:1]
 
-    fetched = gateway.all_profiles("fake.key")
+    def fake_post(body, timeout):
+        status = 429 if answers else 200
+        payload = (answers.pop(0) if status == 429
+                   else json.dumps({"config": vpn_key(
+                       {"containers": [_container()], "api_config": {}})}).encode())
+        return status, _answer(private, body, payload)
 
-    assert seen == ["", "de"]
-    assert [p["name"] for p in fetched] == ["Amnezia Молдова",
-                                            "Amnezia Германия"]
+    monkeypatch.setattr(gateway, "_public_key", lambda: private.public_key())
+    monkeypatch.setattr(gateway, "_post", fake_post)
+    monkeypatch.setattr(gateway, "installation_uuid", lambda: "7e7e")
+    waits = []
+    monkeypatch.setattr(gateway.time, "sleep", waits.append)
 
-
-def test_сбой_страны_не_ломает_остальные(monkeypatch):
-    seen = _country_gateway(
-        monkeypatch, {"": _country("md", "Молдова", countries=COUNTRIES)})
-
-    fetched = gateway.all_profiles("fake.key")
-
-    assert seen == ["", "de"]
-    assert [p["name"] for p in fetched] == ["Amnezia Молдова"]
-
-
-def test_повтор_страны_не_дублирует_конфиг(monkeypatch):
-    _country_gateway(monkeypatch, {
-        "": _country("md", "Молдова", countries=COUNTRIES),
-        "de": _country("md", "Молдова", countries=COUNTRIES)})
-
-    fetched = gateway.all_profiles("fake.key")
+    fetched = gateway.profiles("fake.key")
 
     assert [p["name"] for p in fetched] == ["Amnezia Молдова"]
+    assert waits == [gateway.RATE_LIMIT_WAIT]
 
 
 def test_битый_last_config():
