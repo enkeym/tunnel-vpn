@@ -2071,6 +2071,7 @@ def test_ключ_vpn_добавляет_один_рабочий_конфиг(co
     monkeypatch.setattr(gateway, "probe",
                         lambda *args: {"profiles": fetched, "countries": [],
                                        "country": "md"})
+    monkeypatch.setattr(paths, "SINGBOX", __file__)
     checked = []
 
     def check(profile):
@@ -2196,6 +2197,7 @@ def test_отказ_шлюза_виден_в_итоге_задачи(core, monke
         raise ValueError("шлюз Amnezia недоступен")
 
     monkeypatch.setattr(gateway, "probe", boom)
+    monkeypatch.setattr(paths, "SINGBOX", __file__)
     works = []
     core._job_start = lambda kind, total, work: works.append(work) or "1"
     core._job_progress = lambda jid, **fields: None
