@@ -19,7 +19,7 @@ import tempfile
 import threading
 import time
 
-from . import forwardproxy, instance, ipc, paths, portable, proxy, routelist, settings, subscriptions, tunnels, update
+from . import exports, forwardproxy, instance, ipc, paths, portable, proxy, routelist, settings, subscriptions, tunnels, update
 
 POLL_EVERY = 2.0
 # Ход скачивания обновления — не чаще: куски по 256 КБ идут десятками в
@@ -83,6 +83,8 @@ _FILE_TYPES = ("Config files (*.conf;*.json;*.txt;*.vpn)", "All files (*.*)")
 # Списки правил туннеля: JSON экспорта или текст списка.
 _RULES_TYPES = ("Rules (*.json;*.txt)", "All files (*.*)")
 _LINK_TYPES = ("Link files (*.txt)", "All files (*.*)")
+_CONF_TYPES = ("WireGuard config (*.conf)", "All files (*.*)")
+_ZIP_TYPES = ("Export package (*.zip)", "All files (*.*)")
 # «Добавить программу…» в листе основного.
 _APP_TYPES = ("Programs (*.exe)",)
 # Поля листа «Туннелирование»: списки туннеля в tunnels.json. include_apps —
@@ -361,7 +363,9 @@ class Api:
             return self._admin_call("list-subscriptions")
         elif name == "links":
             return self._admin_call("export-links", scope=arg.get("scope", ""),
-                                    id=arg.get("id", ""))
+                                    id=arg.get("id", ""),
+                                    tunnel=arg.get("tunnel", ""),
+                                    name=arg.get("conf", ""))
         elif name == "show_config":
             self._show_conf(arg["tunnel"], arg["name"])
         elif name == "conf_details":
@@ -411,6 +415,8 @@ class Api:
             self._export_rules(arg)
         elif name == "export_links":
             self._export_links(arg)
+        elif name == "export_configs":
+            self._export_configs(arg)
         elif name == "log_level":
             # Как флажок автозапуска: чем бы ни кончился UAC, галочка на
             # странице вернётся к настоящему уровню. Но только после _apply:
@@ -1169,31 +1175,84 @@ class Api:
     def _export_rules(self, arg):
         """Сохранённые списки туннеля — в JSON, который «Загрузить из файла…»
         примет обратно, в том числе у другого туннеля."""
+        out = {k: [str(x) for x in arg.get(k) or []] for k in _RULE_KEYS if k in arg}
+        self._save_export(f"{tunnels.safe_name(arg.get('name') or 'rules')}.json",
+                          _RULES_TYPES,
+                          (json.dumps(out, ensure_ascii=False, indent=2)
+                           + "\n").encode("utf-8"))
+
+    def _save_export(self, filename, file_types, data):
         import webview
         picked = self.holder.get("window").create_file_dialog(
-            webview.FileDialog.SAVE, file_types=_RULES_TYPES,
-            save_filename=f"{tunnels.safe_name(arg.get('name', ''))}.json")
+            webview.FileDialog.SAVE, file_types=file_types,
+            save_filename=filename)
         if not picked:
-            return
-        out = {k: [str(x) for x in arg.get(k) or []] for k in _RULE_KEYS if k in arg}
-        with open(picked[0], "w", encoding="utf-8") as fh:
-            json.dump(out, fh, ensure_ascii=False, indent=2)
-            fh.write("\n")
+            return None
+        out = picked[0]
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb", dir=os.path.dirname(os.path.abspath(out)),
+                prefix=f".{os.path.basename(out)}.", suffix=".tmp",
+                delete=False,
+            ) as fh:
+                tmp = fh.name
+                fh.write(data)
+            os.replace(tmp, out)
+        except OSError as exc:
+            self._log(f"!! экспорт не записан: {exc}")
+            if tmp:
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+            self.js("failed", f"не удалось сохранить «{out}» → {exc}")
+            return None
+        self.js("exported", os.path.basename(out))
+        return out
 
     def _export_links(self, arg):
         reply = self._admin_call("export-links", scope=arg.get("scope", ""),
-                                 id=arg.get("id", ""))
-        if not reply.get("ok"):
-            self._guard(reply)
+                                 id=arg.get("id", ""),
+                                 tunnel=arg.get("tunnel", ""),
+                                 name=arg.get("conf", ""))
+        self._guard(reply)
+        self._save_export(f"{tunnels.safe_name(arg.get('name') or 'links')}.txt",
+                          _LINK_TYPES, (reply["text"] + "\n").encode("utf-8"))
+
+    def _export_configs(self, arg):
+        reply = self._admin_call("export-configs", scope=arg.get("scope", ""),
+                                 tunnel=arg.get("tunnel", ""),
+                                 name=arg.get("conf", ""))
+        self._guard(reply)
+        entries = reply.get("entries") or []
+        lines = reply.get("links") or []
+        base = tunnels.safe_name(arg.get("name") or "export")
+        if arg.get("scope") == "config":
+            conf = bool(entries)
+            text = entries[0]["text"] if conf else lines[0] + "\n"
+            self._save_export(f"{base}{'.conf' if conf else '.txt'}",
+                              _CONF_TYPES if conf else _LINK_TYPES,
+                              text.encode("utf-8"))
             return
-        import webview
-        picked = self.holder.get("window").create_file_dialog(
-            webview.FileDialog.SAVE, file_types=_LINK_TYPES,
-            save_filename=f"{tunnels.safe_name(arg.get('name', 'links'))}.txt")
-        if not picked:
-            return
-        with open(picked[0], "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(reply["text"] + "\n")
+        self._save_export(f"{base}.zip", _ZIP_TYPES,
+                          self._export_zip(entries, lines, reply.get("manifest") or {}))
+
+    def _export_zip(self, entries, lines, manifest):
+        import io
+        import zipfile
+        for e in entries:
+            if not exports.check_path(e["path"]):
+                raise ValueError(f"служба прислала недопустимый путь: {e['path']!r}")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("manifest.json",
+                        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+            if lines:
+                zf.writestr("links.txt", ("\n".join(lines) + "\n").encode("utf-8"))
+            for e in entries:
+                zf.writestr(e["path"], e["text"].encode("utf-8"))
+        return buf.getvalue()
 
     def _log(self, line):
         """Строка в paths.WINDOW_LOG. Раньше журнал шёл в state\\logs, куда у

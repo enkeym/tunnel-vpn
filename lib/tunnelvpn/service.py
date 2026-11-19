@@ -13,6 +13,7 @@
 import collections
 import contextlib
 import datetime
+import hashlib
 import ipaddress
 import json
 import os
@@ -24,8 +25,9 @@ import sys
 import threading
 import time
 
-from . import (buildconfig, forwardproxy, gateway, ipc, killguard, paths,
-               probe, proxy, routelist, subscriptions, tunnel, tunnels, winnet)
+from . import (buildconfig, exports, forwardproxy, gateway, ipc, killguard,
+               paths, probe, proxy, routelist, subscriptions, tunnel, tunnels,
+               winnet)
 
 AUTOSTART_FILE = os.path.join(paths.STATE, "autostart")
 # Ответ «Включить», когда ни у одного туннеля нет .conf: не сбой, last_error не ставится.
@@ -58,6 +60,7 @@ CONF_OPS = frozenset({
     "set-kill-switch", "remove-subscription", "remove-profile",
     "set-allow-private"})
 JOBS_KEPT = 20
+AMNEZIA_TRIAL = "amnezia"
 # Сколько кругов пробера (по FAST_EVERY) новая сеть должна продержаться,
 # прежде чем переподключаться: Wi-Fi при смене точки и пробуждении моргает,
 # и на каждый пропавший на секунду маршрут перезапуск только мешал бы.
@@ -331,6 +334,9 @@ class Core:
         self._job_seq = 0
         self._job_queue = queue.Queue()
         self._job_worker = None
+        self._amnezia_lock = threading.Lock()
+        self._amnezia_jobs = {}
+        self._amnezia_ask = {}
 
     # Правка записана, а на лету не применена: человек ответил «Позже» на
     # «Переподключить?» (applied "ask"). Снимает любая остановка: включение
@@ -557,7 +563,13 @@ class Core:
         if op == "list-subscriptions":
             return self._list_subscriptions()
         if op == "export-links":
-            return self._export_links(payload.get("scope", ""), payload.get("id", ""))
+            return self._export_links(payload.get("scope", ""), payload.get("id", ""),
+                                      payload.get("tunnel", ""),
+                                      payload.get("name", ""))
+        if op == "export-configs":
+            return self._export_configs(payload.get("scope", ""),
+                                        payload.get("tunnel", ""),
+                                        payload.get("name", ""))
         if op == "remove-subscription":
             return self._remove_subscription(payload.get("id", ""))
         if op == "remove-profile":
@@ -655,7 +667,15 @@ class Core:
         st["log_level"] = data["log_level"]
         # Галочка kill-switch: пишет set-kill-switch (администратор), читать — любому.
         st["kill_switch"] = data["kill_switch"]
-        st["job"] = self._job_now or self._job_last
+        if hasattr(self, "_jobs_lock"):
+            with self._jobs_lock:
+                st["job"] = self._job_now or self._job_last
+                st["jobs_finished"] = [dict(j, problems=list(j["problems"]))
+                                       for j in self._jobs.values()
+                                       if j["state"] != "running"]
+        else:
+            st["job"] = self._job_now or self._job_last
+            st["jobs_finished"] = []
         return st
 
     @staticmethod
@@ -986,7 +1006,10 @@ class Core:
         conf = _read_conf(t["id"], name)
         if conf is None:
             return "error", "конфиг не читается"
-        what = f"→ проверка {name}.conf («{t['name']}»): "
+        return self._check_conf(t, conf, f"→ проверка {name}.conf («{t['name']}»): ",
+                                alone, settle)
+
+    def _check_conf(self, t, conf, what, alone, settle=False, local_errors=False):
         running = self._test_running(t, conf, what, alone)
         if running is not None:
             return running
@@ -1011,7 +1034,7 @@ class Core:
                 return running
             with self.tunnel.trial(t["id"], conf) as (link, err):
                 if err:
-                    return "error", err
+                    return ("local_error" if local_errors else "error"), err
                 return probe.trial_check(link, full, host, dns)
 
     def _run_test_vless(self, t, name, alone=False, settle=False):
@@ -1247,12 +1270,13 @@ class Core:
             self.busy = ""
 
     @staticmethod
-    def _any_conf():
+    def _any_conf(enabled_only=False):
         """Хоть у одного туннеля есть .conf. Испорченный tunnels.json — True:
         причину скажет сборка."""
         try:
             return any(tunnels.list_confs(t["id"], t.get("proto", "wg"))
-                       for t in tunnels.load()["tunnels"])
+                       for t in tunnels.load()["tunnels"]
+                       if not enabled_only or t.get("enabled", True))
         except ValueError:
             return True
 
@@ -1355,9 +1379,9 @@ class Core:
         self.pending_apply = False
         if self.tunnel.uplink is None:
             return {"ok": True, "applied": "off"}
-        if not self._any_conf():
+        if not self._any_conf(enabled_only=True):
             self._human += 1
-            self.log("→ удалён последний конфиг — выключаю VPN")
+            self.log("→ включённых туннелей с конфигом нет — выключаю VPN")
             self._stop_locked()
             return {"ok": True, "applied": "off", "empty": True}
         plan = self.tunnel.live_plan()
@@ -2288,7 +2312,17 @@ class Core:
                 return "ask", t
         return "list", None
 
-    def _add_config(self, name, text, kind="", tunnel="", place=""):
+    @staticmethod
+    def _amnezia_target(data, token):
+        for t in data["tunnels"]:
+            if t.get("proto") == "vless":
+                continue
+            for name, owned in t.get("amnezia", {}).items():
+                if owned == token and name in tunnels.list_confs(t["id"]):
+                    return t, name
+        return None
+
+    def _add_config(self, name, text, kind="", tunnel="", place="", source_token=""):
         """Кладёт конфиг в туннель.
 
         С tunnel или kind — в этот туннель, добавленный выбирается; place
@@ -2310,7 +2344,16 @@ class Core:
         name = buildconfig.safe_name(name)
         try:
             data = tunnels.load()
-            if place == "new":
+            previous = self._amnezia_target(data, source_token) if source_token else None
+            if previous:
+                t, name = previous
+                if t["mode"] == "all" and not buildconfig.is_full(buildconfig.parse_text(text)):
+                    raise ValueError("новый конфиг Amnezia не подходит основному туннелю")
+                where = "to"
+            elif source_token and buildconfig.is_full(buildconfig.parse_text(text)):
+                t = self._proto_main(data, "wg")
+                where = "to" if t else "all"
+            elif place == "new":
                 where, t = (("all", self._proto_main(data, "wg"))
                             if buildconfig.is_full(buildconfig.parse_text(text))
                             else ("list", None))
@@ -2330,6 +2373,19 @@ class Core:
                 where = "replace" if replace else "to"
             else:
                 where, t = self._place(buildconfig.parse_text(text), data)
+            if source_token and not previous:
+                if where == "replace":
+                    where = "to"
+                elif where == "ask":
+                    where, t = "list", None
+            if source_token and t is not None and not previous:
+                taken = set(tunnels.list_confs(t["id"]))
+                original, number = name, 2
+                while name in taken:
+                    suffix = f" {number}"
+                    name = buildconfig.safe_name(
+                        original[:tunnels.NAME_MAX - len(suffix)].rstrip() + suffix)
+                    number += 1
             gone = None
             if where == "replace" and t["mode"] == "all":
                 # Основной: уходит только выбранный конфиг, запасные остаются; новый
@@ -2373,6 +2429,17 @@ class Core:
         except OSError as exc:
             return {"ok": False, "error": f"конфиг не записать: {exc}"}
         self.log(f"→ в туннель «{t['name']}» ({t['id']}) добавлен конфиг {name}.conf")
+        linked = t.get("amnezia", {})
+        linked.pop(name, None)
+        if where == "replace":
+            for old in ([gone] if gone else before):
+                linked.pop(old, None)
+        if source_token:
+            linked[name] = source_token
+        if linked:
+            t["amnezia"] = linked
+        else:
+            t.pop("amnezia", None)
         if where == "all":
             self._keep_active(t, before, name)
         elif where == "replace":
@@ -2434,9 +2501,11 @@ class Core:
         with self._jobs_lock:
             self._job_seq += 1
             jid = str(self._job_seq)
-            self._jobs[jid] = {"id": jid, "kind": kind, "state": "running",
+            self._jobs[jid] = {"id": jid, "kind": kind, "mode": "", "state": "running",
                                "total": total, "done": 0, "added": 0,
-                               "failed": 0, "problems": [], "error": ""}
+                               "failed": 0, "problems": [], "error": "",
+                               "phase": "", "country": "", "attempted": 0,
+                               "tunnel": "", "name": ""}
             self._job_now = dict(self._jobs[jid])
             self._jobs_done[jid] = threading.Event()
             finished = [k for k in self._jobs
@@ -2560,208 +2629,157 @@ class Core:
                 "job": job, "checking": bool(job),
                 "invalid": parsed["invalid"], "duplicates": parsed["duplicates"]}
 
+    @staticmethod
+    def _amnezia_token(key):
+        fields = [key["api_key"], key["user_country_code"],
+                  key["service_protocol"]]
+        return hashlib.sha256(
+            json.dumps(fields, ensure_ascii=False).encode("utf-8")).hexdigest()
+
     def _add_amnezia(self, key, tunnel="", place=""):
-        try:
-            result = gateway.probe(key["api_key"], key["user_country_code"],
-                                   key["service_protocol"])
-        except (OSError, ValueError) as exc:
-            self.log(f"!! конфиги Amnezia Premium не получены: {exc}")
-            return {"ok": False, "error": str(exc)}
-        replies = []
-        for number, profile in enumerate(result["profiles"]):
-            reply = self._add_config(profile["name"], profile["conf"], "",
-                                     tunnel if not number else "",
-                                     place if not number else "")
+        token = self._amnezia_token(key)
+        with self._amnezia_lock:
+            held = self._amnezia_ask.get(token)
+        if held and place not in ("replace", "new"):
+            return {"ok": True, "job": held["job"], "checking": True,
+                    "added": 0, "mode": "amnezia_single"}
+        if held and place in ("replace", "new"):
+            with tunnels.LOCK:
+                reply = self._add_config(held["name"], held["conf"], "",
+                                         held["tunnel"] if place == "replace" else "",
+                                         place, source_token=token)
             if not reply.get("ok"):
                 self.log(f"!! конфиг Amnezia Premium не добавлен: "
                          f"{reply.get('error')}")
                 return reply
-            replies.append(reply)
-        if not replies:
-            return {"ok": False, "error": "шлюз Amnezia не вернул конфигов"}
-        default = result["country"]
-        codes = {profile["name"]: default for profile in result["profiles"]}
-        items = [(reply["tunnel"], reply["name"]) for reply in replies]
-        job = self._job_start("add", len(result["countries"]) + 1,
-                              lambda jid: self._import_amnezia(
-                                  jid, key, items, codes, result["countries"]))
-        self.log(f"→ Amnezia Premium: конфигов {len(replies)}, стран ещё "
-                 f"{len(result['countries'])} — добавляю и проверяю по одному")
-        first = replies[0]
-        return {"ok": True, "tunnel": first["tunnel"], "place": first["place"],
-                "added": len(replies), "profiles": len(replies),
-                "job": job, "checking": True, "invalid": 0, "duplicates": 0,
-                "refused": 0}
+            with self._amnezia_lock:
+                self._amnezia_ask.pop(token, None)
+            self._job_finish(held["job"], added=1, tunnel=reply["tunnel"],
+                             name=reply["name"], ask=None)
+            self.log(f"→ Amnezia Premium: рабочий конфиг «{reply['name']}» "
+                     f"положен без новой выдачи")
+            return {**reply, "added": 1, "mode": "amnezia_single"}
+        with self._amnezia_lock:
+            jid = self._amnezia_jobs.get(token, "")
+            if jid and self._jobs.get(jid, {}).get("state") == "running":
+                self.log("→ Amnezia Premium: поиск уже идёт")
+                reply = {"ok": True, "job": jid, "checking": True, "added": 0,
+                         "mode": "amnezia_single"}
+                if tunnel:
+                    reply["tunnel"] = tunnel
+                return reply
+            self._amnezia_jobs.pop(token, None)
 
-    def _import_amnezia(self, jid, key, items, codes, countries):
-        """Страны шлюза по одной: выдал — сразу проверил, потом следующая.
+            def work(j):
+                try:
+                    self._search_amnezia(j, key, tunnel, place, token)
+                finally:
+                    with self._amnezia_lock:
+                        if self._amnezia_jobs.get(token) == j:
+                            del self._amnezia_jobs[token]
 
-        Новая выдача гасит ещё не проверенный конфиг (замер 2026-11-19), а
-        повторная выдача страны — прежний её конфиг, поэтому проверка идёт до
-        следующего запроса, а не общей пачкой в конце."""
-        if not os.path.isfile(paths.SINGBOX):
-            self._job_finish(jid, state="error",
-                             error="нет sing-box — переустановите приложение")
-            return
-        problems = []
-        self._test_amnezia(items)
-        self._job_progress(jid, done=1, added=len(items))
-        for step, code in enumerate(countries, 2):
+            jid = self._job_start("add", 1, work)
+            self._amnezia_jobs[token] = jid
+        self._job_progress(jid, mode="amnezia_single")
+        self.log("→ Amnezia Premium: ищу первый рабочий конфиг, ключ не отзывается")
+        reply = {"ok": True, "job": jid, "checking": True, "added": 0,
+                 "mode": "amnezia_single"}
+        if tunnel:
+            reply["tunnel"] = tunnel
+        return reply
+
+    def _amnezia_candidates(self, key, result):
+        for profile in result["profiles"]:
+            yield result["country"], profile
+        for code in result["countries"]:
             try:
                 fetched, _ = gateway._fetch(key["api_key"],
                                             key["user_country_code"],
                                             key["service_protocol"], code,
                                             gateway.DEFAULT_TIMEOUT)
-            except (OSError, ValueError) as exc:
-                problems.append({"name": code, "reason": str(exc)})
-                self.log(f"→ Amnezia Premium: {code} — {exc}")
-            else:
-                added = []
-                for profile in fetched:
-                    reply = self._add_config(profile["name"], profile["conf"])
-                    if not reply.get("ok"):
-                        problems.append({"name": profile["name"],
-                                         "reason": reply.get("error")
-                                         or "конфиг не добавлен"})
-                        self.log(f"!! конфиг Amnezia Premium не добавлен: "
-                                 f"{reply.get('error')}")
-                        continue
-                    codes[reply["name"]] = code
-                    added.append((reply["tunnel"], reply["name"]))
-                items.extend(added)
-                self._test_amnezia(added)
-            self._job_progress(jid, done=step, added=len(items),
-                               failed=len(problems), problems=list(problems))
-        self._amnezia_finish(jid, items, key, codes, problems)
+            except (TimeoutError, ConnectionError) as exc:
+                self.log(f"!! конфиги Amnezia Premium не получены: {code} — {exc}")
+                continue
+            for profile in fetched:
+                yield code, profile
 
-    def _test_amnezia(self, items):
-        for tid, name in items:
-            self._test_conf(tid, name, wait=True,
-                            swap=self._swap_from(tid, name))
+    def _amnezia_check(self, profile):
+        t = {"id": AMNEZIA_TRIAL, "name": profile["name"], "mode": "list",
+             "proto": "", "include": []}
+        return self._check_conf(t, buildconfig.parse_text(profile["conf"]),
+                                f"→ проверка «{profile['name']}»: ", True,
+                                local_errors=True)
 
-    def _amnezia_finish(self, jid, items, key, codes, problems):
-        stale = self._silent_errors(items)
-        if stale:
-            self._retest(jid, stale)
-        if key:
-            for tid, name in self._silent_errors(items):
-                if self._refresh_amnezia(tid, name, key, codes):
-                    self._test_conf(tid, name, wait=True,
-                                    swap=self._swap_from(tid, name))
-        verdicts = []
-        for tid, name in items:
-            with self._tests_lock:
-                record = dict(self._conf_checks.get((tid, name)) or {})
-            answer = record.get("answer") or ""
-            result = None if record.get("checking") else record.get("result")
-            silent = (result == "error"
-                      and (answer == "сервер не отвечает"
-                           or answer.startswith("HTTP ")))
-            verdicts.append((tid, name, result, answer, silent))
-        silent = [v for v in verdicts if v[4]]
-        mass = (not any(v[2] in ("up", "none") for v in verdicts)) and bool(silent)
-        if mass:
-            self.log(f"!! Amnezia Premium: ни один из {len(verdicts)} конфигов "
-                     f"не ответил — подозрение на общий сбой, конфиги оставлены")
-        kept = 0
-        for tid, name, result, answer, final in verdicts:
-            if result in (None, "up", "none"):
-                kept += 1
-            elif mass or not final:
-                kept += 1
-                problems.append({"name": name, "reason": answer or "нет итога"})
-            else:
-                reason = answer or "сервер не отвечает"
-                reply = self._remove_config(name, tunnel=tid, drop_tunnel=True)
-                if not reply["ok"]:
-                    kept += 1
-                    reason = f"{reason}; конфиг остался: {reply['error']}"
-                problems.append({"name": name, "reason": reason})
-            self._job_progress(jid, added=kept, failed=len(problems),
-                               problems=list(problems))
-        self._job_finish(jid, state="done", added=kept,
-                         failed=len(problems), problems=problems)
-
-    def _await_tests(self, jid, items):
-        keys = set(items)
-        deadline = time.monotonic() + probe.CHECK_WAIT * len(keys) + APPLY_WAIT
-        while time.monotonic() < deadline:
-            with self._tests_lock:
-                queued = {(tid, job[1]) for tid, q in self._test_queues.items()
-                          for job in q}
-                busy = set(self._test_busy)
-                waiting = {key for key in keys
-                           if (self._conf_checks.get(key) or {}).get("checking")}
-            pending = (queued | busy | waiting) & keys
-            if not pending:
-                return
-            self._job_progress(jid, done=len(keys) - len(pending))
-            time.sleep(0.5)
-
-    def _check_amnezia(self, jid, items, key=None, codes=None):
+    def _search_amnezia(self, jid, key, tunnel="", place="", token=""):
         if not os.path.isfile(paths.SINGBOX):
             self._job_finish(jid, state="error",
                              error="нет sing-box — переустановите приложение")
             return
-        queued = []
-        for tid, name in items:
-            reply = self._test_conf(tid, name, wait=False,
-                                    swap=self._swap_from(tid, name))
-            if reply.get("ok"):
-                queued.append((tid, name))
-        self._await_tests(jid, queued)
-        self._amnezia_finish(jid, queued, key, codes, [])
-
-    def _silent_errors(self, items):
-        out = []
-        for tid, name in items:
-            with self._tests_lock:
-                record = dict(self._conf_checks.get((tid, name)) or {})
-            answer = record.get("answer") or ""
-            if (record.get("result") == "error" and not record.get("checking")
-                    and (answer == "сервер не отвечает"
-                         or answer.startswith("HTTP "))):
-                out.append((tid, name))
-        return out
-
-    def _retest(self, jid, items):
-        again = []
-        for tid, name in items:
-            reply = self._test_conf(tid, name, wait=False,
-                                    swap=self._swap_from(tid, name))
-            if reply.get("ok"):
-                again.append((tid, name))
-        if again:
-            self._await_tests(jid, again)
-
-    def _refresh_amnezia(self, tid, name, key, codes):
-        code = (codes or {}).get(name)
-        if not code:
-            return False
         try:
-            fetched, _ = gateway._fetch(key["api_key"], key["user_country_code"],
-                                        key["service_protocol"], code,
-                                        gateway.DEFAULT_TIMEOUT)
+            result = gateway.probe(key["api_key"], key["user_country_code"],
+                                   key["service_protocol"])
         except (OSError, ValueError) as exc:
-            self.log(f"→ Amnezia Premium: {name} — обновить конфиг не вышло: {exc}")
-            return False
-        profile = next((p for p in fetched if p["name"] == name), None)
-        if profile is None:
-            return False
+            self.log(f"!! конфиги Amnezia Premium не получены: {exc}")
+            self._job_finish(jid, state="error", error=str(exc))
+            return
+        self._job_progress(jid, phase="выдача", country=result["country"],
+                           total=len(result["profiles"]) +
+                           len(result["countries"]))
+        problems = []
+        attempted = 0
         try:
-            with open(tunnels.conf_path(tid, name), encoding="utf-8") as fh:
-                old = fh.read()
-        except (OSError, ValueError):
-            return False
-        if profile["conf"].strip() == old.strip():
-            return False
-        try:
-            self._write_conf(tid, name, profile["conf"])
-        except OSError as exc:
-            self.log(f"!! Amnezia Premium: {name} — конфиг не обновлён: {exc}")
-            return False
-        self.log(f"→ Amnezia Premium: конфиг {name} обновлён с сервера — проверяю заново")
-        return True
+            candidates = self._amnezia_candidates(key, result)
+            for code, profile in candidates:
+                attempted += 1
+                self._job_progress(jid, attempted=attempted, done=attempted,
+                                   phase="проверка", country=profile["name"],
+                                   failed=len(problems), problems=list(problems))
+                verdict, answer = self._amnezia_check(profile)
+                if verdict == "local_error":
+                    self._job_finish(jid, state="error", done=attempted,
+                                     error=answer or "локальная проверка не удалась")
+                    return
+                if verdict != "up":
+                    problems.append({"name": profile["name"],
+                                     "reason": answer or "не связался"})
+                    self.log(f"!! конфиг Amnezia Premium «{profile['name']}» "
+                             f"не связался: {answer}")
+                    continue
+                with tunnels.LOCK:
+                    reply = self._add_config(profile["name"], profile["conf"], "",
+                                             tunnel, place, source_token=token)
+                if not reply.get("ok"):
+                    if reply.get("ask") and token:
+                        with self._amnezia_lock:
+                            self._amnezia_ask[token] = {"name": profile["name"],
+                                                        "conf": profile["conf"],
+                                                        "tunnel": reply["ask"]["id"],
+                                                        "job": jid}
+                        self._job_finish(jid, state="awaiting_place", done=attempted,
+                                         ask={**reply["ask"], "file": profile["name"]})
+                        return
+                    self.log(f"!! конфиг Amnezia Premium не добавлен: "
+                             f"{reply.get('error')}")
+                    self._job_finish(jid, state="error", done=attempted,
+                                     error=reply.get("error", "конфиг не добавлен"))
+                    return
+                stamp = self._conf_stamp(reply["tunnel"], reply["name"])
+                self._note_test((reply["tunnel"], reply["name"]), stamp=stamp,
+                                checking=False, queued=False, result=verdict,
+                                answer=answer, at=time.time())
+                self.log(f"→ Amnezia Premium: найден рабочий конфиг "
+                         f"«{reply['name']}» ({code}), дальше не ищу")
+                self._job_finish(jid, done=attempted, added=1,
+                                 tunnel=reply["tunnel"], name=reply["name"],
+                                 country=code)
+                return
+        except (OSError, ValueError) as exc:
+            self.log(f"!! поиск Amnezia Premium остановлен: {exc}")
+            self._job_finish(jid, state="error", done=attempted, error=str(exc))
+            return
+        self._job_finish(jid, state="error", done=attempted,
+                         failed=len(problems), problems=list(problems),
+                         error="рабочих конфигов Amnezia Premium не найдено")
 
     def _add_subscription(self, url, name="", allow_private=False, kind="auto"):
         try:
@@ -2790,18 +2808,16 @@ class Core:
             if link:
                 key = subscriptions.vpn_key(link)
                 if key is not None:
-                    probed = gateway.probe(key["api_key"],
-                                           key["user_country_code"],
-                                           key["service_protocol"])
-                    fetched = probed["profiles"]
-                    conf = buildconfig.parse_text(fetched[0]["conf"])
-                    host, _, port = conf["peer"]["endpoint"].rpartition(":")
-                    return {"ok": True, "type": "link",
-                            "name": fetched[0]["name"], "host": host,
-                            "port": int(port),
-                            "profiles": len(fetched) + len(probed["countries"]),
-                            "countries": len(probed["countries"]) + 1,
-                            "invalid": 0, "duplicates": 0}
+                    with tunnels.LOCK:
+                        data = tunnels.load()
+                        match = self._amnezia_target(data, self._amnezia_token(key))
+                        existing = bool(match)
+                        active = bool(match and match[0]["enabled"]
+                                      and self._in_use(data)[match[0]["id"]] == match[1])
+                    return {"ok": True, "type": "link", "mode": "amnezia_single",
+                            "name": key["name"], "profiles": 1,
+                            "invalid": 0, "duplicates": 0,
+                            "existing": existing, "active": active}
                 parsed = subscriptions.parse_import(link)
                 profiles = parsed["profiles"]
                 profile = profiles[0]
@@ -2845,12 +2861,23 @@ class Core:
         return {"ok": True, "subscriptions": subs, "profiles": profiles,
                 "tunnels": vless}
 
-    def _export_links(self, scope, item_id):
+    def _export_links(self, scope, item_id, tunnel="", name=""):
         try:
-            links = subscriptions.links(scope, item_id)
+            if scope in ("config", "tunnel"):
+                links = exports.links(scope, tunnel, name)
+            else:
+                links = subscriptions.links(scope, item_id)
         except (OSError, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
         return {"ok": True, "text": "\n".join(links), "profiles": len(links)}
+
+    def _export_configs(self, scope, tunnel="", name=""):
+        try:
+            entries, lines, manifest = exports.snapshot(scope, tunnel, name)
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "entries": entries, "links": lines,
+                "manifest": manifest}
 
     def _drop_profiles(self):
         data = tunnels.load()
@@ -2970,6 +2997,15 @@ class Core:
             return {"ok": False, "error": str(exc)}
         main = tunnels.main_tunnel(data)
         touch = main is not None and main.get("enabled", True) and t is main
+        linked = t.get("amnezia", {})
+        if linked.pop(name, None) is not None:
+            if not linked:
+                t.pop("amnezia", None)
+            if not (drop_tunnel and not tunnels.list_confs(t["id"])) and t["active"] != name:
+                try:
+                    tunnels.save(data)
+                except (OSError, ValueError) as exc:
+                    return {"ok": False, "error": f"конфиг удалён, но привязку не записать: {exc}"}
         self.log(f"→ из туннеля «{t['name']}» удалён конфиг {name}.conf")
         with self._tests_lock:
             self._conf_checks.pop((t["id"], name), None)
@@ -3052,6 +3088,12 @@ class Core:
                 for key in ("include", "exclude", "include_apps", "exclude_apps"):
                     dst[key] = list(main.get(key) or [])
             data["tunnels"].append(dst)
+        linked = src.get("amnezia", {})
+        token = linked.pop(name, None)
+        if token:
+            if not linked:
+                src.pop("amnezia", None)
+            dst.setdefault("amnezia", {})[name] = token
         self._keep_active(dst, tunnels.list_confs(dst["id"]), name)
         # Ушёл последний конфиг основного вместе с ним. Сам перенесённый в dst
         # не повышается: его и вынесли из основного «по списку».

@@ -20,6 +20,9 @@ def _core():
     core._tests_lock = threading.Lock()
     core._test_queues = {}
     core._test_busy = set()
+    core._amnezia_lock = threading.Lock()
+    core._amnezia_jobs = {}
+    core._amnezia_ask = {}
     return core
 
 
@@ -54,287 +57,230 @@ def test_реестр_хранит_последние_задачи():
     assert not core._jobs_done
 
 
-def test_проверка_amnezia_идёт_общей_очередью(monkeypatch):
-    from tunnelvpn import paths
-
-    core = _core()
-    core._swap_from = lambda tid, name: 0.0
-    answers = {"Amnezia Литва": ("up", ""),
-               "Amnezia Германия": ("error", "сервер не отвечает")}
-    calls = []
-
-    def test_conf(tid, name, wait=True, swap=0.0):
-        calls.append((tid, name, wait))
-        result, answer = answers[name]
-        core._conf_checks[(tid, name)] = {"result": result, "answer": answer,
-                                          "checking": False}
-        return {"ok": True}
-
-    core._test_conf = test_conf
-    removed = []
-    core._remove_config = lambda name, tunnel="", drop_tunnel=False: (
-        removed.append(name) or {"ok": True})
-    monkeypatch.setattr(paths, "SINGBOX", __file__)
-
-    jid = core._job_start("add", 2, lambda j: core._check_amnezia(
-        j, [("t1", "Amnezia Литва"), ("t1", "Amnezia Германия")]))
-    job = core._job_wait(jid, timeout=10)
-
-    assert calls == [("t1", "Amnezia Литва", False),
-                     ("t1", "Amnezia Германия", False),
-                     ("t1", "Amnezia Германия", False)]
-    assert removed == ["Amnezia Германия"]
-    assert job["state"] == "done" and job["added"] == 1 and job["failed"] == 1
-    assert job["problems"] == [{"name": "Amnezia Германия",
-                                "reason": "сервер не отвечает"}]
-
-
-def test_проверка_amnezia_без_итога_конфиг_оставляет(monkeypatch):
-    from tunnelvpn import paths
-
-    core = _core()
-    core._swap_from = lambda tid, name: 0.0
-
-    def test_conf(tid, name, wait=True, swap=0.0):
-        core._conf_checks[(tid, name)] = {"result": "none", "answer": "",
-                                          "checking": False}
-        return {"ok": True}
-
-    core._test_conf = test_conf
-    removed = []
-    core._remove_config = lambda name, tunnel="", drop_tunnel=False: (
-        removed.append(name) or {"ok": True})
-    monkeypatch.setattr(paths, "SINGBOX", __file__)
-
-    jid = core._job_start("add", 1, lambda j: core._check_amnezia(
-        j, [("t1", "Amnezia Литва")]))
-    job = core._job_wait(jid, timeout=10)
-
-    assert job["added"] == 1 and job["failed"] == 0
-    assert removed == []
-
-
-def test_проверка_amnezia_общий_сбой_ничего_не_удаляет(monkeypatch):
-    from tunnelvpn import paths
-
-    core = _core()
-    core._swap_from = lambda tid, name: 0.0
-
-    def test_conf(tid, name, wait=True, swap=0.0):
-        core._conf_checks[(tid, name)] = {"result": "error",
-                                          "answer": "сервер не отвечает",
-                                          "checking": False}
-        return {"ok": True}
-
-    core._test_conf = test_conf
-    removed = []
-    core._remove_config = lambda name, tunnel="", drop_tunnel=False: (
-        removed.append(name) or {"ok": True})
-    monkeypatch.setattr(paths, "SINGBOX", __file__)
-
-    jid = core._job_start("add", 2, lambda j: core._check_amnezia(
-        j, [("t1", "Amnezia Литва"), ("t1", "Amnezia Германия")]))
-    job = core._job_wait(jid, timeout=10)
-
-    assert removed == []
-    assert job["state"] == "done" and job["failed"] == 2
-    assert any("подозрение" in line for line in core.logged)
-
-
-def test_проверка_amnezia_сбой_проверки_конфиг_оставляет(monkeypatch):
-    from tunnelvpn import paths
-
-    core = _core()
-    core._swap_from = lambda tid, name: 0.0
-    calls = []
-
-    def test_conf(tid, name, wait=True, swap=0.0):
-        calls.append(name)
-        core._conf_checks[(tid, name)] = {"result": "error",
-                                          "answer": "проверка упала",
-                                          "checking": False}
-        return {"ok": True}
-
-    core._test_conf = test_conf
-    removed = []
-    core._remove_config = lambda name, tunnel="", drop_tunnel=False: (
-        removed.append(name) or {"ok": True})
-    monkeypatch.setattr(paths, "SINGBOX", __file__)
-
-    jid = core._job_start("add", 1, lambda j: core._check_amnezia(
-        j, [("t1", "Amnezia Литва")]))
-    job = core._job_wait(jid, timeout=10)
-
-    assert calls == ["Amnezia Литва"]
-    assert removed == []
-    assert job["added"] == 1 and job["failed"] == 1
-
-
-def test_проверка_amnezia_незавершённая_проверка_конфиг_оставляет(monkeypatch):
-    from tunnelvpn import paths
-
-    core = _core()
-    core._swap_from = lambda tid, name: 0.0
-    core._await_tests = lambda jid, keys: None
-
-    def test_conf(tid, name, wait=True, swap=0.0):
-        core._conf_checks[(tid, name)] = {"result": None, "answer": "",
-                                          "checking": True, "queued": True}
-        return {"ok": True}
-
-    core._test_conf = test_conf
-    removed = []
-    core._remove_config = lambda name, tunnel="", drop_tunnel=False: (
-        removed.append(name) or {"ok": True})
-    monkeypatch.setattr(paths, "SINGBOX", __file__)
-
-    jid = core._job_start("add", 1, lambda j: core._check_amnezia(
-        j, [("t1", "Amnezia Литва")]))
-    job = core._job_wait(jid, timeout=10)
-
-    assert removed == []
-    assert job["added"] == 1 and job["failed"] == 0
-
-
-def test_проверка_amnezia_обновляет_устаревший_конфиг(monkeypatch):
-    from tunnelvpn import paths
-
-    core = _core()
-    core._swap_from = lambda tid, name: 0.0
-    answers = [("error", "сервер не отвечает"), ("error", "сервер не отвечает"),
-               ("up", "")]
-
-    def test_conf(tid, name, wait=True, swap=0.0):
-        result, answer = answers.pop(0) if answers else ("up", "")
-        core._conf_checks[(tid, name)] = {"result": result, "answer": answer,
-                                          "checking": False}
-        return {"ok": True}
-
-    core._test_conf = test_conf
-    refreshed = []
-    core._refresh_amnezia = lambda tid, name, key, codes: (
-        refreshed.append(name) or True)
-    removed = []
-    core._remove_config = lambda name, tunnel="", drop_tunnel=False: (
-        removed.append(name) or {"ok": True})
-    monkeypatch.setattr(paths, "SINGBOX", __file__)
-    key = {"api_key": "k", "user_country_code": "ru", "service_protocol": "awg"}
-
-    jid = core._job_start("add", 1, lambda j: core._check_amnezia(
-        j, [("t1", "Amnezia UAE")], key, {"Amnezia UAE": "ae"}))
-    job = core._job_wait(jid, timeout=10)
-
-    assert refreshed == ["Amnezia UAE"]
-    assert removed == []
-    assert job["added"] == 1 and job["failed"] == 0
-
-
-def test_проверка_amnezia_без_нового_конфига_удаляет(monkeypatch):
-    from tunnelvpn import paths
-
-    core = _core()
-    core._swap_from = lambda tid, name: 0.0
-    answers = {"Amnezia Литва": ("up", ""),
-               "Amnezia Германия": ("error", "сервер не отвечает"),
-               "Amnezia Финляндия": ("error", "сервер не отвечает")}
-
-    def test_conf(tid, name, wait=True, swap=0.0):
-        result, answer = answers[name]
-        core._conf_checks[(tid, name)] = {"result": result, "answer": answer,
-                                          "checking": False}
-        return {"ok": True}
-
-    core._test_conf = test_conf
-    core._refresh_amnezia = lambda tid, name, key, codes: False
-    removed = []
-    core._remove_config = lambda name, tunnel="", drop_tunnel=False: (
-        removed.append(name) or {"ok": True})
-    monkeypatch.setattr(paths, "SINGBOX", __file__)
-    key = {"api_key": "k", "user_country_code": "ru", "service_protocol": "awg"}
-    codes = {"Amnezia Литва": "lt", "Amnezia Германия": "de",
-             "Amnezia Финляндия": "fi"}
-
-    jid = core._job_start("add", 3, lambda j: core._check_amnezia(
-        j, [("t1", "Amnezia Литва"), ("t1", "Amnezia Германия"),
-            ("t1", "Amnezia Финляндия")], key, codes))
-    job = core._job_wait(jid, timeout=10)
-
-    assert removed == ["Amnezia Германия", "Amnezia Финляндия"]
-    assert job["added"] == 1 and job["failed"] == 2
-
-
-def test_импорт_amnezia_проверяет_страну_до_следующей_выдачи(monkeypatch):
+def test_импорт_amnezia_добавляет_один_конфиг_и_останавливается(monkeypatch):
     from tunnelvpn import gateway, paths
 
     core = _core()
-    core._swap_from = lambda tid, name: 0.0
     monkeypatch.setattr(paths, "SINGBOX", __file__)
     order = []
+
+    def fake_probe(api, country, protocol):
+        order.append("probe")
+        return {"profiles": [{"name": "Amnezia Туркменистан", "conf": "x"}],
+                "countries": ["de", "fr"], "country": "tm"}
 
     def fake_fetch(api, country, protocol, code, timeout):
         order.append(("fetch", code))
         return [{"name": f"Amnezia {code}", "conf": "x"}], {}
 
-    def test_conf(tid, name, wait=True, swap=0.0):
-        order.append(("test", name))
-        core._conf_checks[(tid, name)] = {"result": "up", "answer": "300 мс",
-                                          "checking": False}
-        return {"ok": True}
-
+    verdicts = iter([("error", "сервер не отвечает"), ("up", "300 мс")])
+    core._amnezia_check = lambda profile: (
+        order.append(("check", profile["name"])) or next(verdicts))
+    added = []
+    core._add_config = lambda name, text, kind="", tunnel="", place="", source_token="": (
+        added.append(name) or {"ok": True, "tunnel": "t1", "name": name})
+    monkeypatch.setattr(gateway, "probe", fake_probe)
     monkeypatch.setattr(gateway, "_fetch", fake_fetch)
-    core._add_config = lambda name, text, kind="", tunnel="", place="": (
-        order.append(("add", name)) or {"ok": True, "tunnel": "t1",
-                                        "name": name, "place": ""})
-    core._test_conf = test_conf
-    core._refresh_amnezia = lambda *args: False
     key = {"api_key": "k", "user_country_code": "ru", "service_protocol": "awg"}
 
-    jid = core._job_start("add", 3, lambda j: core._import_amnezia(
-        j, key, [("t1", "Amnezia Туркменистан")],
-        {"Amnezia Туркменистан": "tm"}, ["de", "fr"]))
+    jid = core._job_start("add", 1, lambda j: core._search_amnezia(j, key))
     job = core._job_wait(jid, timeout=10)
 
-    assert order == [("test", "Amnezia Туркменистан"),
-                     ("fetch", "de"), ("add", "Amnezia de"),
-                     ("test", "Amnezia de"),
-                     ("fetch", "fr"), ("add", "Amnezia fr"),
-                     ("test", "Amnezia fr")]
-    assert job["state"] == "done" and job["added"] == 3 and job["failed"] == 0
+    assert order == ["probe", ("check", "Amnezia Туркменистан"),
+                     ("fetch", "de"), ("check", "Amnezia de")]
+    assert added == ["Amnezia de"]
+    assert job["state"] == "done" and job["added"] == 1
+    assert job["tunnel"] == "t1" and job["name"] == "Amnezia de"
+    assert job["done"] == 2 and job["attempted"] == 2 and job["failed"] == 1
 
 
-def test_обновление_amnezia_пишет_конфиг_один_раз(monkeypatch, tmp_path):
-    from tunnelvpn import gateway, tunnels
+def test_импорт_amnezia_без_рабочих_конфигов_ничего_не_сохраняет(monkeypatch):
+    from tunnelvpn import gateway, paths
 
     core = _core()
-    path = tmp_path / "Amnezia UAE.conf"
-    path.write_text("PrivateKey = старый\n", encoding="utf-8")
-    monkeypatch.setattr(tunnels, "conf_path", lambda tid, name: str(path))
-    monkeypatch.setattr(Core, "_write_conf", staticmethod(
-        lambda tid, name, text: path.write_text(text, encoding="utf-8")))
+    monkeypatch.setattr(paths, "SINGBOX", __file__)
+    monkeypatch.setattr(gateway, "probe", lambda *a: {
+        "profiles": [{"name": "Amnezia Туркменистан", "conf": "x"}],
+        "countries": ["de"], "country": "tm"})
     monkeypatch.setattr(gateway, "_fetch", lambda *a: (
-        [{"name": "Amnezia UAE", "conf": "PrivateKey = новый\n"}], {}))
+        [{"name": "Amnezia de", "conf": "x"}], {}))
+    core._amnezia_check = lambda profile: ("error", "сервер не отвечает")
+    core._add_config = lambda *a, **kw: pytest.fail("конфиг не должен добавиться")
     key = {"api_key": "k", "user_country_code": "ru", "service_protocol": "awg"}
 
-    assert core._refresh_amnezia("t1", "Amnezia UAE", key,
-                                 {"Amnezia UAE": "ae"}) is True
-    assert path.read_text(encoding="utf-8") == "PrivateKey = новый\n"
-    assert core._refresh_amnezia("t1", "Amnezia UAE", key,
-                                 {"Amnezia UAE": "ae"}) is False
-    assert core._refresh_amnezia("t1", "Amnezia UAE", key, {}) is False
+    jid = core._job_start("add", 1, lambda j: core._search_amnezia(j, key))
+    job = core._job_wait(jid, timeout=10)
+
+    assert job["state"] == "error" and job["added"] == 0
+    assert job["done"] == 2 and job["failed"] == 2
+    assert [p["name"] for p in job["problems"]] == ["Amnezia Туркменистан",
+                                                    "Amnezia de"]
 
 
-def test_проверка_amnezia_без_singbox_ничего_не_удаляет(monkeypatch, tmp_path):
-    from tunnelvpn import paths
+def test_локальный_сбой_останавливает_выдачу_следующей_страны(monkeypatch):
+    from tunnelvpn import gateway, paths
 
     core = _core()
-    core._test_conf = lambda *a, **kw: pytest.fail("проба без sing-box")
-    monkeypatch.setattr(paths, "SINGBOX", str(tmp_path / "нет.exe"))
+    monkeypatch.setattr(paths, "SINGBOX", __file__)
+    monkeypatch.setattr(gateway, "probe", lambda *a: {
+        "profiles": [{"name": "Первый", "conf": "x"}],
+        "countries": ["de"], "country": "ru"})
+    monkeypatch.setattr(gateway, "_fetch", lambda *a: pytest.fail("лишняя выдача"))
+    core._amnezia_check = lambda profile: ("local_error", "sing-box не запустился")
+    core._add_config = lambda *a, **kw: pytest.fail("нечего сохранять")
 
-    jid = core._job_start("add", 1, lambda j: core._check_amnezia(
-        j, [("t1", "Amnezia Литва")]))
+    jid = core._job_start("add", 1, lambda j: core._search_amnezia(j, {
+        "api_key": "k", "user_country_code": "ru", "service_protocol": "awg"}))
+    job = core._job_wait(jid, timeout=10)
+
+    assert job["state"] == "error"
+    assert job["done"] == 1 and job["error"] == "sing-box не запустился"
+
+
+def test_ошибка_шлюза_при_следующей_стране_останавливает_поиск(monkeypatch):
+    from tunnelvpn import gateway, paths
+
+    core = _core()
+    monkeypatch.setattr(paths, "SINGBOX", __file__)
+    monkeypatch.setattr(gateway, "probe", lambda *a: {
+        "profiles": [{"name": "Первый", "conf": "x"}],
+        "countries": ["de", "fr"], "country": "ru"})
+    calls = []
+
+    def fetch(*args):
+        calls.append(args[3])
+        raise ValueError("доступ запрещён")
+
+    monkeypatch.setattr(gateway, "_fetch", fetch)
+    core._amnezia_check = lambda profile: ("error", "сервер не отвечает")
+
+    jid = core._job_start("add", 1, lambda j: core._search_amnezia(j, {
+        "api_key": "k", "user_country_code": "ru", "service_protocol": "awg"}))
+    job = core._job_wait(jid, timeout=10)
+
+    assert calls == ["de"]
+    assert job["state"] == "error" and job["error"] == "доступ запрещён"
+
+
+def test_импорт_amnezia_отвечает_до_сети(monkeypatch):
+    from tunnelvpn import gateway
+
+    core = _core()
+    monkeypatch.setattr(gateway, "probe",
+                        lambda *a: pytest.fail("сеть в момент ответа"))
+    core._search_amnezia = lambda jid, key, tunnel="", place="", token="": (
+        core._job_finish(jid))
+
+    reply = core._add_amnezia({"api_key": "k", "user_country_code": "ru",
+                               "service_protocol": "awg"}, "t1")
+
+    assert reply == {"ok": True, "job": reply["job"], "checking": True,
+                     "added": 0, "mode": "amnezia_single", "tunnel": "t1"}
+
+
+def test_импорт_amnezia_без_singbox_сеть_не_трогает(monkeypatch, tmp_path):
+    from tunnelvpn import gateway, paths
+
+    core = _core()
+    monkeypatch.setattr(paths, "SINGBOX", str(tmp_path / "нет.exe"))
+    monkeypatch.setattr(gateway, "probe",
+                        lambda *a: pytest.fail("проба без sing-box"))
+    key = {"api_key": "k", "user_country_code": "ru", "service_protocol": "awg"}
+
+    jid = core._job_start("add", 1, lambda j: core._search_amnezia(j, key))
     job = core._job_wait(jid, timeout=10)
 
     assert job["state"] == "error" and "sing-box" in job["error"]
+
+
+def test_повторный_запрос_того_же_ключа_не_удваивает_поиск(monkeypatch):
+    from tunnelvpn import gateway, paths
+
+    core = _core()
+    monkeypatch.setattr(paths, "SINGBOX", __file__)
+    monkeypatch.setattr(gateway, "probe", lambda *a: {
+        "profiles": [{"name": "Amnezia Литва", "conf": "x"}],
+        "countries": [], "country": "lt"})
+    started, release = threading.Event(), threading.Event()
+
+    def check(profile):
+        started.set()
+        release.wait(5)
+        return "error", "не связался"
+
+    core._amnezia_check = check
+    key = {"api_key": "k", "user_country_code": "ru", "service_protocol": "awg"}
+
+    first = core._add_amnezia(key)
+    started.wait(5)
+    second = core._add_amnezia(key, "t1")
+    release.set()
+    job = core._job_wait(first["job"], timeout=10)
+
+    assert second["job"] == first["job"] and second["checking"] is True
+    assert second["tunnel"] == "t1"
+    assert job["state"] == "error" and job["added"] == 0
+    assert not core._amnezia_jobs
+
+
+def test_итог_проверки_победителя_переносится_на_файл(monkeypatch):
+    from tunnelvpn import gateway, paths
+
+    core = _core()
+    monkeypatch.setattr(paths, "SINGBOX", __file__)
+    monkeypatch.setattr(gateway, "probe", lambda *a: {
+        "profiles": [{"name": "Amnezia Туркменистан", "conf": "x"}],
+        "countries": [], "country": "tm"})
+    core._amnezia_check = lambda profile: ("up", "300 мс")
+    core._add_config = lambda name, text, kind="", tunnel="", place="", source_token="": {
+        "ok": True, "tunnel": "t1", "name": name}
+    key = {"api_key": "k", "user_country_code": "ru", "service_protocol": "awg"}
+
+    jid = core._job_start("add", 1, lambda j: core._search_amnezia(j, key))
+    job = core._job_wait(jid, timeout=10)
+
+    rec = core._conf_checks[("t1", "Amnezia Туркменистан")]
+    assert job["added"] == 1
+    assert rec["result"] == "up" and rec["answer"] == "300 мс"
+    assert rec["checking"] is False
+
+
+def test_уточнение_места_пишет_удержанного_без_выдачи(monkeypatch):
+    from tunnelvpn import gateway, paths
+
+    core = _core()
+    monkeypatch.setattr(paths, "SINGBOX", __file__)
+    probes = []
+    monkeypatch.setattr(gateway, "probe", lambda *a: (
+        probes.append(1) or {"profiles": [{"name": "Amnezia Литва", "conf": "x"}],
+                             "countries": [], "country": "lt"}))
+    core._amnezia_check = lambda profile: ("up", "300 мс")
+    replies = [{"ok": False,
+                "ask": {"id": "t9", "name": "Работа", "conf": "y"},
+                "error": "похоже на «Работа»: заменить его конфиг или "
+                         "добавить отдельным туннелем?"},
+               {"ok": True, "tunnel": "t9", "name": "Amnezia Литва"}]
+    calls = []
+    core._add_config = lambda name, text, kind="", tunnel="", place="", source_token="": (
+        calls.append((name, tunnel, place)) or replies.pop(0))
+    key = {"api_key": "k", "user_country_code": "ru", "service_protocol": "awg"}
+
+    jid = core._add_amnezia(key)["job"]
+    job = core._job_wait(jid, timeout=10)
+    assert job["state"] == "awaiting_place" and job["ask"]["id"] == "t9"
+    assert probes == [1] and core._amnezia_ask
+    retry = core._add_amnezia(key)
+    assert retry["job"] == jid and probes == [1]
+
+    reply = core._add_amnezia(key, place="replace")
+
+    assert reply == {"ok": True, "tunnel": "t9", "name": "Amnezia Литва",
+                     "added": 1, "mode": "amnezia_single"}
+    assert probes == [1]
+    assert calls == [("Amnezia Литва", "", ""),
+                     ("Amnezia Литва", "t9", "replace")]
+    assert not core._amnezia_ask
+    assert core._job_snapshot(jid)["state"] == "done"
 
 
 def test_повторная_проверка_конфига_не_дублируется():

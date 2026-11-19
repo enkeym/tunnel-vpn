@@ -19,7 +19,9 @@ paths:
   `st["tunnels"]` (`.cards` в `#pane-tunnels`),
   id строкой у `del_tunnel`/`tunnel_rules`, `{}`|`{tunnel}`|`{tunnel, place: "replace"}` у `add_config`,
   `{place, tunnel}` у `place_config`, `{tunnel, include?, exclude?, include_apps?, exclude_apps?}` (текст полей) у `save_rules`,
-  `{name, <поля листа>}` у `export_rules`, `{field}` у `pick_app`, булево у `log_level`/`set_autostart`, `{tunnel, on, replace, seq}` у
+  `{name, <поля листа>}` у `export_rules`, `{scope, id?, tunnel?, conf?, name}` у `links`/`export_links`/
+  `export_configs` (`conf` — имя конфига или id профиля, `name` — предложенное имя файла), `{field}` у `pick_app`,
+  булево у `log_level`/`set_autostart`, `{tunnel, on, replace, seq}` у
   `set_enabled` (любой туннель, основной тоже, на лету и при v6 основного; кнопка ⏻ карточки (`locked`) не видит
   живую правку — второй щелчок шлёт `set_enabled` посреди неё, `apply` службы ждёт замок `APPLY_WAIT`).
   `seq` — `FLIP_SEQ` в `lib/tunnelvpn/ui/js/cards.js:sendEnabled` (все отправители `set_enabled`) ↔
@@ -93,3 +95,19 @@ paths:
   (реестр `_job_*` в `lib/tunnelvpn/service.py`): недоступные удаляет `_check_added` с причиной,
   итог (`added, failed, problems`) — в `st["job"]` push-статуса, его рисует `paintJob` в `topbar.js`.
   Предпросмотр сеть не проверяет.
+  Ключ `vpn://`: `_preview` локальный (`subscriptions.vpn_key`, `mode: "amnezia_single"`, `profiles: 1`) —
+  лист открывается без сети и без единой выдачи; `add-link` отвечает задачей до сети (ключи `st["job"]` —
+  `docs/links/service-ipc/status.md`), фазы поиска рисует `jobRunningText`, а тост привязан к задаче по
+  `job` id (`JOB_TOAST`/`jobToast` в `lib/tunnelvpn/ui/js/topbar.js`): тост из `addSheet` живёт до конца
+  задачи, новый его не перекрывает.
+- Экспорт: лист `lib/tunnelvpn/ui/js/sheets.js:exportSheet` (пункты из одного `EXPORT_FORMATS` по областям,
+  подсказка `EXPORT_HINT`; для wg/awg ссылочных пунктов нет), `showLinks`/`exportLinks` — показать и
+  сохранить ссылки; отправители `cards.js:cardMenu` (группа — `tunnel`, иначе `config`), `topbar.js`
+  (`btn-export`, всё), листы подписок и ручных в `sheets.js`, `settings.js` (показать все ссылки). `links` отвечает через `request`;
+  `export_links`/`export_configs` не в `QUEUED_OPS` и идут в потоке моста: ответ службы собирает один
+  writer `lib/tunnelvpn/window.py:_save_export` (диалог SAVE, `.tmp` + `os.replace`), удача —
+  `js("exported", имя)`, отказ — `js("failed", …)`; один конфиг пишется `.conf`/`.txt`, остальное — ZIP
+  `_export_zip` с путями только из `lib/tunnelvpn/exports.py:check_path` (`manifest.json`, `links.txt`,
+  `configs/<tid>/<name>.conf`), `"L<n>"` в манифесте — номер строки `links.txt`, ссылка в манифест не
+  дублируется. `_export_rules` пишет тем же `_save_export`. Мок — `links`/`export_links`/`export_configs`
+  в `lib/tunnelvpn/ui/dev/mock-api.js`.

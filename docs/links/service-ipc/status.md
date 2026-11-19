@@ -46,6 +46,13 @@ paths:
   `_tunnel_entries`, `_sync_menu`), CLI. Старых `profiles`/`corp`/`last`/`split` в статусе нет.
 - `checking` — `lib/tunnelvpn/service.py:_status` (из `lib/tunnelvpn/probe.py:Prober.slow_busy`) → `checking` в
   `lib/tunnelvpn/ui/js/model.js:model` и `cards.js:cardState`: «проверяю…», пока идёт сетевая проверка.
+- `job` — текущая фоновая задача (реестр `lib/tunnelvpn/service.py:_job_start`/`_job_progress`/`_job_finish`,
+  отдаёт `_job_now`) → `paintJob`/`jobRunningText` в `lib/tunnelvpn/ui/js/topbar.js`. Проверка ссылок: `done`,
+  `total`, `added`, `failed`, `problems`. Amnezia Premium: `mode: "amnezia_single"`, фаза `phase` («выдача»,
+  «проверка»), `country`, `attempted`, итог `name` — строки пишет `_search_amnezia`, менять с обеих сторон.
+  Итог проверки победителя переносится на файл в задаче (`_note_test` со `stamp` = `_conf_stamp`): `tests`
+  сразу показывает `up` без перепроверки; разойдутся метки — `_tests_of` отбросит итог и плитка
+  покажет «не проверен» после удачного импорта.
 - Проверка по туннелям: `check_seq` и `checks {id: {result, answer, seq}}` — `lib/tunnelvpn/probe.py:_take_slow`
   и `probe_slow`, итог туннеля «по списку» без смены `seq` — ещё `check_one` (↻ живого, `_note_check`).
   Обе спрашивают туннель «по списку» через `_list_ask`: процесс моложе `probe.SIDE_SETTLE` по

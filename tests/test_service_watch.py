@@ -134,7 +134,7 @@ def _core(monkeypatch):
     monkeypatch.setattr(core, "log", core.logged.append)
     # Запасных конфигов нет: иначе сторож читал бы tunnels.json других тестов.
     monkeypatch.setattr(core, "_spares", lambda tid: (None, []))
-    monkeypatch.setattr(core, "_any_conf", lambda: True)
+    monkeypatch.setattr(core, "_any_conf", lambda enabled_only=False: True)
     # Автоподключение выключено, пока тест не скажет иначе: не флаг этой машины.
     monkeypatch.setattr(service.Core, "autostart_enabled", staticmethod(lambda: False))
     monkeypatch.setattr(core.prober, "probe_fast", lambda: None)
@@ -658,7 +658,7 @@ def test_без_конфигов_включать_нечего_и_это_не_о
     core = _core(monkeypatch)
     core.tunnel.uplink = None
     core.last_error = "прежняя"
-    monkeypatch.setattr(core, "_any_conf", lambda: False)
+    monkeypatch.setattr(core, "_any_conf", lambda enabled_only=False: False)
     core.tunnel.start = lambda _profile: pytest.fail("собирал без конфигов")
 
     out = core._do_start(retries=service.RECONNECT_TRIES, wake=True)
@@ -1554,7 +1554,7 @@ def test_удалён_последний_конфиг_на_живом_vpn_вык
     а выключенный VPN — окно само говорит «Добавьте конфиг»."""
     core = _core(monkeypatch)
     seen = _reload(monkeypatch, core, None)
-    monkeypatch.setattr(core, "_any_conf", lambda: False)
+    monkeypatch.setattr(core, "_any_conf", lambda enabled_only=False: False)
     human = core._human
 
     reply = core._apply(ask=True)
@@ -1945,6 +1945,18 @@ def test_время_подъёма_туннеля_в_журнале(monkeypatch)
 
     assert _said(core, "туннель поднят за")
     assert _said(core, "не поднялся (за")
+
+
+def test_после_подъёма_проверяет_конфиги_живых_туннелей(monkeypatch):
+    """19.11: добавили 21 конфиг и сразу включили VPN — активный конфиг ждал
+    конца общей очереди проверок и держал «проверяю…» минутами."""
+    core = _core(monkeypatch)
+    checked = []
+    monkeypatch.setattr(core, "_test_active", checked.append)
+
+    assert core._do_start("p") == {"ok": True}
+
+    assert checked == ["work", "home"]
 
 
 def test_мигание_сети_в_журнале(monkeypatch):

@@ -123,16 +123,16 @@ def test_брошенный_vpn_идёт_импортом(monkeypatch, tmp_path)
     assert "failed" not in [fn for fn, _ in shown]
 
 
-def test_отказ_шлюза_у_брошенного_vpn_виден(monkeypatch, tmp_path):
+def test_отказ_ключа_у_брошенного_vpn_виден(monkeypatch, tmp_path):
     key = tmp_path / "config.vpn"
     key.write_text(vpn_key() + "\n", encoding="utf-8")
     api, _, shown = _api(
-        monkeypatch, [{"ok": False, "error": "шлюз Amnezia недоступен"}])
+        monkeypatch, [{"ok": False, "error": "ключ vpn:// не от Amnezia Premium"}])
 
     api._drop({"type": "drop", "dataTransfer": {"files": [
         {"name": "config.vpn", "pywebviewFullPath": str(key)}]}})
 
-    assert shown == [("failed", "шлюз Amnezia недоступен")]
+    assert shown == [("failed", "ключ vpn:// не от Amnezia Premium")]
 
 
 def test_брошенный_битый_vpn_объясняется_и_не_шлётся(monkeypatch, tmp_path):
@@ -500,7 +500,8 @@ def test_ссылки_запрашиваются_у_службы(monkeypatch):
     got = api.send("links", {"scope": "profile", "id": "p_0123456789abcdef"})
 
     assert got == {"ok": True, "text": "vless://…", "profiles": 1}
-    assert admin == [("export-links", {"scope": "profile", "id": "p_0123456789abcdef"})]
+    assert admin == [("export-links", {"scope": "profile", "id": "p_0123456789abcdef",
+                                       "tunnel": "", "name": ""})]
 
 
 def test_экспорт_ссылок_пишет_текст(monkeypatch, tmp_path):
@@ -514,7 +515,8 @@ def test_экспорт_ссылок_пишет_текст(monkeypatch, tmp_path
 
     api.send("export_links", {"scope": "all", "name": "Все ссылки"})
 
-    assert admin == [("export-links", {"scope": "all", "id": ""})]
+    assert admin == [("export-links", {"scope": "all", "id": "", "tunnel": "",
+                                       "name": ""})]
     assert out.read_text(encoding="utf-8") == "vless://first\nvless://second\n"
 
 

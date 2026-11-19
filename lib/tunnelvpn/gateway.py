@@ -180,6 +180,8 @@ def _post(body, timeout):
                 raise ValueError(f"ответ шлюза больше {MAX_BODY} байт")
             chunks.append(chunk)
         return response.status, b"".join(chunks)
+    except TimeoutError:
+        raise
     except (OSError, http.client.HTTPException):
         raise ValueError("шлюз Amnezia недоступен") from None
     finally:
@@ -326,6 +328,5 @@ def probe(api_key, country="", protocol="", timeout=DEFAULT_TIMEOUT):
     codes = [c for c in _country_codes(config, protocol or PROTOCOL)
              if c != default]
     return {"profiles": fetched, "countries": codes, "country": default}
-
 
 

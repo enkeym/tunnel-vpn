@@ -17,7 +17,7 @@ import types
 import pytest
 
 from conftest import vpn_key
-from tunnelvpn import buildconfig, gateway, paths, probe, service, tunnel, tunnels
+from tunnelvpn import buildconfig, gateway, paths, probe, service, subscriptions, tunnel, tunnels
 from tunnelvpn.service import Core
 
 WG = ("[Interface]\nPrivateKey = x\nAddress = 10.0.0.2/32\n\n[Peer]\nPublicKey = y\n"
@@ -61,6 +61,9 @@ def _core():
     core._tests_lock = threading.Lock()
     core._test_queues = {}
     core._test_busy = set()
+    core._amnezia_lock = threading.Lock()
+    core._amnezia_jobs = {}
+    core._amnezia_ask = {}
     return core
 
 
@@ -2061,55 +2064,163 @@ def test_v6_конфига_по_адресу_в_interface(core, monkeypatch, add
     assert service._conf_facts("home", "nl-1")["v6"] is v6
 
 
-def test_ключ_vpn_добавляет_конфиги_шлюза(core, monkeypatch):
+def test_ключ_vpn_добавляет_один_рабочий_конфиг(core, monkeypatch):
     fetched = [{"name": "Amnezia Молдова", "conf": FULL},
                {"name": "Amnezia Молдова 2",
                 "conf": FULL.replace("203.0.113.9", "203.0.113.10")}]
     monkeypatch.setattr(gateway, "probe",
                         lambda *args: {"profiles": fetched, "countries": [],
                                        "country": "md"})
-    jobs = []
-    core._job_start = lambda kind, total, work: jobs.append((kind, total)) or "1"
+    checked = []
+
+    def check(profile):
+        checked.append(profile["name"])
+        return "up", "300 мс"
+
+    core._amnezia_check = check
+    works = []
+    core._job_start = lambda kind, total, work: works.append(work) or "1"
+    core._job_progress = lambda jid, **fields: None
+    result = {}
+    core._job_finish = lambda jid, state="done", **fields: (
+        result.update(state=state, **fields))
 
     reply = core._add_link(vpn_key())
 
-    assert reply["ok"] is True
-    assert reply["added"] == 2 and reply["profiles"] == 2
-    assert reply["tunnel"] == "home" and reply["place"] == "all"
-    assert reply["checking"] is True and reply["job"] == "1"
-    assert jobs == [("add", 1)]
-    assert sorted(_files("home")) == ["Amnezia Молдова 2.conf",
-                                      "Amnezia Молдова.conf"]
+    assert reply == {"ok": True, "job": "1", "checking": True, "added": 0,
+                     "mode": "amnezia_single"}
+    assert checked == [] and _files("home") == []
+
+    works[0]("1")
+
+    assert checked == ["Amnezia Молдова"]
+    assert result["state"] == "done" and result["added"] == 1
+    assert result["name"] == "Amnezia Молдова" and result["tunnel"] == "home"
+    assert _files("home") == ["Amnezia Молдова.conf"]
+    key = subscriptions.vpn_key(vpn_key())
+    assert _tunnel("home")["amnezia"]["Amnezia Молдова"] == core._amnezia_token(key)
+    preview = core._preview(link=vpn_key())
+    assert preview["existing"] is True and preview["active"] is False
+    data = tunnels.load()
+    tunnels.find(data, "home")["enabled"] = True
+    tunnels.save(data)
+    assert core._preview(link=vpn_key())["active"] is True
 
 
-def test_отказ_шлюза_виден_в_ответе(core, monkeypatch):
+def test_разные_ссылки_дают_разные_запасные_конфиги_с_тем_же_именем(core):
+    first, second = "a" * 64, "b" * 64
+    one = core._add_config("Amnezia UAE", FULL, source_token=first)
+    two = core._add_config("Amnezia UAE", FULL.replace("203.0.113.9", "203.0.113.10"),
+                           source_token=second)
+
+    assert one["ok"] and two["ok"]
+    assert two["name"] != one["name"]
+    assert _active("home") == one["name"]
+    assert _tunnel("home")["amnezia"] == {one["name"]: first, two["name"]: second}
+    with open(tunnels.conf_path("home", one["name"]), encoding="utf-8") as fh:
+        assert "203.0.113.9" in fh.read()
+
+    again = core._add_config("Другое имя", FULL.replace("203.0.113.9", "203.0.113.11"),
+                             source_token=second)
+    assert again["name"] == two["name"]
+    assert _active("home") == one["name"]
+    assert len(_files("home")) == 2
+
+
+def test_привязка_ссылки_удаляется_вместе_с_конфигом(core):
+    token = "a" * 64
+    reply = core._add_config("Amnezia UAE", FULL, source_token=token)
+
+    assert reply["ok"]
+    assert core._remove_config(reply["name"], tunnel="home")["ok"]
+    assert "amnezia" not in _tunnel("home")
+
+
+def test_перенос_запасного_конфига_сохраняет_привязку_ссылки(core):
+    token = "a" * 64
+    reply = core._add_config("Amnezia UAE", FULL, source_token=token)
+
+    moved = core._move_config("home", reply["name"], "new")
+
+    assert moved["ok"]
+    assert "amnezia" not in _tunnel("home")
+    assert _tunnel(moved["tunnel"])["amnezia"] == {reply["name"]: token}
+
+
+def test_ручная_замена_удаляет_прежнюю_привязку(core):
+    token = "a" * 64
+    reply = core._add_config("Amnezia UAE", FULL, source_token=token)
+
+    manual = core._add_config(reply["name"], FULL.replace("203.0.113.9", "203.0.113.10"),
+                              tunnel="home")
+
+    assert manual["ok"]
+    assert "amnezia" not in _tunnel("home")
+
+
+def test_другая_ссылка_с_общим_dns_не_заменяет_активный_конфиг(core):
+    first, second = "a" * 64, "b" * 64
+    conf = _wg("10.2.0.0/24", "10.2.0.1")
+    one = core._add_config("Первая", conf, source_token=first)
+    two = core._add_config("Вторая", conf.replace("203.0.113.9", "203.0.113.10"),
+                           source_token=second)
+
+    assert one["ok"] and two["ok"]
+    assert one["tunnel"] == two["tunnel"]
+    assert _active(one["tunnel"]) == one["name"]
+    assert len(_files(one["tunnel"])) == 2
+
+
+def test_выключение_последнего_туннеля_с_конфигом_останавливает_vpn(core):
+    _put("home", "nl.conf", FULL)
+    data = tunnels.load()
+    tunnels.find(data, "home")["active"] = "nl"
+    tunnels.find(data, "home")["enabled"] = True
+    tunnels.save(data)
+    assert core._set_enabled("home", False)["ok"]
+    core.tunnel = types.SimpleNamespace(uplink=(18, "192.0.2.1"))
+    core.pending_apply = True
+    core._human = 0
+    stopped = []
+    core._stop_locked = lambda: stopped.append(True)
+
+    reply = core._apply_locked()
+
+    assert reply == {"ok": True, "applied": "off", "empty": True}
+    assert stopped == [True]
+    assert tunnels.find(tunnels.load(), "home")["enabled"] is False
+
+
+def test_отказ_шлюза_виден_в_итоге_задачи(core, monkeypatch):
     def boom(*args):
         raise ValueError("шлюз Amnezia недоступен")
 
     monkeypatch.setattr(gateway, "probe", boom)
+    works = []
+    core._job_start = lambda kind, total, work: works.append(work) or "1"
+    core._job_progress = lambda jid, **fields: None
+    result = {}
+    core._job_finish = lambda jid, state="done", **fields: (
+        result.update(state=state, **fields))
 
-    assert core._add_link(vpn_key()) == {"ok": False,
-                                         "error": "шлюз Amnezia недоступен"}
+    reply = core._add_link(vpn_key())
+    works[0]("1")
+
+    assert reply["ok"] is True and reply["added"] == 0
+    assert result["state"] == "error"
+    assert result["error"] == "шлюз Amnezia недоступен"
     assert _files("home") == [] and _files("work") == []
+    assert any("не получены" in line for line in core.logged)
 
 
-def test_превью_ключа_vpn(core, monkeypatch):
-    monkeypatch.setattr(
-        gateway, "probe",
-        lambda *args: {"profiles": [{"name": "Amnezia Молдова", "conf": FULL}],
-                       "countries": ["de", "kz"]})
-
-    assert core._preview(link=vpn_key()) == {
-        "ok": True, "type": "link", "name": "Amnezia Молдова",
-        "host": "203.0.113.9", "port": 51820, "profiles": 3, "countries": 3,
-        "invalid": 0, "duplicates": 0}
-
-
-def test_превью_ключа_vpn_с_отказом_шлюза(core, monkeypatch):
+def test_превью_ключа_vpn_без_сети(core, monkeypatch):
     def boom(*args):
-        raise ValueError("api key expired")
+        raise AssertionError("просмотр ключа сеть не трогает")
 
     monkeypatch.setattr(gateway, "probe", boom)
+    monkeypatch.setattr(gateway, "_fetch", boom)
 
-    assert core._preview(link=vpn_key()) == {"ok": False,
-                                             "error": "api key expired"}
+    assert core._preview(link=vpn_key()) == {
+        "ok": True, "type": "link", "mode": "amnezia_single",
+        "name": "Amnezia Premium", "profiles": 1, "invalid": 0, "duplicates": 0,
+        "existing": False, "active": False}

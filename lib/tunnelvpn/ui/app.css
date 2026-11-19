@@ -424,6 +424,9 @@ body.kbd :focus-visible {
   width: 22px;
   height: 22px;
 }
+.orb.st-busy .ic {
+  animation: spin var(--t-spin) linear infinite;
+}
 @media (prefers-reduced-motion: reduce) {
   .switch.pending::after {
     animation: none;

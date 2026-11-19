@@ -183,6 +183,17 @@ def _check_tunnel(raw):
     tunnel["exclude"] = _check_list(raw, "exclude")
     tunnel["include_apps"] = _check_apps(raw, "include_apps")
     tunnel["exclude_apps"] = _check_apps(raw, "exclude_apps")
+    amnezia = raw.get("amnezia", {})
+    if not isinstance(amnezia, dict) or any(
+        not isinstance(name, str) or not isinstance(token, str)
+        or re.fullmatch(r"[0-9a-f]{64}", token) is None
+        for name, token in amnezia.items()
+    ):
+        raise ValueError(f"туннель {tid}: недопустимые привязки Amnezia")
+    for conf_name in amnezia:
+        check_name(conf_name)
+    if amnezia:
+        tunnel["amnezia"] = dict(amnezia)
     # Режим выбран вкладкой листа: «Только выбранные» с пустыми списками —
     # легальное «пока ничего не забирает», туннель не уходит запасным.
     if raw.get("pinned"):

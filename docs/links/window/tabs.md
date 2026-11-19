@@ -58,6 +58,10 @@ paths:
   address[], dns[], allowed[], keepalive, mtu, mtu_file, cut, mask[[имя, значение]], problem}`. MTU сборки —
   копия правил `buildconfig.endpoint` (`AWG_MTU_MAX`, `AWG_JUNK`, умолчание 1280 из `buildconfig.build`):
   поменял там — поменяй и здесь. Время проверки — `st.tunnels[].tests[name].at`.
+   Лист экспорта `exportSheet(scope, arg)` и список ссылок `showLinks` — те же `sheets.js`: пункты берутся из
+   одного `EXPORT_FORMATS` по области (`config`/`tunnel`/`all`), подсказка про секреты — `EXPORT_HINT`; у wg/awg
+   (`arg.vless` ложен) ссылочных пунктов нет. Новый формат или область — одна запись в `EXPORT_FORMATS`, а не
+   ветка в вызывающем; отправители перечислены в `docs/links/window/bridge.md`.
 - Перетаскивание .conf: `lib/tunnelvpn/window.py:_listen_drop` (на `events.loaded`) подписывает
   `Api._drop` на `drop` документа — полный путь только там (`pywebviewFullPath`, pywebview ≥ 5 на WebView2);
   оверлей `DROP` и `preventDefault` у dragover/drop — `sheets.js`. Дальше `_add_file` → `_send_config`, как

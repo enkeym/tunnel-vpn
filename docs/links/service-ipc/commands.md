@@ -21,12 +21,27 @@ paths:
 - `add-link` проверяет сеть без `tunnels.LOCK`, а запись профилей и load → изменить → save
   выполняет под ним в `lib/tunnelvpn/service.py:_add_link`. Если держать замок во время проверки,
   `lib/tunnelvpn/service.py:_status` не отвечает, и `lib/tunnelvpn/tray.py:_maybe_heal`
-  перезапускает службу с обрывом VPN.
+  перезапускает службу с обрывом VPN. Ключ Amnezia Premium (`vpn://`) сети в запросе не трогает
+  вовсе: `lib/tunnelvpn/service.py:_add_amnezia` отвечает задачей до сети
+  (`{ok, job, checking, added: 0, mode: "amnezia_single"}`), повторный заход тем же ключом
+  (`Core._amnezia_jobs`, sha256 `api_key`) отдаёт тот же `job`; выдачи и запись победителя —
+  в задаче `lib/tunnelvpn/service.py:_search_amnezia` (правило выдач — `docs/links/service-ipc/gateway.md`).
 - `add-subscription` и `update-subscription` в `lib/tunnelvpn/service.py:CONF_OPS` не входят: качают
   подписку (`lib/tunnelvpn/subscriptions.py:fetch`) без замков вовсе, а слияние и запись
   `subscriptions.json` держат под `lib/tunnelvpn/subscriptions.py:LOCK` (сеть под ним — ждал бы
   `add-link`); туннель `_add_subscription` правит точечно под `tunnels.LOCK`. Порядок замков один:
   `tunnels.LOCK` → `subscriptions.LOCK`, обратного в `lib/tunnelvpn/subscriptions.py` нет.
+- Экспорт: `export-links` и `export-configs` — вне `lib/tunnelvpn/ipc.py:READ_OPS`/`USER_OPS`,
+  только администратору; отправители `lib/tunnelvpn/window.py:_dispatch` (`links`, `_export_links`,
+  `_export_configs` — всё через `_admin_call`). Области `profile`/`subscription`/`manual`/`all`
+  обслуживает `lib/tunnelvpn/subscriptions.py:links`, области `config`/`tunnel` —
+  `lib/tunnelvpn/exports.py:links` (у wg/awg ссылок нет: отказ с указанием писать архив).
+  `export-configs` отвечает содержимым `{ok, entries, links, manifest}`
+  (`lib/tunnelvpn/exports.py:snapshot`) — служба на диск не пишет, путь назначения выбирает
+  человек в диалоге окна; сверх `lib/tunnelvpn/ipc.py:MAX_EXPORT_ITEMS` — `ValueError` с просьбой
+  меньшую область, а не урезанный экспорт. `exports.snapshot` берёт `tunnels.LOCK` →
+  `subscriptions.LOCK` тем же порядком, что `_add_subscription`; на диск не пишет, `active` и файлы
+  конфигов не меняет, шлюза и probe не трогает и в `lib/tunnelvpn/service.py:CONF_OPS` не входит.
 - Туннель в payload — ключ `tunnel` (id или имя), запасной — `kind` (`corp`/`personal`) у `add-config`,
   `remove-config`, `read-config`; `set-active` (USER_OPS) ↔ `lib/tunnelvpn/cli.py:main` (`use`).
 - `howto` (READ_OPS) ↔ `lib/tunnelvpn/window.py:_howto`: единственная команда, где ответ зависит от `is_admin`

@@ -7,7 +7,7 @@ Window checks without Windows: the mock page, and the live window over CDP. Whic
 
 1. `python3 -m http.server -b 127.0.0.1 -d lib/tunnelvpn/ui 8765` via Bash `run_in_background`.
 2. `browser_resize` 1040×720 (the window size), then `http://127.0.0.1:8765/index.html?mock=<scenario>`.
-   Scenarios, `tab`, `open`, `tick`, `upd`, `outcome` — header of `lib/tunnelvpn/ui/dev/mock-api.js`.
+   Scenarios, `tab`, `open`, `tick`, `upd`, `outcome`, `vpn` — header of `lib/tunnelvpn/ui/dev/mock-api.js`.
 3. Screenshots into `.playwright-mcp/<topic>-*.png`; console must show nothing but the `favicon.ico` 404.
 
 No `playwright` in `claude mcp list` (new machine):
