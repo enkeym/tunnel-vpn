@@ -2530,6 +2530,7 @@ class Core:
                          and proxy.fingerprint(p) not in known]
                 tid, name = t["id"], t["name"]
         except (OSError, ValueError) as exc:
+            self.log(f"!! ссылки VPN не добавлены: {exc}")
             return {"ok": False, "error": str(exc)}
         job = (self._job_start("add", len(items),
                                lambda jid: self._check_added(jid, tid, items))
@@ -2556,6 +2557,7 @@ class Core:
                 if not reply.get("ok"):
                     return reply
         except (OSError, ValueError) as exc:
+            self.log(f"!! конфиги Amnezia Premium не получены: {exc}")
             return {"ok": False, "error": str(exc)}
         self.log(f"→ добавлены конфиги Amnezia Premium: {len(replies)}")
         first = replies[0]
@@ -2578,6 +2580,7 @@ class Core:
                     tunnels.save(data)
                 tid, pid = t["id"], profiles[0]["id"]
         except (OSError, ValueError) as exc:
+            self.log(f"!! подписка не добавлена: {exc}")
             return {"ok": False, "error": str(exc)}
         self.log(f"→ добавлена подписка «{sub['name']}» ({sub['id']}): "
                  f"профилей {len(profiles)}")
@@ -2612,6 +2615,7 @@ class Core:
                 raise ValueError("нужна ссылка vless://, hysteria2:// или HTTPS-адрес подписки")
             sub = subscriptions.preview(url, name, allow_private, kind)
         except (OSError, ValueError) as exc:
+            self.log(f"!! проверка ссылки не удалась: {exc}")
             return {"ok": False, "error": str(exc)}
         return {"ok": True, "type": sub["kind"], "name": sub["name"],
                 "host": sub["host"], "port": sub["port"],

@@ -17,6 +17,11 @@ KINDS = ("uri-list", "base64", "singbox")
 VPN_SCHEME = "vpn://"
 _VPN_HEADER = b"\x00\x00\x00\xff"
 VPN_IMPORT_ERROR = "ключ vpn://: конфиги выдаёт шлюз Amnezia, добавьте ключ файлом или ссылкой"
+NOT_A_SUBSCRIPTION = ("это не подписка: в ответе нет ни ссылок vless:// "
+                      "или hysteria2://, ни sing-box JSON (возможно, адрес "
+                      "вернул страницу ошибки)")
+HAPP_LINK_IS_SUB = ("Happ-ссылка — это подписка: вставьте её как адрес "
+                    "подписки, а не как ссылку VPN")
 ADAPTIVE_KINDS = ("auto",) + KINDS
 NAME_MAX_LEN = 80
 MAX_IMPORT = 2000
@@ -300,11 +305,17 @@ def detect_kind(body):
         return "vpn"
     if any(f"{proto}://" in stripped.lower() for proto in proxy.PROTOS):
         return "uri-list"
-    decoded = _decode_base64(stripped)
+    if happ.is_link(stripped):
+        happ.check_link(stripped)
+        raise ValueError(HAPP_LINK_IS_SUB)
+    try:
+        decoded = _decode_base64(stripped)
+    except ValueError:
+        raise ValueError(NOT_A_SUBSCRIPTION) from None
     if decoded.strip().startswith("{") or any(
             f"{proto}://" in decoded.lower() for proto in proxy.PROTOS):
         return "base64"
-    raise ValueError("неизвестный формат подписки")
+    raise ValueError(NOT_A_SUBSCRIPTION)
 
 
 def _parse_uri(text):

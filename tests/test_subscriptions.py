@@ -236,6 +236,16 @@ def test_неизвестный_формат(body):
         subscriptions.detect_kind(body)
 
 
+def test_чужой_ответ_не_называет_base64():
+    with pytest.raises(ValueError, match="это не подписка"):
+        subscriptions.detect_kind("<!doctype html><title>403</title>")
+
+
+def test_happ_ссылка_в_поле_ссылки_vpn():
+    with pytest.raises(ValueError, match="Happ-ссылка"):
+        subscriptions.detect_kind("happ://crypt5/AbCd1234=")
+
+
 def test_uri_list_пропускает_комментарии_и_дубли():
     body = "\n".join(["# comment", "", _link(name="One"),
                       _link(name="Two"),

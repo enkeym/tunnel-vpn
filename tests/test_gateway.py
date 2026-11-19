@@ -140,6 +140,23 @@ def test_отказ_шлюза_виден_в_причине(monkeypatch):
         gateway.profiles("fake.key")
 
 
+def test_незашифрованный_отказ_шлюза_виден_в_причине():
+    raw = json.dumps({
+        "http_status": 403,
+        "message": "Valid user API key or Apple subscription ID is required "
+                   "for Premium stack.",
+    }).encode()
+    assert gateway._reason(403, raw, b"k" * gateway.AES_KEY_LEN,
+                           b"i" * gateway.AES_IV_LEN) == (
+        "Valid user API key or Apple subscription ID is required for Premium stack.")
+
+
+def test_неразборчивый_отказ_шлюза():
+    assert gateway._reason(403, b"<html>denied</html>", b"k" * gateway.AES_KEY_LEN,
+                           b"i" * gateway.AES_IV_LEN) == (
+        "шлюз Amnezia ответил HTTP 403")
+
+
 def test_ответ_шлюза_не_конфиг(monkeypatch):
     _fake_gateway(monkeypatch, 200, json.dumps({"other": 1}).encode())
     with pytest.raises(ValueError, match="не вернул конфиг"):

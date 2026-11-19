@@ -119,7 +119,10 @@ def _reason(status, raw, key, iv):
     try:
         data = _decrypt(raw, key, iv)
     except ValueError:
-        data = None
+        try:
+            data = json.loads(raw.decode("utf-8", "replace"))
+        except ValueError:
+            data = None
     if isinstance(data, dict):
         for field in ("error", "message", "details"):
             value = data.get(field)
