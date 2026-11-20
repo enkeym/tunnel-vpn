@@ -99,6 +99,25 @@ DEAD_RE = re.compile(
 DEAD_HITS = 3
 DEAD_WINDOW = 60.0
 DEAD_GAP = 60.0
+LONG_CLOSED_RE = re.compile(
+    r"ERROR \[(\d+) (?:(\d+)m)?([\d.]+)(m?s)\] connection: connection "
+    r"(?:download|upload) closed: close \S+ (?:\S+->)?(\S+): ")
+CONN_ID_RE = re.compile(
+    r"\[(\d+) [^\]]*\] (?:endpoint|outbound)/\w+\[([^\]]+)\]: "
+    r"outbound (?:packet )?connection to ")
+LONG_CLOSED = 15.0
+LONG_HITS = 2
+LONG_WINDOW = 60.0
+CONN_KEEP = 900.0
+
+
+def _closed_after(m):
+    secs = float(m.group(3))
+    if m.group(2):
+        secs += int(m.group(2)) * 60
+    return secs / 1000 if m.group(4) == "ms" else secs
+
+
 # Живой процесс, через который нет выхода: AWG-пир держит соединение, sing-box
 # не пишет «context deadline exceeded», и DEAD_RE молчит (18 ноября так четыре
 # минуты висело «не работает»). Тогда смотрим на проверку выхода в probe: адреса
@@ -320,6 +339,9 @@ class Core:
         # Туннели, чей DNS отвечает при таймаутах: «не перезапускаю» — раз на смену
         # состояния, а не на каждую пачку таймаутов к адресу чужой сети.
         self._side_said = set()
+        self._long_hits = ()
+        self._conn_tid = {}
+        self._long_said = set()
         # Проверки конфигов (_test_conf): запись итога — по одной; временные
         # процессы — по одному на туннель (id → замок): json в run\ и журнал у
         # них по id, а разные туннели — «Проверить все» без VPN — проверяются разом.
@@ -1256,6 +1278,7 @@ class Core:
             # старой сети. Иначе два таймаута через мёртвый кабель и один на Wi-Fi
             # перезапускали свежий туннель, а упавший на новой сети ждал DEAD_GAP.
             self._dead_hits = ()
+            self._long_hits, self._conn_tid, self._long_said = (), {}, set()
             self._main_tried = frozenset()
             self._side_after, self._side_noted = {}, {}
             self._side_said = set()
@@ -1426,10 +1449,11 @@ class Core:
 
     def _forget_side(self, side):
         """Таймауты и пауза перезапуска процесса — от старого конфига."""
-        self._dead_hits = tuple(h for h in self._dead_hits if h[1] != side.tid)
+        self._forget_hits(side.tid)
         self._side_after.pop(side.tid, None)
         self._side_noted.pop(side.tid, None)
         self._side_said.discard(side.tid)
+        self._long_said.discard(side.tid)
         self._kicked = tuple(tid for tid in self._kicked if tid != side.tid)
         self._fallback_at = {k: v for k, v in self._fallback_at.items() if k != side.tid}
 
@@ -1577,12 +1601,12 @@ class Core:
                 self.tunnel.mend_peer_routes()
             # Смену сети после этого всё равно проверяем ниже, счёт её
             # кругов не сбрасываем.
-            self._mind_sides(side_lines)
+            self._mind_sides(side_lines, lines)
         else:
             # Без шлюза таймауты — от сети, а не от туннеля: не копим, иначе
             # они сработают сразу после её возвращения, и не перезапускаем —
             # без сети туннель не оживёт.
-            self._dead_hits = ()
+            self._dead_hits, self._long_hits = (), ()
         if not cur[1] or cur == had:
             if seen and streak >= UPLINK_SETTLE:
                 self.log(f"→ сеть: интерфейс {seen[0]}, шлюз {seen[1]} пропала, так и "
@@ -1719,14 +1743,14 @@ class Core:
         self._log_at[start] = pos + end
         return data[:end].decode("utf-8", "replace").splitlines()
 
-    def _dead_tunnels(self, sides):
+    def _dead_tunnels(self, sides, lines):
         """{id туннеля: таймауты (время круга, id, адрес)} туннелей, через которые
         за DEAD_WINDOW не открылось DEAD_HITS соединений.
         Паузу DEAD_GAP не смотрит: это решает сторож."""
         now = time.monotonic()
         hits = [h for h in self._dead_hits if now - h[0] < DEAD_WINDOW]
-        for tid, lines in sides:
-            for line in lines:
+        for tid, chunk in sides:
+            for line in chunk:
                 m = DEAD_RE.search(line)
                 if m:
                     hits.append((now, tid, m.group(1).rpartition(":")[0]))
@@ -1735,10 +1759,44 @@ class Core:
         for tid in {h[1] for h in hits}:
             mine = [h for h in hits if h[1] == tid]
             if len(mine) >= DEAD_HITS:
+                dead[tid] = ("timeout", mine)
+        for tid, mine in self._long_dead(sides, lines, now).items():
+            dead.setdefault(tid, ("closed", mine))
+        return dead
+
+    def _long_dead(self, sides, lines, now):
+        tags = {side.tag: side.tid for side in self.tunnel.sides}
+        conn = self._conn_tid
+        for chunk in [lines] + [chunk for _, chunk in sides]:
+            for line in chunk:
+                m = CONN_ID_RE.search(line)
+                if m:
+                    tid = tags.get(buildconfig.ep_of_socks(m.group(2)))
+                    if tid:
+                        conn[m.group(1)] = (now, tid)
+        seen = [h for h in self._long_hits if now - h[0] < LONG_WINDOW]
+        for tid, chunk in [("", lines)] + list(sides):
+            for line in chunk:
+                m = LONG_CLOSED_RE.search(line)
+                if not m or _closed_after(m) < LONG_CLOSED:
+                    continue
+                where = tid or conn.get(m.group(1), (0.0, ""))[1]
+                if where:
+                    seen.append((now, where, m.group(5).rpartition(":")[0]))
+        self._long_hits = tuple(seen)
+        self._conn_tid = {k: v for k, v in conn.items() if now - v[0] < CONN_KEEP}
+        dead = {}
+        for tid in {h[1] for h in seen}:
+            mine = [h for h in seen if h[1] == tid]
+            if len(mine) >= LONG_HITS:
                 dead[tid] = mine
         return dead
 
-    def _mind_sides(self, sides):
+    def _forget_hits(self, tid):
+        self._dead_hits = tuple(h for h in self._dead_hits if h[1] != tid)
+        self._long_hits = tuple(h for h in self._long_hits if h[1] != tid)
+
+    def _mind_sides(self, sides, lines):
         """Упавший или мёртвый туннель — перезапуск только его процесса, не чаще
         DEAD_GAP. Пока основной не везёт, выход наружу напрямую: главное — чтобы
         интернет работал; с kill-switch — в block, мимо туннеля ничего (Tunnel.away).
@@ -1749,7 +1807,7 @@ class Core:
         # перезапуска назвал свежий процесс «не запущенным» и увёл выход на 17 с напрямую.
         if self._round_human != self._human:
             return
-        dead = self._dead_tunnels(sides)
+        dead = self._dead_tunnels(sides, lines)
         main = self.tunnel.main
         out, carries = self.tunnel.out_now(), None
         if main and out in buildconfig.AWAY_TAGS and main.alive():
@@ -1765,18 +1823,24 @@ class Core:
             if self._round_human != self._human:
                 return
             hits = dead.get(side.tid)
+            kind, hits = hits if hits else ("", None)
             # Живой основной, через который проверка не дошла: трафика через
             # него нет, и таймаутов в журнале не будет.
             stuck = side is main and (carries is False or silent)
             if side.alive() and not hits and not stuck:
                 continue
-            if (side is main and hits and not stuck and side.alive()
-                    and out not in buildconfig.AWAY_TAGS
-                    and self.tunnel.delay(buildconfig.via_tag(side.tid)) is not None):
+            check = (hits and not stuck and side.alive()
+                     and (kind == "closed"
+                          or (side is main and out not in buildconfig.AWAY_TAGS)))
+            if check and self.tunnel.delay(buildconfig.via_tag(side.tid)) is not None:
                 # Лежит чужой адрес, а не туннель: выход не трогаем.
-                self._dead_hits = tuple(h for h in self._dead_hits
-                                        if h[1] != side.tid)
+                self._forget_hits(side.tid)
+                if kind == "closed" and side.tid not in self._long_said:
+                    self._long_said.add(side.tid)
+                    self.log(f"!! через «{side.title}» оборвались долгие соединения, "
+                             f"но туннель отвечает — не перезапускаю")
                 continue
+            self._long_said.discard(side.tid)
             if side is main and out not in buildconfig.AWAY_TAGS:
                 # Выход уводим сразу, без паузы: интернет не должен ждать перезапуска.
                 away = self.tunnel.away()
@@ -1802,14 +1866,14 @@ class Core:
                              f"перезапуска нет {DEAD_GAP:.0f} с, жду")
                 continue
             # Таймауты того туннеля разобраны: чем бы ни кончилось, счёт заново.
-            self._dead_hits = tuple(h for h in self._dead_hits if h[1] != side.tid)
-            why = self._side_down(side, hits)
+            self._forget_hits(side.tid)
+            why = self._side_down(side, kind, hits)
             if why:
                 self._side_after[side.tid] = now + DEAD_GAP
                 self.log(f"!! {why} — перезапускаю процесс «{side.title}»")
                 self._restart_side(side)
 
-    def _side_down(self, side, hits):
+    def _side_down(self, side, kind, hits):
         """Что с туннелем, для журнала, или '' — туннель «по списку» всё-таки
         отвечает: его DNS ответил хоть чем-то. Таймауты тогда — к адресам, до
         которых этот сервер не достаёт (правила от другой сети), и перезапуск
@@ -1822,9 +1886,14 @@ class Core:
         if not hits:
             return f"через {side.tag} не дошла проверка выхода"
         now = time.monotonic()
-        what = (f"через {side.tag} соединения не открываются: таймаутов "
-                f"{len(hits)} за {now - hits[0][0]:.0f} с, "
-                f"адреса: {', '.join(sorted({h[2] for h in hits}))}")
+        if kind == "closed":
+            what = (f"через {side.tag} оборвались долгие соединения: "
+                    f"{len(hits)} за {now - hits[0][0]:.0f} с, "
+                    f"адреса: {', '.join(sorted({h[2] for h in hits}))}")
+        else:
+            what = (f"через {side.tag} соединения не открываются: таймаутов "
+                    f"{len(hits)} за {now - hits[0][0]:.0f} с, "
+                    f"адреса: {', '.join(sorted({h[2] for h in hits}))}")
         if side is not self.tunnel.main:
             said = self.prober.tunnel_answer(side.tid)
             if said:

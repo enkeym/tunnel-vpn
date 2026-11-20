@@ -125,6 +125,7 @@ def _core(monkeypatch):
     core._paths, core._ip_names = {}, {}
     core._log_at, core._side_after, core._side_noted = {}, {}, {}
     core._side_said = set()
+    core._long_hits, core._conn_tid, core._long_said = (), {}, set()
     core._tests_lock, core._trial_locks = threading.Lock(), {}
     core._test_queues, core._test_workers = {}, {}
     core._test_busy = set()
@@ -1890,6 +1891,100 @@ def test_таймауты_без_шлюза_не_копятся(monkeypatch, tmp
     _rounds(core, 1, state)
 
     assert core.tunnel.restarts == []
+
+
+def _closed(addr, secs="1m2s", cid="1403902503", local=""):
+    where = f"{local}->{addr}" if local else addr
+    return (f"+0300 2026-11-20 21:48:08 ERROR [{cid} {secs}] connection: "
+            f"connection download closed: close tcp {where}: endpoint not connected\n")
+
+
+def _open_conn(cid, tag, addr="45.95.201.33:443"):
+    return (f"+0300 2026-11-20 21:47:40 INFO [{cid} 1ms] outbound/socks[{tag}]: "
+            f"outbound connection to {addr}\n")
+
+
+def test_обрыв_долгих_соединений_перезапускает_только_свой_туннель(monkeypatch, tmp_path):
+    core = _core(monkeypatch)
+    log = _side_log(core, tmp_path, "work")
+    _corp_says(monkeypatch, core, "")
+    _append(log, _closed("104.18.11.66:443", "1m57s"), _closed("17.253.37.210:443", "37.12s"))
+
+    _rounds(core, 1)
+
+    assert core.tunnel.restarts == ["work"]
+    [line] = _said(core, "перезапускаю процесс «Работа»")
+    assert "оборвались долгие соединения" in line and "wg-work" in line
+    assert "17.253.37.210" in line and "104.18.11.66" in line
+
+
+def test_обрыв_при_живом_запасном_не_перезапускает(monkeypatch, tmp_path):
+    core = _core(monkeypatch)
+    core.tunnel.delay_ms = 80
+    log = _side_log(core, tmp_path, "work")
+    _corp_says(monkeypatch, core, "")
+    _append(log, _closed("104.18.11.66:443", "1m57s"), _closed("17.253.37.210:443", "37.12s"))
+
+    _rounds(core, 1)
+
+    assert core.tunnel.restarts == []
+    [line] = _said(core, "но туннель отвечает")
+    assert "«Работа»" in line
+
+
+def test_короткое_закрытие_и_одиночный_обрыв_не_перезапускают(monkeypatch, tmp_path):
+    core = _core(monkeypatch)
+    log = _side_log(core, tmp_path, "work")
+    _corp_says(monkeypatch, core, "")
+    _append(log, _closed("104.18.11.66:443", "1.15s"), _closed("17.253.37.210:443", "1m57s"),
+            _closed("8.211.8.172:443", "115ms"))
+
+    _rounds(core, 1)
+
+    assert core.tunnel.restarts == []
+
+
+def test_обрыв_при_живом_туннеле_пишется_один_раз_и_не_переключает(monkeypatch, tmp_path):
+    core = _core(monkeypatch)
+    core.tunnel.delay_ms = 120
+    log = _side_log(core, tmp_path, "home")
+    _append(log, _closed("104.18.11.66:443"), _closed("17.253.37.210:443"))
+    state = _rounds(core, 1)
+
+    _append(log, _closed("104.18.11.66:443"), _closed("17.253.37.210:443"))
+    _rounds(core, 1, state)
+
+    assert core.tunnel.restarts == [] and core.tunnel.outs == []
+    [line] = _said(core, "но туннель отвечает")
+    assert "«Личный»" in line
+
+
+def test_обрыв_основного_по_журналу_основного_узнаёт_свой_туннель(monkeypatch, tmp_path):
+    core = _core(monkeypatch)
+    core.tunnel.delay_ms = None
+    log = _sing_log(core, tmp_path)
+    _append(log, _open_conn("111", "socks2-home"), _open_conn("222", "socks-home"))
+    _rounds(core, 1)
+
+    _append(log, _closed("45.95.201.33:443", "27.25s", cid="111", local="172.19.0.1:61005"),
+            _closed("170.33.12.244:443", "28.30s", cid="222", local="172.19.0.1:58403"))
+    _rounds(core, 1)
+
+    assert core.tunnel.restarts == ["home"]
+    assert core.tunnel.outs == [buildconfig.DIRECT_TAG]
+    [line] = _said(core, "оборвались долгие соединения")
+    assert "wg-home" in line and "170.33.12.244" in line
+
+
+def test_обрыв_соединения_неизвестного_туннеля_не_перезапускает(monkeypatch, tmp_path):
+    core = _core(monkeypatch)
+    log = _sing_log(core, tmp_path)
+    _append(log, _closed("45.95.201.33:443", "27.25s", cid="111", local="172.19.0.1:61005"),
+            _closed("170.33.12.244:443", "28.30s", cid="222", local="172.19.0.1:58403"))
+
+    _rounds(core, 1)
+
+    assert core.tunnel.restarts == [] and core.tunnel.outs == []
 
 
 def test_выключенный_туннель_выход_в_статусе_пуст(monkeypatch):
