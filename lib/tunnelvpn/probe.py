@@ -57,6 +57,9 @@ SETTLE_PAUSE = 0.5
 DNS_ASK_NAME = "dns.msftncsi.com"
 # Ответ DNS без A-записи: сервер ответил, но имени не знает.
 DNS_NO_ADDR = "без адреса"
+TUN_DNS_EVERY = 10.0
+TUN_DNS_GAP = 30.0
+TUN_DNS_TIMEOUT = 3.0
 # Чем проверять полный конфиг вне VPN, как delay у clash_api (tunnel.DELAY_URL).
 TRIAL_URL = "https://cp.cloudflare.com/generate_204"
 PROXY_CHECK_URL = "https://cp.cloudflare.com/generate_204"
@@ -364,6 +367,11 @@ class Prober:
         # checks[id] — последней, в которой этот туннель уже проверен: по ним
         # трей и окно красят кружок каждого туннеля, не дожидаясь остальных.
         self._seq = 0
+        self._dns_lock = threading.Lock()
+        self._dns_at = 0.0
+        self._dns_ok = 0.0
+        self._dns_busy = False
+        self._dns_said = False
 
     def remeasure(self):
         """Сетевая проверка, как на подъёме туннеля, даже если цикл не
@@ -827,7 +835,10 @@ class Prober:
                 self.set(exit_ip="", corp_ip="", corp_http="", v6_leak="",
                          exit_is_peer=False, exit_state="unknown")
                 self._forget_checks()
-            elif want_slow and self._take_slow():
+                self._dns_reset()
+            else:
+                self._tun_dns()
+            if up and want_slow and self._take_slow():
                 # Занято — ответ той проверки мерил прошлый туннель (она шла
                 # во время переподключения): ждём её конца и меряем заново.
                 want_slow = False
@@ -842,6 +853,49 @@ class Prober:
         with self.lock:
             self.st["checks"] = {tid: {**c, "result": "", "answer": ""}
                                  for tid, c in (self.st.get("checks") or {}).items()}
+
+    def _dns_reset(self):
+        with self._dns_lock:
+            self._dns_at = self._dns_ok = 0.0
+            self._dns_said = False
+
+    def _tun_dns(self):
+        now = time.monotonic()
+        with self._dns_lock:
+            if self._dns_busy or now < self._dns_at:
+                return
+            self._dns_at = now + TUN_DNS_EVERY
+            if not self._dns_ok:
+                self._dns_ok = now
+            self._dns_busy = True
+        threading.Thread(target=self._dns_ask, daemon=True).start()
+
+    def _dns_ask(self):
+        try:
+            name = f"x{os.urandom(4).hex()}.example.com"
+            answered, _ = winnet.dns_ask_via(name, paths.TUN_DNS,
+                                             timeout=TUN_DNS_TIMEOUT)
+        except Exception:
+            answered = False
+        now = time.monotonic()
+        with self._dns_lock:
+            self._dns_busy = False
+            if answered:
+                self._dns_ok = now
+                said, self._dns_said = self._dns_said, False
+            else:
+                said = not self._dns_said and now - self._dns_ok > TUN_DNS_GAP
+                if said:
+                    self._dns_said = True
+        if said and self.log:
+            if answered:
+                self.log("→ DNS через туннель снова отвечает")
+            else:
+                self.log(f"!! DNS через туннель молчит {now - self._dns_ok:.0f} с")
+
+    def tun_dns_dead(self):
+        with self._dns_lock:
+            return bool(self._dns_ok) and time.monotonic() - self._dns_ok > TUN_DNS_GAP
 
     def forget_check(self, tid):
         """Туннель tid удалён — его итог прочь: service._new_tid отдаёт

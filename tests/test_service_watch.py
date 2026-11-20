@@ -125,6 +125,7 @@ def _core(monkeypatch):
     core._paths, core._ip_names = {}, {}
     core._log_at, core._side_after, core._side_noted = {}, {}, {}
     core._side_said = set()
+    core._dns_said = set()
     core._long_hits, core._conn_tid, core._long_said = (), {}, set()
     core._tests_lock, core._trial_locks = threading.Lock(), {}
     core._test_queues, core._test_workers = {}, {}
@@ -1985,6 +1986,28 @@ def test_обрыв_соединения_неизвестного_туннеля
     _rounds(core, 1)
 
     assert core.tunnel.restarts == [] and core.tunnel.outs == []
+
+
+def test_молчащий_dns_уводит_выход_и_перезапускает_основной(monkeypatch):
+    core = _core(monkeypatch)
+    _corp_says(monkeypatch, core, "")
+    monkeypatch.setattr(core.prober, "tun_dns_dead", lambda: True)
+
+    _rounds(core, 1)
+
+    assert core.tunnel.out != HOME_VIA
+    assert core.tunnel.restarts == ["home"]
+    assert _said(core, "молчит DNS")
+
+
+def test_живой_dns_не_трогает_основной(monkeypatch):
+    core = _core(monkeypatch)
+    _corp_says(monkeypatch, core, "")
+    monkeypatch.setattr(core.prober, "tun_dns_dead", lambda: False)
+
+    _rounds(core, 2)
+
+    assert core.tunnel.outs == [] and core.tunnel.restarts == []
 
 
 def test_выключенный_туннель_выход_в_статусе_пуст(monkeypatch):

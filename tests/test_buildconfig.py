@@ -483,7 +483,7 @@ def test_dns_туннеля_по_tcp_через_его_via():
 
     assert servers[0] == {"type": "tcp", "tag": "dns-work",
                           "server": "10.0.0.53", "detour": "via-work"}
-    assert servers[1] == {"type": "udp", "tag": "dns", "server": "8.8.8.8",
+    assert servers[1] == {"type": "tcp", "tag": "dns", "server": "8.8.8.8",
                           "detour": "out"}
     assert rules[0] == {"rule_set": ["names-work"], "server": "dns-work"}
 
@@ -531,7 +531,7 @@ def test_без_доменов_rule_set_dns_пустой(build, tmp_path):
 def test_без_основного_туннеля_публичный_dns_напрямую():
     """detour на пустой direct sing-box отвергает."""
     servers, _ = buildconfig.dns_section([], None)
-    assert servers[0] == {"type": "udp", "tag": "dns", "server": "8.8.8.8"}
+    assert servers[0] == {"type": "tcp", "tag": "dns", "server": "8.8.8.8"}
 
 
 # ----------------------------------------------------- сборка целиком
@@ -753,7 +753,7 @@ def test_dns_только_у_туннелей_по_списку_с_dns_в_conf(b
     assert main["dns"]["servers"] == [
         {"type": "tcp", "tag": "dns-work", "server": "10.0.0.53",
          "detour": "via-work"},
-        {"type": "udp", "tag": "dns", "server": "8.8.8.8", "detour": "out"},
+        {"type": "tcp", "tag": "dns", "server": "8.8.8.8", "detour": "out"},
         {"type": "dhcp", "tag": "uplink"},
     ]
     assert main["dns"]["rules"] == [{"inbound": ["peer-dns-in"], "server": "uplink",

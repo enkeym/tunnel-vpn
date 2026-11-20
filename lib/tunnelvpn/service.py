@@ -339,6 +339,7 @@ class Core:
         # Туннели, чей DNS отвечает при таймаутах: «не перезапускаю» — раз на смену
         # состояния, а не на каждую пачку таймаутов к адресу чужой сети.
         self._side_said = set()
+        self._dns_said = set()
         self._long_hits = ()
         self._conn_tid = {}
         self._long_said = set()
@@ -1909,6 +1910,13 @@ class Core:
         """Процесс основного жив, выход через него, а probe не видит адреса или
         видит свой: на живом AWG-пире DEAD_RE молчит, и молчание иначе не
         заметить. True — так уже SILENT_GAP секунд, выход пора уводить."""
+        if out not in buildconfig.AWAY_TAGS and self.prober.tun_dns_dead():
+            if main.tid not in self._dns_said:
+                self._dns_said.add(main.tid)
+                self.log(f"!! через «{main.title}» молчит DNS — увожу выход и "
+                         f"перезапускаю")
+            return True
+        self._dns_said.discard(main.tid)
         st = self.prober.snapshot()
         bad = (out not in buildconfig.AWAY_TAGS
                and (st.get("check_seq") or 0) > 0

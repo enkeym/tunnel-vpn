@@ -753,3 +753,29 @@ def test_без_основного_туннеля_выход_напрямую_а
     # Всё, что не забрал туннель «по списку», без основного идёт напрямую —
     # так задумано: адрес провайдера не «Трафик мимо туннеля».
     assert _exit(monkeypatch, tmp_path, ip, ip, None) == "direct"
+
+
+def test_dns_через_туннель_молчит_после_провалов(monkeypatch):
+    p = probe.Prober()
+    monkeypatch.setattr(probe.winnet, "dns_ask_via", lambda *a, **k: (False, ""))
+    monkeypatch.setattr(probe, "time", types.SimpleNamespace(
+        monotonic=lambda: 100.0 + probe.TUN_DNS_GAP + 1))
+    p._dns_ok = 100.0
+
+    p._dns_ask()
+
+    assert p.tun_dns_dead()
+
+
+def test_ответ_dns_снимает_молчание(monkeypatch):
+    p = probe.Prober()
+    monkeypatch.setattr(probe.winnet, "dns_ask_via", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(probe, "time", types.SimpleNamespace(
+        monotonic=lambda: 100.0 + probe.TUN_DNS_GAP + 1))
+    p._dns_ok = 100.0
+    p._dns_said = True
+
+    p._dns_ask()
+
+    assert not p.tun_dns_dead()
+    assert not p._dns_said

@@ -659,7 +659,7 @@ def dns_section(by_tunnel, public_detour):
     # переключатель OUT_TAG уводит в direct и его. Иначе без основного не
     # резолвилось бы ни одно имя, и запасной выход был бы бесполезен.
     # В сам direct detour не ведём: такой sing-box отвергает.
-    public = {"type": "udp", "tag": PUBLIC_DNS_TAG, "server": "8.8.8.8"}
+    public = {"type": "tcp", "tag": PUBLIC_DNS_TAG, "server": "8.8.8.8"}
     if public_detour:
         public["detour"] = public_detour
     servers.append(public)
