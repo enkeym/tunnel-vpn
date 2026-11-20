@@ -49,7 +49,7 @@ def _fake_gateway(monkeypatch, status, payload):
     private = _rsa()
 
     def fake_post(body, timeout):
-        return status, _answer(private, body, payload)
+        return status, _answer(private, body, payload), {}
 
     monkeypatch.setattr(gateway, "_public_key", lambda: private.public_key())
     monkeypatch.setattr(gateway, "_post", fake_post)
@@ -88,7 +88,7 @@ def test_тело_запроса_шлюзу(monkeypatch):
         data, key, iv = _request_keys(private, body)
         seen.update(gateway._decrypt(base64.b64decode(data["api_payload"]),
                                      key, iv))
-        return 503, b""
+        return 503, b"", {}
 
     monkeypatch.setattr(gateway, "_post", fake_post)
     with pytest.raises(ValueError, match="HTTP 503"):
@@ -152,9 +152,20 @@ def test_незашифрованный_отказ_шлюза_виден_в_пр
 
 
 def test_неразборчивый_отказ_шлюза():
-    assert gateway._reason(403, b"<html>denied</html>", b"k" * gateway.AES_KEY_LEN,
+    reason = gateway._reason(403, b"<html>denied</html>", b"k" * gateway.AES_KEY_LEN,
+                             b"i" * gateway.AES_IV_LEN,
+                             {"content-type": "text/html; charset=utf-8",
+                              "server": "cloudflare"})
+    assert reason.startswith("шлюз Amnezia ответил HTTP 403 (")
+    assert reason.startswith(
+        "шлюз Amnezia ответил HTTP 403 (text/html; charset=utf-8, cloudflare, 19 байт, base64 ")
+    assert reason.endswith(base64.b64encode(b"<html>denied</html>").decode() + ")")
+
+
+def test_пустой_отказ_шлюза_без_тела():
+    assert gateway._reason(403, b"", b"k" * gateway.AES_KEY_LEN,
                            b"i" * gateway.AES_IV_LEN) == (
-        "шлюз Amnezia ответил HTTP 403")
+        "шлюз Amnezia ответил HTTP 403 (0 байт)")
 
 
 def test_ответ_шлюза_не_конфиг(monkeypatch):
@@ -195,9 +206,9 @@ def _country_gateway(monkeypatch, by_code):
         seen.append(code)
         cfg = by_code.get(code)
         if cfg is None:
-            return 503, b""
+            return 503, b"", {}
         return 200, _answer(private, body,
-                            json.dumps({"config": vpn_key(cfg)}).encode())
+                            json.dumps({"config": vpn_key(cfg)}).encode()), {}
 
     monkeypatch.setattr(gateway, "_public_key", lambda: private.public_key())
     monkeypatch.setattr(gateway, "_post", fake_post)
@@ -225,7 +236,7 @@ def test_частая_выдача_повторяется_после_паузы(
         payload = (answers.pop(0) if status == 429
                    else json.dumps({"config": vpn_key(
                        {"containers": [_container()], "api_config": {}})}).encode())
-        return status, _answer(private, body, payload)
+        return status, _answer(private, body, payload), {}
 
     monkeypatch.setattr(gateway, "_public_key", lambda: private.public_key())
     monkeypatch.setattr(gateway, "_post", fake_post)

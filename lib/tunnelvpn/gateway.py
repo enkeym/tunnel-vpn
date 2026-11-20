@@ -121,7 +121,17 @@ def _decrypt(raw, key, iv):
         raise ValueError("ответ шлюза Amnezia не разбирается") from None
 
 
-def _reason(status, raw, key, iv):
+def _body_hint(raw, headers):
+    known = headers or {}
+    server = str(known.get("server", "")).strip()
+    kind = str(known.get("content-type", "")).strip()
+    parts = [part for part in (kind, server, f"{len(raw)} байт") if part]
+    if raw:
+        parts.append(f"base64 {_b64(raw[:200])}")
+    return ", ".join(parts)
+
+
+def _reason(status, raw, key, iv, headers=None):
     try:
         data = _decrypt(raw, key, iv)
     except ValueError:
@@ -134,7 +144,8 @@ def _reason(status, raw, key, iv):
             value = data.get(field)
             if isinstance(value, str) and value.strip():
                 return value.strip()[:200]
-    return f"шлюз Amnezia ответил HTTP {status}"
+    hint = _body_hint(raw, headers)
+    return f"шлюз Amnezia ответил HTTP {status}" + (f" ({hint})" if hint else "")
 
 
 def installation_uuid():
@@ -169,6 +180,7 @@ def _post(body, timeout):
             "User-Agent": f"{CLIENT_NAME}/{paths.version()}",
         })
         response = conn.getresponse()
+        headers = {name.lower(): value for name, value in response.getheaders()}
         chunks = []
         total = 0
         while True:
@@ -179,7 +191,7 @@ def _post(body, timeout):
             if total > MAX_BODY:
                 raise ValueError(f"ответ шлюза больше {MAX_BODY} байт")
             chunks.append(chunk)
-        return response.status, b"".join(chunks)
+        return response.status, b"".join(chunks), headers
     except TimeoutError:
         raise
     except (OSError, http.client.HTTPException):
@@ -264,10 +276,10 @@ def _fetch(api_key, country, protocol, server_country, timeout):
     packed = json.dumps(payload).encode()
     body, key, iv = _envelope(packed, _public_key())
     for attempt in range(RATE_LIMIT_RETRIES + 1):
-        status, raw = _post(body, timeout)
+        status, raw, headers = _post(body, timeout)
         if status == 200:
             break
-        reason = _reason(status, raw, key, iv)
+        reason = _reason(status, raw, key, iv, headers)
         if attempt == RATE_LIMIT_RETRIES or not _rate_limited(reason):
             raise ValueError(reason)
         time.sleep(RATE_LIMIT_WAIT * (attempt + 1))
