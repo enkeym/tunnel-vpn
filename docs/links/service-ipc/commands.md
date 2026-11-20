@@ -11,9 +11,11 @@ paths:
   `lib/tunnelvpn/window.py:refresh`, `lib/tunnelvpn/window.py:_check`. Переименовал ветку — отправитель
   получит «неизвестная команда», граф этого не видит.
 - Права команды — `lib/tunnelvpn/ipc.py:READ_OPS` и `lib/tunnelvpn/ipc.py:USER_OPS` через
-  `lib/tunnelvpn/ipc.py:requires_admin`. Новая ветка в `lib/tunnelvpn/service.py:handle` без записи
-  туда закрыта для обычного пользователя: окно зовёт её через `lib/tunnelvpn/window.py:_admin_call` (UAC),
-  трей и CLI — получат отказ.
+  `lib/tunnelvpn/ipc.py:requires_admin`. Остальные открыты администратору и пользователю активной
+  консольной сессии (`lib/tunnelvpn/ipc.py:_client_is_console`), поэтому окно зовёт их напрямую через
+  `lib/tunnelvpn/window.py:_admin_call` без UAC. Отказ несёт `needs_admin` — только тогда окно поднимает
+  права через UAC. Клиент из другой сессии (RDP, вторая учётная запись) без прав администратора получает
+  отказ.
 - Ветка, что правит `conf\` (load → изменить → `tunnels.save`), — в `lib/tunnelvpn/service.py:CONF_OPS`:
   `handle` держит её под `tunnels.LOCK` целиком. Без записи туда параллельная команда затрёт правку, а
   `os.replace` откажет с WinError 5/32. `apply`/`start`/`stop` туда не входят (свой `self.lock`, порядок —
@@ -43,12 +45,16 @@ paths:
   `subscriptions.LOCK` тем же порядком, что `_add_subscription`; на диск не пишет, `active` и файлы
   конфигов не меняет, шлюза и probe не трогает и в `lib/tunnelvpn/service.py:CONF_OPS` не входит.
 - Туннель в payload — ключ `tunnel` (id или имя), запасной — `kind` (`corp`/`personal`) у `add-config`,
-  `remove-config`, `read-config`; `set-active` (USER_OPS) ↔ `lib/tunnelvpn/cli.py:main` (`use`).
-- `howto` (READ_OPS) ↔ `lib/tunnelvpn/window.py:_howto`: единственная команда, где ответ зависит от `is_admin`
-  обработчика (`lib/tunnelvpn/service.py:_howto` — подсети и домены туннеля только администратору). Читает
+  `remove-config`, `read-config`, `save-config`; `set-active` (USER_OPS) ↔ `lib/tunnelvpn/cli.py:main` (`use`).
+- `save-config` (CONF_OPS) ↔ `lib/tunnelvpn/window.py:_edit_conf`: перезаписывает уже лежащий конфиг
+  (`text`) — правка в Блокноте без прав. Новых файлов не создаёт, имя и туннель сверяет с
+  `tunnels.list_confs`; текст проверяет `buildconfig.check_conf_text`, как `add-config`.
+- `howto` (READ_OPS) ↔ `lib/tunnelvpn/window.py:_howto`: единственная команда, где ответ зависит от `trusted`
+  обработчика (`lib/tunnelvpn/service.py:_howto` — подсети и домены туннеля только администратору и
+  пользователю консоли). Читает
   `state\run\` — закрытый каталог; в ответ не должны попасть ключи, пароли socks и секрет `clash_api`.
   `get-tunnels`, `add-tunnel`, `set-tunnel`, `remove-tunnel`, `set-log-level`, `set-kill-switch` — только
-  администратору; отправитель — `lib/tunnelvpn/window.py:_dispatch` (`_tunnel_rules`, `_save_rules`, `del_tunnel`,
+  администратору и пользователю консоли; отправитель — `lib/tunnelvpn/window.py:_dispatch` (`_tunnel_rules`, `_save_rules`, `del_tunnel`,
   `set_mode` → `set-tunnel {mode}` — и `all`, и `list` (лист «Только выбранные»); `log_level`, `kill_switch` → `set-kill-switch {on}` строго bool, без `apply`:
   `lib/tunnelvpn/service.py:_set_kill_switch` сам переводит выход `direct` ↔ `block`), у `add-tunnel` отправителей нет. Отказ `set-tunnel`
   (дубль записи, нет `0.0.0.0/0`, несколько конфигов или тот же файл у основного) — `error` строкой и

@@ -144,7 +144,7 @@ def test_команда_меняет_только_триггер_у_задачи
 def test_без_задачи_ставится_как_у_установщика():
     s = _script(settings.tray_task_command(True, False, r"C:\Program Files\O'Brien\TunnelVPN-Tray.exe"))
 
-    assert "Register-ScheduledTask" in s and "-AtLogOn" in s and "-RunLevel Highest" in s
+    assert "Register-ScheduledTask" in s and "-AtLogOn" in s and "-RunLevel Limited" in s
     assert "-Argument '--background'" in s
     # Кавычка в пути не рвёт строку PowerShell.
     assert r"-Execute 'C:\Program Files\O''Brien\TunnelVPN-Tray.exe'" in s
@@ -347,35 +347,33 @@ def _api(monkeypatch):
     return api
 
 
-def test_трей_при_входе_выключается_с_правами(monkeypatch):
+def test_трей_при_входе_выключается_без_прав(monkeypatch):
     state, runs = iter([True, False]), []
     monkeypatch.setattr(settings, "tray_task", lambda: next(state))
-    monkeypatch.setattr(window, "_is_admin", lambda: False)
-    monkeypatch.setattr(window, "_run_elevated",
-                        lambda exe, args, show=False: runs.append((exe, args)))
+    monkeypatch.setattr(window.subprocess, "run",
+                        lambda args, **kw: runs.append(args))
 
     r = _api(monkeypatch).send("set_tray_autostart", False)
 
     assert r == {"ok": True, "tray_autostart": False}
-    exe, args = runs[0]
-    assert exe.lower().endswith("powershell.exe")
-    assert "$false" in _script(args[args.index("-EncodedCommand") + 1])
+    assert runs and runs[0][0].lower().endswith("powershell.exe")
+    assert "$false" in _script(runs[0][runs[0].index("-EncodedCommand") + 1])
 
 
-def test_отказ_в_uac_возвращает_прежнее_состояние(monkeypatch):
+def test_ошибка_powershell_возвращает_прежнее_состояние(monkeypatch):
     monkeypatch.setattr(settings, "tray_task", lambda: True)
-    monkeypatch.setattr(window, "_is_admin", lambda: False)
-    monkeypatch.setattr(window, "_run_elevated", lambda exe, args, show=False: None)
+    monkeypatch.setattr(window.subprocess, "run", lambda args, **kw: None)
 
     r = _api(monkeypatch).send("set_tray_autostart", False)
 
     assert r["ok"] is False and r["tray_autostart"] is True
-    assert "запрос прав отменён" in r["error"]
+    assert "задача трея не изменилась" in r["error"]
 
 
 def test_выключать_нечего_без_задачи(monkeypatch):
     monkeypatch.setattr(settings, "tray_task", lambda: None)
-    monkeypatch.setattr(window, "_run_elevated", lambda *a, **k: (_ for _ in ()).throw(AssertionError))
+    monkeypatch.setattr(window.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError))
 
     assert _api(monkeypatch).send("set_tray_autostart", False) == {"ok": True, "tray_autostart": False}
 

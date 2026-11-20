@@ -42,6 +42,8 @@ def _fake_win32(monkeypatch, execute):
     for name, mod in modules.items():
         monkeypatch.setitem(sys.modules, name, mod)
     monkeypatch.setattr(window, "_is_admin", lambda: False)
+    monkeypatch.setattr(window.ipc, "call",
+                        lambda op, **kw: {"ok": False, "needs_admin": True})
     monkeypatch.setattr(subprocess, "run", _no_powershell)
     return calls
 
@@ -72,6 +74,17 @@ def test_команда_с_правами_идёт_через_shellexecute_и_ж
     assert kw["lpVerb"] == "runas" and kw["lpFile"] == sys.executable
     assert _args(kw["lpParameters"])[:4] == ["-m", "tunnelvpn.cli", "admin-op", "read-config"]
     assert calls[1:] == [("wait", 77, int(window.ADMIN_OP_WAIT * 1000)), ("close", 77)]
+
+
+def test_команда_консольного_пользователя_идёт_без_uac(monkeypatch):
+    def no_uac(_kw):
+        raise AssertionError("запрошен UAC")
+    calls = _fake_win32(monkeypatch, no_uac)
+    monkeypatch.setattr(window.ipc, "call",
+                        lambda op, **kw: {"ok": True, "op": op})
+
+    assert window.Api({})._admin_call("get-tunnels") == {"ok": True, "op": "get-tunnels"}
+    assert calls == []
 
 
 def test_отказ_в_uac_даёт_ошибку_а_не_исключение(monkeypatch):

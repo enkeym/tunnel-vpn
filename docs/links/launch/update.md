@@ -8,10 +8,11 @@ paths:
 ---
 
 ## Один трей и окно трея: обновление и сборка
-- Права трея: в манифесте `TunnelVPN-Tray.exe` (`installer/tunnelvpn.spec`) нет `uac_admin`, права поднимает
-  `lib/tunnelvpn/tray.py:run` → `_relaunch_elevated`; без прав `already_running` только смотрит
-  `instance.exists`, а `TRAY_OPEN` создаётся с `instance.USER_SIGNAL_SDDL`. Вернули `uac_admin` или сняли
-  дескриптор — ярлык к живому трею снова спрашивает UAC или молча не открывает окно.
+- Права трея: в манифесте `TunnelVPN-Tray.exe` (`installer/tunnelvpn.spec`) нет `uac_admin`; трей
+  работает от пользователя, привилегированные команды выполняет служба (пользователь активной консоли —
+  `lib/tunnelvpn/ipc.py:_client_is_console`). Без задачи планировщика `lib/tunnelvpn/tray.py:run` →
+  `_claim_unelevated` занимает мьютекс сам; `TRAY_OPEN` создаётся с `instance.USER_SIGNAL_SDDL`. Вернули
+  `uac_admin` или сняли дескриптор — ярлык к живому трею снова спрашивает UAC или молча не открывает окно.
 - Тихое обновление возвращает туннель по `"up": true` в status.json (`lib/tunnelvpn/probe.py:write_status`,
   `indent=1`) и не трогает его при флаге `AUTOSTART_FILE` (`lib/tunnelvpn/service.py`): `RestoreAfterUpdate`.
   Сменился формат или ключ — после обновления туннель молча остаётся выключенным.

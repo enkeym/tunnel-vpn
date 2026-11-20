@@ -7,7 +7,7 @@
 
 Само окно систему не трогает: всё, что требует прав, уходит в службу через
 именованный канал. Поэтому окно запускается от обычного пользователя, и UAC
-на нём не появляется — кроме одного случая: запись конфигов (см. _admin_call).
+на нём не появляется.
 """
 
 import json
@@ -548,20 +548,24 @@ class Api:
     def _admin_call(self, op, **payload):
         """Команда, которая пишет или читает conf\\ — там приватные ключи.
 
-        Канал (ipc.Server) требует для таких команд администратора: обычный
-        пользователь на многопользовательской машине не должен доставать чужие
-        ключи через именованный канал, даже если сам он умеет к нему постучаться.
+        Канал (ipc.Server) пускает к таким командам администратора и
+        пользователя активной консоли: человек за этим экраном и так
+        распоряжается своими туннелями, а другой вошедший (RDP, вторая учётная
+        запись) получает их лишь администратором.
 
-        Окно намеренно не элевировано целиком — иначе UAC спрашивал бы себя
-        при каждом открытии окна, хотя конфиги правят редко. Поэтому права
-        просим точечно, ровно на это одно действие: один короткий процесс,
-        одно окно UAC, готовый результат — и он сразу же завершается.
+        Окно намеренно не элевировано целиком. Обычный путь — прямой вызов:
+        служба сама решает по сессии клиента. Если она ответила needs_admin
+        (чужая сессия, портативная версия поднята без прав), права просим
+        точечно на одно действие: один короткий процесс, одно окно UAC.
         """
+        reply = ipc.call(op, **payload)
+        if not reply.get("needs_admin"):
+            return reply
         if _is_admin():
             # Портативная версия элевирована с самого первого запуска —
             # выпрашивать права ещё раз значит просто мучить пользователя
             # лишним UAC-окном без всякой пользы.
-            return ipc.call(op, **payload)
+            return reply
 
         with tempfile.TemporaryDirectory() as td:
             payload_file = os.path.join(td, "payload.json")
@@ -810,9 +814,9 @@ class Api:
 
     @staticmethod
     def _set_tray_autostart(on):
-        """Трей при входе — задача планировщика с наивысшими правами: менять
-        её может только администратор, UAC — на одно это действие. Итог судим
-        по задаче после команды: отказ в UAC снаружи не виден иначе."""
+        """Трей при входе — задача планировщика без повышенных прав: её ставит
+        и меняет сам пользователь, без UAC. Итог судим по задаче после команды:
+        иначе отказ PowerShell снаружи не виден."""
         exists = settings.tray_task() is not None
         if not exists and not on:
             return {"ok": True, "tray_autostart": False}
@@ -822,15 +826,12 @@ class Api:
         ps = settings.system32("WindowsPowerShell", "v1.0", "powershell.exe")
         args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                 "-EncodedCommand", settings.tray_task_command(on, exists, exe)]
-        if _is_admin():
-            subprocess.run([ps] + args, capture_output=True, timeout=60,
-                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        else:
-            _run_elevated(ps, args)
+        subprocess.run([ps] + args, capture_output=True, timeout=60,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         now = bool(settings.tray_task())
         if now != on:
             return {"ok": False, "tray_autostart": now,
-                    "error": "запрос прав отменён или не выполнился"}
+                    "error": "задача трея не изменилась: PowerShell не выполнился"}
         return {"ok": True, "tray_autostart": now}
 
     def _diagnostics(self):
@@ -868,12 +869,13 @@ class Api:
             self.js("failed", reply.get("error") or "не прочитать конфиг")
 
     def _edit_conf(self, tunnel, name):
-        """Открывает конфиг в Блокноте с правами: каталог conf\\ закрыт для
-        пользователя. Свой редактор в окне не делаем, как и на macOS.
+        """Открывает конфиг в Блокноте без прав: служба отдаёт текст, правка
+        идёт во временном файле, обратно его забирает служба. Свой редактор в
+        окне не делаем, как и на macOS.
 
         Путь собирается только из id и имени, которые служба сама отдала в
-        статусе: они приходят со страницы, и «..\\» вывел бы Блокнот с правами
-        за пределы conf\\.
+        статусе: они приходят со страницы, и «..\\» вывел бы Блокнот за пределы
+        временного каталога.
         """
         try:
             st = ipc.call("status").get("status", {})
@@ -887,13 +889,28 @@ class Api:
         if t.get("proto") == "vless":
             self.js("failed", "VLESS-профиль меняется повторной вставкой ссылки")
             return
-        # Полный путь: с правами запускается то, что найдётся по имени, а
-        # PATH и текущий каталог пишет и обычный пользователь.
+        reply = self._admin_call("read-config", tunnel=tunnel, name=name)
+        if not reply.get("ok"):
+            self.js("failed", reply.get("error") or "не прочитать конфиг")
+            return
         notepad = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
                                "System32", "notepad.exe")
-        _run_elevated(notepad, [tunnels.conf_path(t["id"], name)], show=True)
-        # Был ли файл изменён, окну не узнать — каталог закрыт. Перезапуск
-        # нужен только выбранному: запасной в сборку не идёт.
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                path = os.path.join(td, name + ".conf")
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(reply.get("text", ""))
+                subprocess.run([notepad, path])
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    text = fh.read()
+        except OSError as exc:
+            self.js("failed", f"edit_config: {exc}")
+            return
+        saved = self._admin_call("save-config", tunnel=tunnel, name=name, text=text)
+        if not saved.get("ok"):
+            self.js("failed", saved.get("error") or "не сохранить конфиг")
+            return
+        # Перезапуск нужен только выбранному: запасной в сборку не идёт.
         try:
             if name == t.get("active"):
                 self._apply()
@@ -1123,10 +1140,9 @@ class Api:
 
     def _validate_rules(self, arg):
         """Поля листа на лету: разбор — здесь же, тем же routelist, что у службы,
-        без канала и прав. Дубли с другими туннелями (check-rules) — только когда
-        окно уже с правами и разбор чистый: иначе UAC спрашивал бы на каждой
-        паузе ввода; без прав их покажет «Сохранить». fate — куда туннель уйдёт
-        без «пускать» (Core._check_rules)."""
+        без канала и прав. Дубли с другими туннелями (check-rules) — когда разбор
+        чистый и служба разрешила; чужой сессии без прав их покажет «Сохранить».
+        fate — куда туннель уйдёт без «пускать» (Core._check_rules)."""
         texts = {k: str(arg.get(k) or "") for k in ("include", "exclude") if k in arg}
         fields = {k: routelist.check(v) for k, v in texts.items()}
         for k in ("include_apps", "exclude_apps"):
@@ -1135,11 +1151,13 @@ class Api:
                 fields[k] = routelist.check_apps(str(arg[k] or ""))
         out = {"ok": True, "fields": fields, "max": routelist.MAX_RULES,
                "max_apps": routelist.MAX_APPS, "fate": {}}
-        if not texts or not _is_admin() or any(f["problems"] for f in fields.values()):
+        if not texts or any(f["problems"] for f in fields.values()):
             return out
         try:
             reply = ipc.call("check-rules", tunnel=arg["tunnel"], **texts)
         except ipc.NotRunning:
+            return out
+        if reply.get("needs_admin"):
             return out
         # Чего нет в листе (поле «пускать» у основного) — под первым полем.
         first = next(iter(fields))

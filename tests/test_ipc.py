@@ -316,6 +316,39 @@ def test_check_by_side_статус_и_on_side_под_замком(monkeypatch):
     assert not lock.locked()
 
 
+def _exchange(monkeypatch, *, admin, console, op="get-tunnels"):
+    """Прогон Server._exchange с подменёнными правами клиента."""
+    server = ipc.Server(
+        lambda seen, _payload, trusted: {"ok": True, "op": seen, "trusted": trusted},
+        lambda _msg: None)
+    monkeypatch.setitem(sys.modules, "win32security", types.SimpleNamespace(
+        ImpersonateNamedPipeClient=lambda _pipe: None, RevertToSelf=lambda: None))
+    monkeypatch.setattr(ipc, "_read_request",
+                        lambda _pipe: json.dumps({"op": op, "payload": {}}).encode())
+    monkeypatch.setattr(ipc, "_client_is_admin", lambda: admin)
+    monkeypatch.setattr(ipc, "_client_is_console", lambda: console)
+    replied = []
+    monkeypatch.setattr(server, "_reply", lambda _pipe, obj: replied.append(obj))
+    server._exchange("pipe")
+    return replied
+
+
+def test_команда_с_правами_открыта_консольному_пользователю(monkeypatch):
+    assert _exchange(monkeypatch, admin=False, console=True) == [
+        {"ok": True, "op": "get-tunnels", "trusted": True}]
+
+
+def test_команда_с_правами_открыта_администратору(monkeypatch):
+    assert _exchange(monkeypatch, admin=True, console=False) == [
+        {"ok": True, "op": "get-tunnels", "trusted": True}]
+
+
+def test_команда_с_правами_закрыта_чужой_сессии(monkeypatch):
+    reply = _exchange(monkeypatch, admin=False, console=False)
+
+    assert reply[0]["ok"] is False and reply[0]["needs_admin"] is True
+
+
 def test_check_by_side_удалённый_туннель_не_ждёт(monkeypatch):
     st = _status(3, False, home=3, work=3)
     release = _fake_service(monkeypatch, st, drop_work=True)

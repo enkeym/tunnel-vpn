@@ -63,7 +63,7 @@ MAX_EXPORT_ITEMS = 2000
 class Server:
     """Слушает канал и раздаёт команды обработчику.
 
-    handler(op, payload, is_admin) -> dict. Исключения обработчика не валят
+    handler(op, payload, trusted) -> dict. Исключения обработчика не валят
     службу: клиент получает {"ok": false, "error": ...}.
     """
 
@@ -163,11 +163,13 @@ class Server:
         # но причину видно.
         import win32security
         is_admin = False
+        on_console = False
         try:
             win32security.ImpersonateNamedPipeClient(pipe)
             is_admin = _client_is_admin()
+            on_console = _client_is_console()
         except Exception as exc:
-            is_admin = False
+            is_admin = on_console = False
             self.log(f"канал: не проверить права клиента: {exc!r}")
         finally:
             try:
@@ -175,13 +177,14 @@ class Server:
             except Exception:
                 pass
 
-        if requires_admin(op) and not is_admin:
-            self._reply(pipe, {"ok": False,
+        trusted = is_admin or on_console
+        if requires_admin(op) and not trusted:
+            self._reply(pipe, {"ok": False, "needs_admin": True,
                                "error": "нужны права администратора"})
             return
 
         try:
-            result = self.handler(op, payload, is_admin)
+            result = self.handler(op, payload, trusted)
         except Exception as exc:
             result = {"ok": False, "error": str(exc)}
         self._reply(pipe, result)
@@ -240,6 +243,26 @@ def _client_is_admin():
         if sid == admins and attrs & win32security.SE_GROUP_ENABLED:
             return True
     return False
+
+
+def _client_is_console():
+    """Сидит ли олицетворяемый клиент в активной консольной сессии.
+
+    Только для неё открываются команды, которым нужны права: пользователь за
+    этим экраном и так распоряжается своими туннелями, а другой вошедший
+    (RDP, вторая сессия) получает их лишь администратором.
+    """
+    import ctypes
+
+    import win32api
+    import win32security
+
+    token = win32security.OpenThreadToken(
+        win32api.GetCurrentThread(), win32security.TOKEN_QUERY, True)
+    session = win32security.GetTokenInformation(
+        token, win32security.TokenSessionId)
+    active = ctypes.c_uint32(ctypes.windll.kernel32.WTSGetActiveConsoleSessionId()).value
+    return session == active
 
 
 # ---------------------------------------------------------------- клиент

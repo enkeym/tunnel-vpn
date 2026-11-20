@@ -9,10 +9,13 @@ paths:
 ## Один трей и окно трея: установщик
 - Трея нет — ярлык без прав запускает задачу `"TunnelVPN Tray"` (`lib/tunnelvpn/settings.py:TRAY_TASK`, в трее —
   `lib/tunnelvpn/tray.py:_run_task` → `schtasks /Run`) ↔ имя `{#MyName} Tray` в `RegisterTrayTask`
-  `installer/tunnelvpn.iss`, затем ждёт `TRAY_OPEN` `TASK_OPEN_WAIT`; UAC — только без задачи или без ответа трея.
-  Разошлось имя — снова UAC на каждый запуск. Задачу без неё создаёт и
+  `installer/tunnelvpn.iss`, затем ждёт `TRAY_OPEN` `TASK_OPEN_WAIT`. Задачи нет или она не запустилась —
+  трей работает от пользователя и занимает мьютекс сам (`tray.py:_claim_unelevated`), без UAC: команды,
+  которым нужны права, выполняет служба. Задачу без неё создаёт и
   `lib/tunnelvpn/settings.py:tray_task_command` (переключатель «Значок в трее при входе»): параметры — как в
-  `RegisterTrayTask`, правишь одно — правь другое.
+  `RegisterTrayTask`, правишь одно — правь другое. Обе ставят задачу вошедшему за экраном
+  пользователю (`Win32_ComputerSystem.UserName`) с `-RunLevel Limited`: установщик поднят с правами, и его
+  учётная запись — не та, что увидит значок.
 - `--background` (только значок, прогрев окна): задача `RegisterTrayTask` в `installer/tunnelvpn.iss` →
   `installer/entry_tray.py`, `lib/tunnelvpn/cli.py:main`, `installer/entry_portable.py` → `lib/tunnelvpn/tray.py:run`.
   Пропал — при входе в систему поверх всего выскакивает панель.

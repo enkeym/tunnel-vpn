@@ -1,7 +1,8 @@
-"""Окно: «Редактировать» открывает конфиг в Блокноте с правами.
+"""Окно: «Редактировать» открывает конфиг в Блокноте без прав.
 
-Имя приходит со страницы, поэтому путь собирается только из имён, которые
-служба сама отдала в статусе.
+Служба отдаёт текст, правка идёт во временном файле, обратно его забирает
+служба. Имя приходит со страницы, поэтому путь собирается только из имён,
+которые служба сама отдала в статусе.
 """
 
 import os
@@ -15,50 +16,84 @@ HOME = {"id": "home", "name": "Личный", "mode": "all", "active": "nl-1",
         "confs": ["nl-1"]}
 
 
-def _setup(monkeypatch, status):
-    runs, shown = [], []
+def _setup(monkeypatch, status, text="[Interface]\n", write=None, save=None):
+    opened, shown, saved = [], [], {}
+
+    def call(op, **kw):
+        if op == "status":
+            return {"ok": True, "status": status}
+        if op == "read-config":
+            return {"ok": True, "text": text}
+        if op == "save-config":
+            saved.update(kw)
+            return save or {"ok": True}
+        return {"ok": True}
+
+    def run(argv, **_kw):
+        opened.append(argv)
+        if write is not None:
+            with open(argv[1], "w", encoding="utf-8") as fh:
+                fh.write(write)
+
     monkeypatch.setattr(window.threading, "Thread", SyncThread)
-    monkeypatch.setattr(ipc, "call", lambda op, **_kw: {"ok": True, "status": status})
+    monkeypatch.setattr(ipc, "call", call)
+    monkeypatch.setattr(window.subprocess, "run", run)
     monkeypatch.setattr(window, "_run_elevated",
-                        lambda exe, args, show=False: runs.append((exe, args, show)))
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("UAC")))
     api = window.Api({})
     monkeypatch.setattr(api, "js", lambda fn, arg=None: shown.append((fn, arg)))
-    return api, runs, shown
+    monkeypatch.setattr(api, "_apply", lambda: None)
+    monkeypatch.setattr(api, "refresh", lambda **_kw: None)
+    return api, opened, saved, shown
 
 
-def test_конфиг_открывается_в_блокноте_с_правами(monkeypatch):
-    api, runs, _ = _setup(monkeypatch, {"tunnels": [WORK, HOME]})
+def test_конфиг_открывается_в_блокноте_без_прав(monkeypatch):
+    api, opened, saved, _ = _setup(monkeypatch, {"tunnels": [WORK, HOME]})
 
     api.send("edit_config", {"tunnel": "home", "name": "nl-1"})
 
-    exe, args, show = runs[0]
+    exe, path = opened[0]
     assert os.path.isabs(exe) and os.path.normpath(exe).lower().endswith("system32\\notepad.exe")
-    assert args == [os.path.join(paths.CONF_TUNNELS, "home", "nl-1.conf")] and show
+    assert os.path.basename(path) == "nl-1.conf"
+    assert os.path.dirname(path) != os.path.join(paths.CONF_TUNNELS, "home")
+    assert saved == {"tunnel": "home", "name": "nl-1", "text": "[Interface]\n"}
 
 
-def test_конфиг_берётся_из_папки_своего_туннеля(monkeypatch):
-    api, runs, _ = _setup(monkeypatch, {"tunnels": [WORK, HOME]})
+def test_правка_из_блокнота_уходит_службе(monkeypatch):
+    api, _, saved, shown = _setup(monkeypatch, {"tunnels": [WORK, HOME]},
+                                  write="[Interface]\nAddress = 10.0.0.2\n")
 
     api.send("edit_config", {"tunnel": "work", "name": "corp"})
 
-    assert runs[0][1] == [os.path.join(paths.CONF_TUNNELS, "work", "corp.conf")]
+    assert saved["tunnel"] == "work" and saved["name"] == "corp"
+    assert saved["text"] == "[Interface]\nAddress = 10.0.0.2\n"
+    assert shown == []
+
+
+def test_отказ_службы_в_сохранении_показывается(monkeypatch):
+    api, _, _, shown = _setup(monkeypatch, {"tunnels": [WORK, HOME]},
+                              save={"ok": False, "error": "не разобрать"})
+
+    api.send("edit_config", {"tunnel": "work", "name": "corp"})
+
+    assert shown == [("failed", "не разобрать")]
 
 
 def test_без_туннеля_в_статусе_не_открывается(monkeypatch):
-    api, runs, shown = _setup(monkeypatch, {"tunnels": [HOME]})
+    api, opened, _, shown = _setup(monkeypatch, {"tunnels": [HOME]})
 
     api.send("edit_config", {"tunnel": "work", "name": "corp"})
 
-    assert runs == []
+    assert opened == []
     assert shown[0][0] == "failed"
 
 
 def test_имя_не_из_статуса_не_открывается(monkeypatch):
-    api, runs, shown = _setup(monkeypatch, {"tunnels": [WORK, HOME]})
+    api, opened, _, shown = _setup(monkeypatch, {"tunnels": [WORK, HOME]})
 
     api.send("edit_config", {"tunnel": "home", "name": "..\\..\\Windows\\win"})
 
-    assert runs == []
+    assert opened == []
     assert shown[0][0] == "failed"
 
 
@@ -270,7 +305,7 @@ def test_правка_при_включённом_vpn_применяет_её_с
 
 # ------------------------------------------------- validate_rules: на лету
 
-def _validate(monkeypatch, arg, admin=True, reply=None):
+def _validate(monkeypatch, arg, reply=None):
     """validate_rules со службой, отвечающей reply; вернуть ответ и команды."""
     calls = []
 
@@ -279,7 +314,6 @@ def _validate(monkeypatch, arg, admin=True, reply=None):
         return reply or {"ok": True, "problems": [], "fate": {}}
 
     monkeypatch.setattr(ipc, "call", call)
-    monkeypatch.setattr(window, "_is_admin", lambda: admin)
     return window.Api({}).send("validate_rules", arg), calls
 
 
@@ -319,11 +353,13 @@ def test_программы_разбираются_без_службы_со_ст
     assert r["max_apps"] == 100
 
 
-def test_без_прав_дубли_не_спрашиваются(monkeypatch):
-    r, calls = _validate(monkeypatch, {"tunnel": "work", "include": "a.ru"}, admin=False)
+def test_чужой_сессии_дубли_не_показываются(monkeypatch):
+    r, calls = _validate(monkeypatch, {"tunnel": "work", "include": "a.ru"},
+                         reply={"ok": False, "needs_admin": True})
 
-    # Иначе UAC на каждую паузу ввода: дубли покажет «Сохранить».
-    assert calls == [] and r["ok"] and r["fields"]["include"]["problems"] == []
+    # Отказ службы не превращается в ошибку поля: дубли покажет «Сохранить».
+    assert calls == [("check-rules", {"tunnel": "work", "include": "a.ru"})]
+    assert r["ok"] and r["fields"]["include"]["problems"] == []
 
 
 def test_отказ_check_rules_под_первым_полем(monkeypatch):

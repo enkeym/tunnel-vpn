@@ -1518,10 +1518,10 @@ begin
   Result := '';
 end;
 
-// Автозапуск трея при входе. Задача планировщика с наивысшими правами, а не
-// ярлык в «Автозагрузке»: трей требует администратора, и оттуда Windows его
-// не запускает. Без ограничения по времени (по умолчанию задачу снимают
-// через 72 часа) и без остановки при переходе на батарею.
+// Автозапуск трея при входе. Задача планировщика, а не ярлык в «Автозагрузке»:
+// так у неё нет ограничения по времени (по умолчанию задачу снимают через
+// 72 часа) и остановки при переходе на батарею. Права — обычные: трей работает
+// от пользователя, а привилегированные команды выполняет служба.
 // --background: при входе только значок, панель управления не выскакивает.
 procedure RegisterTrayTask;
 var
@@ -1530,16 +1530,22 @@ begin
   SetStatus('Включаю значок в трее при входе…');
   Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
     '-NoProfile -ExecutionPolicy Bypass -Command "' +
-    '$u = [Security.Principal.WindowsIdentity]::GetCurrent().Name; ' +
+    // Установщик поднят с правами, и его учётная запись — не та, что сидит за
+    // экраном: задачу ставим вошедшему пользователю.
+    '$u = ((Get-CimInstance Win32_ComputerSystem).UserName, ' +
+    '[Security.Principal.WindowsIdentity]::GetCurrent().Name) -ne $null -ne '''' | ' +
+    'Select-Object -First 1; ' +
     '$a = New-ScheduledTaskAction -Execute ''' + ExpandConstant('{app}\{#MyExe}') +
     ''' -Argument ''--background''; ' +
     '$t = New-ScheduledTaskTrigger -AtLogOn -User $u; ' +
-    '$p = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Highest; ' +
+    '$p = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Limited; ' +
     '$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) ' +
     '-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew; ' +
     'Register-ScheduledTask -TaskName ''{#MyName} Tray'' -Action $a -Trigger $t ' +
     '-Principal $p -Settings $s -Force | Out-Null"',
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if ResultCode <> 0 then
+    Log(Format('Задача трея: PowerShell вернул код %d', [ResultCode]));
 end;
 
 // WebView2 Runtime: без него окно не откроется, только значок в трее. В

@@ -572,7 +572,7 @@ def test_вкл_выкл_только_true_или_false(core, on):
 
 
 def test_вкл_выкл_через_handle(core):
-    r = core.handle("set-enabled", {"tunnel": "work", "on": False}, is_admin=False)
+    r = core.handle("set-enabled", {"tunnel": "work", "on": False}, trusted=False)
 
     assert r["ok"] and _tunnel("work")["enabled"] is False
 
@@ -688,7 +688,7 @@ def test_включить_идёт_по_сохранённым_флагам(up):
     _put("work", "corp.conf")
     _put("home", "nl.conf", FULL)
 
-    assert up.handle("start", {}, is_admin=False) == {"ok": True}
+    assert up.handle("start", {}, trusted=False) == {"ok": True}
 
     assert up.tunnel.seen == [{"work": ("list", False), "home": ("all", True)}]
 
@@ -703,7 +703,7 @@ def test_ничего_не_включено_включить_включает_в
     for tid, name in (("work", "corp"), ("t1", "nl"), ("t2", "fi")):
         _put(tid, name + ".conf", FULL)
 
-    assert up.handle("start", {}, is_admin=False) == {"ok": True}
+    assert up.handle("start", {}, trusted=False) == {"ok": True}
 
     assert up.tunnel.seen == [{"work": ("list", True), "t1": ("all", True),
                                "t2": ("list", True)}]
@@ -718,7 +718,7 @@ def test_ничего_не_включено_включается_и_выключ
     _put("home", "de.conf", FULL)
     _put("t1", "nl.conf", FULL)
 
-    assert up.handle("start", {}, is_admin=False) == {"ok": True}
+    assert up.handle("start", {}, trusted=False) == {"ok": True}
 
     assert up.tunnel.seen == [{"home": ("all", True), "t1": ("list", True)}]
 
@@ -729,7 +729,7 @@ def test_ничего_не_включено_при_основном_без_ко�
     tunnels.save({"tunnels": [*_off(WORK), HOME]})
     _put("work", "corp.conf", FULL)
 
-    assert up.handle("start", {}, is_admin=False) == {"ok": True}
+    assert up.handle("start", {}, trusted=False) == {"ok": True}
 
     assert up.tunnel.seen == [{"work": ("list", True), "home": ("all", True)}]
 
@@ -756,7 +756,7 @@ def test_только_этот_включает_один_и_собирает_с_
     _put("work", "corp.conf")
     _put("home", "nl.conf", FULL)
 
-    assert up.handle("start-only", {"tunnel": "home"}, is_admin=False) == {"ok": True}
+    assert up.handle("start-only", {"tunnel": "home"}, trusted=False) == {"ok": True}
 
     assert up.tunnel.seen == [{"work": ("list", False), "home": ("all", True)}]
     assert _flags() == {"work": False, "home": True}
@@ -768,7 +768,7 @@ def test_только_этот_не_поднялся_флаги_как_были(
     _put("home", "nl.conf", FULL)
     up.tunnel.err = "sing-box упал на старте"
 
-    r = up.handle("start-only", {"tunnel": "home"}, is_admin=False)
+    r = up.handle("start-only", {"tunnel": "home"}, trusted=False)
 
     assert not r["ok"] and _flags() == {"work": True, "home": False}
 
@@ -781,7 +781,7 @@ def test_только_этот_без_выбранного_конфига_нич
     _put("home", "nl.conf", FULL)
     _put("home", "de.conf", FULL)
 
-    r = up.handle("start-only", {"tunnel": "home"}, is_admin=False)
+    r = up.handle("start-only", {"tunnel": "home"}, trusted=False)
 
     assert not r["ok"] and "выберите" in r["error"]
     assert up.tunnel.seen == [] and _flags() == {"work": True, "home": False}
@@ -794,7 +794,7 @@ def test_только_этот_на_живом_vpn_отказ(up):
     _put("home", "nl.conf", FULL)
     up.tunnel.uplink = (5, "192.168.1.1")
 
-    r = up.handle("start-only", {"tunnel": "home"}, is_admin=False)
+    r = up.handle("start-only", {"tunnel": "home"}, trusted=False)
 
     assert not r["ok"] and _flags() == {"work": True, "home": True}
 
@@ -2226,3 +2226,34 @@ def test_превью_ключа_vpn_без_сети(core, monkeypatch):
         "ok": True, "type": "link", "mode": "amnezia_single",
         "name": "Amnezia Premium", "profiles": 1, "invalid": 0, "duplicates": 0,
         "existing": False, "active": False}
+
+
+def test_правка_конфига_перезаписывает_файл(core):
+    core._write_conf("work", "corp", WG)
+    new = WG.replace("203.0.113.9", "203.0.113.10")
+
+    assert core.handle("save-config", {"tunnel": "work", "name": "corp",
+                                       "text": new}, True) == {"ok": True}
+    with open(tunnels.conf_path("work", "corp"), encoding="utf-8") as fh:
+        assert fh.read() == new
+
+
+def test_правка_конфига_не_создаёт_новый(core):
+    core._write_conf("work", "corp", WG)
+
+    r = core.handle("save-config", {"tunnel": "work", "name": "new",
+                                    "text": WG}, True)
+
+    assert r["ok"] is False
+    assert not os.path.exists(tunnels.conf_path("work", "new"))
+
+
+def test_правка_мусора_не_затирает_конфиг(core):
+    core._write_conf("work", "corp", WG)
+
+    r = core.handle("save-config", {"tunnel": "work", "name": "corp",
+                                    "text": "мусор"}, True)
+
+    assert r["ok"] is False
+    with open(tunnels.conf_path("work", "corp"), encoding="utf-8") as fh:
+        assert fh.read() == WG

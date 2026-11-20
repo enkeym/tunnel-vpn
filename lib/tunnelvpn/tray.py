@@ -1325,9 +1325,8 @@ def already_running(background=False):
     Мьютекс не создался по другой причине — считаем себя первым: лишний
     значок лучше, чем ни одного.
 
-    Процесс без прав мьютекс не занимает, а только проверяет: он сейчас
-    перезапустится с правами (run), и занятое им имя заставило бы трей с
-    правами считать себя вторым.
+    Процесс без прав мьютекс здесь не занимает: решает run — сначала задача
+    автозапуска, потом собственное занятие (tray._claim_unelevated).
     """
     try:
         if window._is_admin():
@@ -1345,8 +1344,8 @@ def already_running(background=False):
 
 
 def _run_task():
-    """Запускает трей задачей автозапуска. У неё наивысшие права, и запустить
-    свою задачу обычный пользователь может без UAC. False — задачи нет
+    """Запускает трей задачей автозапуска. У неё обычные права, и запустить
+    свою задачу пользователь может без UAC. False — задачи нет
     (портативная версия, автозапуск снят при установке) или она не запустилась.
     """
     import subprocess
@@ -1362,18 +1361,20 @@ def _run_task():
     return r.returncode == 0
 
 
-def _relaunch_elevated():
-    """Тот же запуск с правами администратора (UAC), без ожидания.
+def _claim_unelevated(background):
+    """Занять мьютекс трея, работающего от пользователя.
 
-    Отказ в UAC — просто выход: трея не было и нет, как если бы ярлык не нажали.
+    False — трей уже есть: показать его окно (кроме запуска при входе).
     """
-    import ctypes
-    import subprocess
-
-    args = sys.argv[1:] if getattr(sys, "frozen", False) else [
-        os.path.abspath(sys.argv[0])] + sys.argv[1:]
-    ctypes.windll.shell32.ShellExecuteW(
-        None, "runas", sys.executable, subprocess.list2cmdline(args), None, 1)
+    try:
+        if instance.claim():
+            return True
+    except OSError:
+        return True
+    if not background:
+        instance.allow_foreground()
+        instance.signal(instance.TRAY_OPEN, wait=OPEN_SIGNAL_WAIT)
+    return False
 
 
 def _bring_up():
@@ -1393,8 +1394,8 @@ def run(background=False):
         return
     # Ярлык запускает трей без прав (в манифесте их нет — иначе UAC спрашивал
     # бы и тогда, когда трей уже есть и нужно только показать окно). Трея нет —
-    # теперь права нужны: сначала задачей автозапуска, без UAC; без неё или
-    # если трей так и не ответил — через UAC. Второй трей мьютекс не пустит.
+    # сначала пробуем задачу автозапуска, без UAC; без неё или если трей так и
+    # не ответил — работаем от пользователя. Второй трей мьютекс не пустит.
     if not window._is_admin():
         if _run_task():
             if background:
@@ -1405,8 +1406,8 @@ def run(background=False):
                 # туннель поднимает ярлык, start обычному пользователю можно.
                 _bring_up()
                 return
-        _relaunch_elevated()
-        return
+        if not _claim_unelevated(background):
+            return
     if not background:
         threading.Thread(target=_bring_up, daemon=True).start()
     Tray().run(background)

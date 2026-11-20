@@ -1,8 +1,9 @@
 """Вкладка «Настройки»: то, что окно узнаёт о системе само, без службы, —
 задача автозапуска трея, служба Windows, обновления, диагностика.
 
-Права здесь не просят: задачу трея меняет window.Api с UAC на одно действие,
-как правку конфигов, а этот модуль только собирает команду и читает итог.
+Права здесь не просят: задача трея не выше обычных прав пользователя, поэтому
+её ставит и меняет само окно, а этот модуль только собирает команду и читает
+итог.
 """
 
 import base64
@@ -19,8 +20,8 @@ import xml.etree.ElementTree as ET
 from . import paths
 
 # Задача автозапуска трея (tunnelvpn.iss: RegisterTrayTask). Ею же ярлык
-# запускает трей без UAC (tray._run_task) — поэтому «не запускать при входе»
-# выключает только триггер входа, а не задачу целиком.
+# подхватывает уже запущенный трей (tray._run_task) — поэтому «не запускать при
+# входе» выключает только триггер входа, а не задачу целиком.
 TRAY_TASK = "TunnelVPN Tray"
 TRAY_EXE = "TunnelVPN-Tray.exe"
 
@@ -105,7 +106,7 @@ def tray_task_command(on, exists, exe):
         script = ("$u = [Security.Principal.WindowsIdentity]::GetCurrent().Name; "
                   f"$a = New-ScheduledTaskAction -Execute '{exe}' -Argument '--background'; "
                   "$t = New-ScheduledTaskTrigger -AtLogOn -User $u; "
-                  "$p = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Highest; "
+                  "$p = New-ScheduledTaskPrincipal -UserId $u -LogonType Interactive -RunLevel Limited; "
                   "$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) "
                   "-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew; "
                   f"Register-ScheduledTask -TaskName '{name}' -Action $a -Trigger $t "

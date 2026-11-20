@@ -19,8 +19,8 @@ paths:
 - «Сейчас подключено»: `lib/tunnelvpn/window.py:_howto` берёт у службы op `howto` (`lib/tunnelvpn/service.py:_howto`,
   READ_OPS: `state\run\` окну не прочесть). Служба отдаёт `{endpoints: [{tag, address, mtu, awg, peer, dns, nets,
   domains}]}` по каждому включённому из `buildconfig.side_ids`: `dns` — `buildconfig.tunnel_dns`, `nets` —
-  `buildconfig.tunnel_nets(cfg, id)`, `domains` — `buildconfig.tunnel_domains(cfg, id)`; окну без прав (`is_admin`
-  канала) `nets`/`domains` пустые. ↔ `renderHowto` (имя туннеля — по тегу `wg-<id>` из `st["tunnels"]`).
+  `buildconfig.tunnel_nets(cfg, id)`, `domains` — `buildconfig.tunnel_domains(cfg, id)`; клиенту без прав и
+  не из консольной сессии (`trusted` канала) `nets`/`domains` пустые. ↔ `renderHowto` (имя туннеля — по тегу `wg-<id>` из `st["tunnels"]`).
 - Вкладка «Настройки» (`lib/tunnelvpn/ui/js/settings.js`, в `parts` перед `main`): ответы возвратом `send` (`request`) —
   `settings_info` → `Api._settings_info` `{portable, admin, service: {installed, running, start}|null,
   tray_autostart: bool|null, data_dir, logs_dir, repo}` (null у портативной); `set_tray_autostart` (булево) →
@@ -54,10 +54,13 @@ paths:
 - Листы конфига — `lib/tunnelvpn/ui/js/sheets.js` (в `parts` index.html после `cards`): `showConf`, `askPlace`,
   `askFull` зовёт Python; `cancel` берётся из `cards.js`. «Подробности»: `confDetails(t, name)` из `cardMenu`
   → `request('conf_details', {tunnel, name})` → `lib/tunnelvpn/window.py:_conf_details` (op
-  `read-config`, UAC) → `_conf_summary` — ответ возвратом `send`, ключи `{ok, error | path, awg, endpoint,
+  `read-config`, без UAC) → `_conf_summary` — ответ возвратом `send`, ключи `{ok, error | path, awg, endpoint,
   address[], dns[], allowed[], keepalive, mtu, mtu_file, cut, mask[[имя, значение]], problem}`. MTU сборки —
   копия правил `buildconfig.endpoint` (`AWG_MTU_MAX`, `AWG_JUNK`, умолчание 1280 из `buildconfig.build`):
   поменял там — поменяй и здесь. Время проверки — `st.tunnels[].tests[name].at`.
+  «Редактировать» (`edit_config`): `lib/tunnelvpn/window.py:_edit_conf` читает конфиг службой
+  (`read-config`), открывает временный файл в Блокноте без прав и после закрытия отправляет текст
+  обратно (`save-config`); каталог `conf\\` окну не нужен.
    Лист экспорта `exportSheet(scope, arg)` и список ссылок `showLinks` — те же `sheets.js`: пункты берутся из
    одного `EXPORT_FORMATS` по области (`config`/`tunnel`/`all`), подсказка про секреты — `EXPORT_HINT`; у wg/awg
    (`arg.vless` ложен) ссылочных пунктов нет. Новый формат или область — одна запись в `EXPORT_FORMATS`, а не

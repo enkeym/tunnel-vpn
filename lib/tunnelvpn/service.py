@@ -55,7 +55,7 @@ MAX_RULES = routelist.MAX_RULES
 # не входят: у первых свой self.lock, а под замком файла ждали бы и статус, и пробер.
 CONF_OPS = frozenset({
     "set-profile", "set-active", "set-enabled", "add-config", "remove-config",
-    "remove-configs",
+    "remove-configs", "save-config",
     "move-config", "add-tunnel", "set-tunnel", "remove-tunnel", "set-log-level",
     "set-kill-switch", "remove-subscription", "remove-profile",
     "set-allow-private"})
@@ -462,15 +462,15 @@ class Core:
 
     # -------------------------------------------------------------- команды
 
-    def handle(self, op, payload, is_admin):
+    def handle(self, op, payload, trusted):
         """Обработчик команд из канала. Права уже проверены в ipc.Server;
         правки conf\\ (CONF_OPS) идут по одной."""
         if op not in CONF_OPS:
-            return self._handle(op, payload, is_admin)
+            return self._handle(op, payload, trusted)
         with tunnels.LOCK:
-            return self._handle(op, payload, is_admin)
+            return self._handle(op, payload, trusted)
 
-    def _handle(self, op, payload, is_admin):
+    def _handle(self, op, payload, trusted):
         """Туннель команды — по id или имени (tunnel), а без него — по старому
         типу (kind: corp|personal): так зовут окно и трей до шага окна.
         """
@@ -478,7 +478,7 @@ class Core:
         if op == "status":
             return {"ok": True, "status": self._status()}
         if op == "howto":
-            return {"ok": True, "howto": self._howto(is_admin)}
+            return {"ok": True, "howto": self._howto(trusted)}
         if op == "start":
             return self._do_start(payload.get("profile", ""), wake=True)
         if op == "start-only":
@@ -521,6 +521,10 @@ class Core:
         if op == "read-config":
             return self._read_config(payload.get("name", ""),
                                      payload.get("kind", ""), tid)
+        if op == "save-config":
+            return self._save_config(payload.get("name", ""),
+                                     payload.get("kind", ""), tid,
+                                     payload.get("text", ""))
         if op == "get-tunnels":
             return self._get_tunnels()
         if op == "add-tunnel":
@@ -679,7 +683,7 @@ class Core:
         return st
 
     @staticmethod
-    def _howto(is_admin):
+    def _howto(trusted):
         """Что собрано, для «Как подключиться» в окне: собранные конфиги
         лежат в state\\run\\, окну без прав туда не заглянуть. Ключи и пароли
         не отдаются; подсети и домены туннеля — только администратору,
@@ -705,8 +709,8 @@ class Core:
                     "awg": any(k in ep for k in ("jc", "s1", "h1")),
                     "peer": peers[0].get("address", ""),
                     "dns": dns.get(tid, ""),
-                    "nets": buildconfig.tunnel_nets(main_cfg, tid) if is_admin else [],
-                    "domains": buildconfig.tunnel_domains(main_cfg, tid) if is_admin else [],
+                    "nets": buildconfig.tunnel_nets(main_cfg, tid) if trusted else [],
+                    "domains": buildconfig.tunnel_domains(main_cfg, tid) if trusted else [],
                 })
             for ob in side.get("outbounds", []):
                 if ob.get("type") not in proxy.OUTBOUND_TYPES:
@@ -720,8 +724,8 @@ class Core:
                     "awg": False,
                     "peer": "",
                     "dns": dns.get(tid, ""),
-                    "nets": buildconfig.tunnel_nets(main_cfg, tid) if is_admin else [],
-                    "domains": buildconfig.tunnel_domains(main_cfg, tid) if is_admin else [],
+                    "nets": buildconfig.tunnel_nets(main_cfg, tid) if trusted else [],
+                    "domains": buildconfig.tunnel_domains(main_cfg, tid) if trusted else [],
                 })
         return {"endpoints": endpoints}
 
@@ -2957,6 +2961,28 @@ class Core:
                 return {"ok": True, "text": fh.read()}
         except (OSError, ValueError) as exc:
             return {"ok": False, "error": str(exc)}
+
+    def _save_config(self, name, kind="", tunnel="", text=""):
+        """Перезаписывает уже лежащий конфиг: правка в Блокноте без прав.
+
+        Новых файлов не создаёт — этим занят add-config; имя и туннель
+        проверяются по тому, что служба сама отдала в статусе.
+        """
+        text = (text or "").lstrip("\ufeff")
+        bad = buildconfig.check_conf_text(text)
+        if bad:
+            return {"ok": False, "error": bad}
+        try:
+            t = self._target(self._tunnels(), tunnel, kind)
+            if t.get("proto") == "vless":
+                raise ValueError("VLESS-профиль меняется повторной вставкой ссылки")
+            if name not in tunnels.list_confs(t["id"]):
+                return {"ok": False, "error": f"нет конфига «{name}»"}
+            self._write_conf(t["id"], name, text)
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        self.log(f"→ конфиг {name}.conf в «{t['name']}» перезаписан")
+        return {"ok": True}
 
     def _remove_configs(self, tunnel="", kind="", drop_tunnel=False):
         try:

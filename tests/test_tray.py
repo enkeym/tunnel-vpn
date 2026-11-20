@@ -234,43 +234,47 @@ def _no_tray(*_a, **_kw):
     raise AssertionError("трей поднят без прав")
 
 
+def _starts_unelevated(monkeypatch):
+    """Запоминает запуск трея от пользователя, не отдавая ему main-поток."""
+    started = []
+    monkeypatch.setattr(tray, "Tray", lambda: types.SimpleNamespace(
+        run=lambda background: started.append(background)))
+    monkeypatch.setattr(tray.os, "_exit", lambda code: None)
+    return started
+
+
 def test_ярлык_без_прав_при_живом_трее_открывает_окно_без_uac(monkeypatch):
     _admin(monkeypatch, admin=False)
     monkeypatch.setattr(tray.instance, "claim", _no_claim)
     monkeypatch.setattr(tray.instance, "exists", lambda: True)
     sent = _signals(monkeypatch)
-    elevated = []
-    monkeypatch.setattr(tray, "_relaunch_elevated", lambda: elevated.append(True))
     monkeypatch.setattr(tray, "Tray", _no_tray)
 
     tray.run()
     assert sent == [tray.instance.TRAY_OPEN]
-    assert elevated == []
 
 
 def _no_tray_yet(monkeypatch, task, listened=True):
     """Ярлык без прав, трея нет; task — запустилась ли задача автозапуска."""
     _admin(monkeypatch, admin=False)
-    monkeypatch.setattr(tray.instance, "claim", _no_claim)
+    monkeypatch.setattr(tray.instance, "claim", lambda: True)
     monkeypatch.setattr(tray.instance, "exists", lambda: False)
     monkeypatch.setattr(tray, "_run_task", lambda: task)
     sent = _signals(monkeypatch, listened=listened)
-    elevated = []
-    monkeypatch.setattr(tray, "_relaunch_elevated", lambda: elevated.append(True))
-    monkeypatch.setattr(tray, "Tray", _no_tray)
-    return sent, elevated
+    return sent, _starts_unelevated(monkeypatch)
 
 
-def test_ярлык_без_прав_без_трея_и_задачи_перезапускается_с_правами(monkeypatch):
-    sent, elevated = _no_tray_yet(monkeypatch, task=False)
+def test_ярлык_без_прав_без_трея_и_задачи_работает_от_пользователя(monkeypatch):
+    sent, started = _no_tray_yet(monkeypatch, task=False)
+    monkeypatch.setattr(tray, "_bring_up", lambda: None)
 
     tray.run()
-    assert elevated == [True]
+    assert started == [False]
     assert sent == []
 
 
 def test_ярлык_без_трея_поднимает_его_задачей_без_uac(monkeypatch):
-    sent, elevated = _no_tray_yet(monkeypatch, task=True)
+    sent, started = _no_tray_yet(monkeypatch, task=True)
     # Трей задачи ответил — ярлык поднимает туннель сам; без подмены это
     # живая служба на машине.
     calls = []
@@ -278,24 +282,32 @@ def test_ярлык_без_трея_поднимает_его_задачей_б�
 
     tray.run()
     assert sent == [tray.instance.TRAY_OPEN]
-    assert elevated == []
+    assert started == []
     assert calls == ["status", "start"]
 
 
-def test_трей_из_задачи_не_ответил_тогда_uac(monkeypatch):
-    sent, elevated = _no_tray_yet(monkeypatch, task=True, listened=False)
+def test_трей_из_задачи_не_ответил_и_работает_от_пользователя(monkeypatch):
+    sent, started = _no_tray_yet(monkeypatch, task=True, listened=False)
 
     tray.run()
     assert sent == [tray.instance.TRAY_OPEN]
-    assert elevated == [True]
+    assert started == [False]
 
 
 def test_вход_без_прав_поднимает_трей_задачей_без_окна(monkeypatch):
-    sent, elevated = _no_tray_yet(monkeypatch, task=True)
+    sent, started = _no_tray_yet(monkeypatch, task=True)
 
     tray.run(background=True)
     assert sent == []
-    assert elevated == []
+    assert started == []
+
+
+def test_вход_без_прав_без_задачи_работает_от_пользователя(monkeypatch):
+    sent, started = _no_tray_yet(monkeypatch, task=False)
+
+    tray.run(background=True)
+    assert sent == []
+    assert started == [True]
 
 
 def test_задача_запускается_schtasks_по_имени(monkeypatch):
