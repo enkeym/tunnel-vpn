@@ -272,6 +272,14 @@ def _ask_dns(name, wait):
     return found.pop(None, None), {s: ip for s, ip in found.items() if ip}
 
 
+def _usable_peer_ip(ip):
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return not (addr.is_loopback or addr.is_unspecified or addr.is_multicast)
+
+
 def _known_peer_ips():
     """Последние удачные адреса пиров: {имя: IPv4}."""
     try:
@@ -283,16 +291,15 @@ def _known_peer_ips():
         return {}
     out = {}
     for name, ip in data.items():
-        try:
-            if isinstance(ip, str) and ipaddress.ip_address(ip).version == 4:
-                out[name] = ip
-        except ValueError:
-            pass
+        if isinstance(ip, str) and _usable_peer_ip(ip):
+            out[name] = ip
     return out
 
 
 def _remember_peer_ip(name, ip):
     """Запоминает удачный адрес. Не вышло записать — не беда, сборка важнее."""
+    if not _usable_peer_ip(ip):
+        return
     known = _known_peer_ips()
     if known.get(name) == ip:
         return
@@ -321,6 +328,9 @@ def resolve_peer(name, tag, log=print, net_dns=None):
     known = _known_peer_ips().get(name)
     if net_dns:
         ip = winnet.resolve4_via(name, "127.0.0.1", SYSTEM_DNS_WAIT, port=net_dns)
+        if ip and not _usable_peer_ip(ip):
+            log(f"  [{tag}] {name}: DNS сети вернул {ip} — не адрес сервера, пропускаю")
+            ip = ""
         if ip:
             # Удачный ответ — тоже в журнал: какой адрес и от кого получил
             # пир, — первое, что нужно, когда сервер «не отвечает».
@@ -333,11 +343,14 @@ def resolve_peer(name, tag, log=print, net_dns=None):
         log(f"  [{tag}] {name}: DNS сети не ответил, прошлого адреса нет — "
             f"спрашиваю системный")
     ip, publics = _ask_dns(name, SYSTEM_DNS_WAIT)
+    if isinstance(ip, str) and not _usable_peer_ip(ip):
+        log(f"  [{tag}] {name}: системный DNS вернул {ip} — не адрес сервера, пропускаю")
+        ip = None
     if not isinstance(ip, str):
         exc = ip or TimeoutError(f"системный DNS молчит {SYSTEM_DNS_WAIT:g} с")
         for server in PUBLIC_DNS:
             ip = publics.get(server)
-            if ip:
+            if ip and _usable_peer_ip(ip):
                 log(f"  [{tag}] {name}: системный DNS не ответил ({exc}), "
                     f"{ip} через {server}")
                 break

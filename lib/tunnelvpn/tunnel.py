@@ -384,6 +384,14 @@ class Tunnel:
                    and winnet.tun_index(paths.TUN_IP) is not None)
         if not running and not winnet.default_route()[1]:
             return "нет маршрута по умолчанию — сеть не поднята?"
+        # Реальный адрес спрашиваем в фоне, пока собирается и проверяется
+        # конфиг: туннеля ещё нет, ответ придёт мимо него.
+        real_ip = []
+        fetch = threading.Thread(
+            target=lambda: real_ip.append(self._fetch_real_ip()), daemon=True)
+        fetch.start()
+        fetch_deadline = time.time() + REAL_IP_WAIT
+        fetch.join(max(0.0, fetch_deadline - time.time()))
         try:
             with tunnels.LOCK:
                 killguard.apply(tunnels.load(), winnet.tun_index(paths.TUN_IP))
@@ -438,14 +446,6 @@ class Tunnel:
         if not os.path.isfile(paths.WINTUN):
             return (f"нет {paths.WINTUN}: без wintun.dll sing-box не создаст "
                     f"сетевой адаптер")
-
-        # Реальный адрес спрашиваем в фоне, пока собирается и проверяется
-        # конфиг: туннеля ещё нет, ответ придёт мимо него.
-        real_ip = []
-        fetch = threading.Thread(
-            target=lambda: real_ip.append(self._fetch_real_ip()), daemon=True)
-        fetch.start()
-        fetch_deadline = time.time() + REAL_IP_WAIT
 
         self.log("→ собираю конфиг из conf\\…")
         try:
@@ -661,6 +661,13 @@ class Tunnel:
         return ""
 
     def _save_real_ip(self, ip):
+        if not ip:
+            try:
+                with open(paths.REAL_IP_FILE, encoding="utf-8") as fh:
+                    if fh.read().strip():
+                        return
+            except OSError:
+                pass
         try:
             with open(paths.REAL_IP_FILE, "w", encoding="utf-8") as fh:
                 fh.write(ip)

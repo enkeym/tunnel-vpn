@@ -303,6 +303,39 @@ def test_опоздавший_ответ_не_записывается(env, monk
         assert fh.read() == ""
 
 
+def test_неудачный_замер_не_стирает_прошлый_реальный_адрес(env, monkeypatch):
+    tun, _build, _seen = env
+    with open(paths.REAL_IP_FILE, "w", encoding="utf-8") as fh:
+        fh.write("198.51.100.7")
+    monkeypatch.setattr(urllib.request, "urlopen", FakeIfconfig("198.51.100.7"))
+
+    assert tun.start() == ""
+
+    with open(paths.REAL_IP_FILE, encoding="utf-8") as fh:
+        assert fh.read() == "198.51.100.7"
+
+
+def test_kill_switch_ставится_после_замера_реального_адреса(env, monkeypatch):
+    tun, _build, _seen = env
+    ifconfig = FakeIfconfig("198.51.100.7")
+    ifconfig.release.set()
+    monkeypatch.setattr(urllib.request, "urlopen", ifconfig)
+    order = []
+
+    def apply(data, tun_index=None):
+        order.append("guard")
+
+    monkeypatch.setattr(tunnel.killguard, "apply", apply)
+    urlopen = urllib.request.urlopen
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda url, timeout=None: (
+                            order.append("fetch"), urlopen(url, timeout))[1])
+
+    assert tun.start() == ""
+
+    assert order.index("fetch") < order.index("guard")
+
+
 def test_при_чужом_vpn_реальный_адрес_не_записывается(env, monkeypatch):
     """Половинки Amnezia стоят до наших: ifconfig.me ответил её выходом."""
     tun, _build, seen = env

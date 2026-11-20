@@ -380,6 +380,28 @@ def test_без_системного_dns_адрес_через_публичны�
     assert _known(tmp_path) == {"vpn.example.com": "203.0.113.9"}
 
 
+def test_loopback_из_dns_сети_не_становится_адресом_пира(peer, monkeypatch, tmp_path):
+    conf, _ = peer
+    _system_dns(monkeypatch, "203.0.113.9")
+    monkeypatch.setattr(buildconfig.winnet, "resolve4_via",
+                        lambda name, server, timeout=4.0, port=53: "127.0.0.1")
+
+    ep = buildconfig.endpoint(conf, "wg-corp", 1280, net_dns=5353)
+
+    assert ep["peers"][0]["address"] == "203.0.113.9"
+    assert _known(tmp_path) == {"vpn.example.com": "203.0.113.9"}
+
+
+def test_прошлый_loopback_адрес_не_поднимает_туннель(peer, monkeypatch, tmp_path):
+    conf, _ = peer
+    (tmp_path / "peer-ips.json").write_text(
+        json.dumps({"vpn.example.com": "127.0.0.1"}), encoding="utf-8")
+    _system_dns(monkeypatch, socket.gaierror(11001, "getaddrinfo failed"))
+
+    with pytest.raises(SystemExit, match="не удалось резолвить vpn.example.com"):
+        buildconfig.endpoint(conf, "wg-corp", 1280, lambda line: None)
+
+
 def test_зависший_системный_dns_не_держит_дольше_потолка(peer, monkeypatch):
     """getaddrinfo висел 12 с, пока DNS роутера молчал, — столько стоило переподключение."""
     conf, asked = peer
