@@ -294,12 +294,20 @@ def test_трей_из_задачи_не_ответил_и_работает_от
     assert started == [False]
 
 
-def test_вход_без_прав_поднимает_трей_задачей_без_окна(monkeypatch):
-    sent, started = _no_tray_yet(monkeypatch, task=True)
+def test_вход_из_задачи_запускает_трей_сам_без_запуска_задачи(monkeypatch):
+    calls = []
+    _admin(monkeypatch, admin=False)
+    monkeypatch.setattr(tray.instance, "claim", lambda: True)
+    monkeypatch.setattr(tray.instance, "exists", lambda: False)
+    monkeypatch.setattr(tray, "_run_task",
+                        lambda: calls.append(True) or True)
+    sent = _signals(monkeypatch)
+    started = _starts_unelevated(monkeypatch)
 
     tray.run(background=True)
+    assert calls == []
     assert sent == []
-    assert started == []
+    assert started == [True]
 
 
 def test_вход_без_прав_без_задачи_работает_от_пользователя(monkeypatch):

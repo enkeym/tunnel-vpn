@@ -15,10 +15,13 @@ paths:
   `lib/tunnelvpn/settings.py:tray_task_command` (переключатель «Значок в трее при входе»): параметры — как в
   `RegisterTrayTask`, правишь одно — правь другое. Обе ставят задачу вошедшему за экраном
   пользователю (`Win32_ComputerSystem.UserName`) с `-RunLevel Limited`: установщик поднят с правами, и его
-  учётная запись — не та, что увидит значок.
+  учётная запись — не та, что увидит значок. После регистрации `RegisterTrayTask` выдаёт этому пользователю
+  полные права на задачу (`SetSecurityDescriptor`): без них окно без прав получает `Access is denied`,
+  и переключатель отвечает «задача трея не изменилась».
 - `--background` (только значок, прогрев окна): задача `RegisterTrayTask` в `installer/tunnelvpn.iss` →
   `installer/entry_tray.py`, `lib/tunnelvpn/cli.py:main`, `installer/entry_portable.py` → `lib/tunnelvpn/tray.py:run`.
-  Пропал — при входе в систему поверх всего выскакивает панель.
+  Пропал — при входе в систему поверх всего выскакивает панель. Запуск с `--background` не зовёт `_run_task`
+  снова: задачу уже запустил планировщик, и повторный `/Run` возвращал процесс без значка.
 - Установщик гасит всё в `StopEverything` (`installer/tunnelvpn.iss`): трей с деревом (`/T` — окно-потомок
   из `lib/tunnelvpn/tray.py:_launch_window`), потом служба, потом все `tunnelvpn.exe` (окно и служба под одним
   именем); то же по старым именам `{#Legacy*}`. Окно сменило exe или стало жить без трея — обновление и

@@ -1397,9 +1397,7 @@ def run(background=False):
     # сначала пробуем задачу автозапуска, без UAC; без неё или если трей так и
     # не ответил — работаем от пользователя. Второй трей мьютекс не пустит.
     if not window._is_admin():
-        if _run_task():
-            if background:
-                return
+        if not background and _run_task():
             instance.allow_foreground()
             if instance.signal(instance.TRAY_OPEN, wait=TASK_OPEN_WAIT):
                 # Трей задачи думает, что это вход в систему (--background):

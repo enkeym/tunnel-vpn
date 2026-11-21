@@ -1542,7 +1542,14 @@ begin
     '$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) ' +
     '-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew; ' +
     'Register-ScheduledTask -TaskName ''{#MyName} Tray'' -Action $a -Trigger $t ' +
-    '-Principal $p -Settings $s -Force | Out-Null"',
+    '-Principal $p -Settings $s -Force | Out-Null; ' +
+    '$sid = (New-Object Security.Principal.NTAccount($u)).Translate(' +
+    '[Security.Principal.SecurityIdentifier]).Value; ' +
+    '$svc = New-Object -ComObject Schedule.Service; $svc.Connect(); ' +
+    '$task = $svc.GetFolder(''\'').GetTask(''{#MyName} Tray''); ' +
+    '$sd = $task.GetSecurityDescriptor(7); $i = $sd.IndexOf(''D:''); ' +
+    '$task.SetSecurityDescriptor($sd.Substring(0, $i) + ' +
+    '''D:(A;;FA;;;'' + $sid + '')'' + $sd.Substring($i + 2), 0)"',
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   if ResultCode <> 0 then
     Log(Format('Задача трея: PowerShell вернул код %d', [ResultCode]));
