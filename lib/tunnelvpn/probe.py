@@ -376,6 +376,7 @@ class Prober:
     def remeasure(self):
         """Сетевая проверка, как на подъёме туннеля, даже если цикл не
         видел его падения. Увидел — проверка всё равно одна."""
+        self._dns_reset()
         self._remeasure.set()
         self._wake.set()
 
@@ -390,7 +391,11 @@ class Prober:
 
     def set(self, **kw):
         with self.lock:
+            back = ("out" in kw and kw["out"] != self.st.get("out")
+                    and kw["out"] not in buildconfig.AWAY_TAGS)
             self.st.update(kw)
+        if back:
+            self._dns_reset()
 
     def snapshot(self):
         with self.lock:

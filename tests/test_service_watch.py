@@ -944,6 +944,20 @@ def test_ожил_личный_выход_из_block_возвращается_н
     assert core.prober.snapshot()["out"] == HOME_VIA
 
 
+def test_возврат_из_block_не_блокирует_по_устаревшему_молчанию_dns(monkeypatch):
+    core = _core(monkeypatch)
+    core.tunnel.kill_switch = True
+    core.tunnel.out = buildconfig.BLOCK_TAG
+    core.tunnel.delay_ms = 120
+    core.prober._dns_ok = 1.0
+
+    _rounds(core, 1)
+
+    assert core.tunnel.outs == [HOME_VIA]
+    assert core.tunnel.restarts == []
+    assert core.prober.snapshot()["out"] == HOME_VIA
+
+
 def test_личный_не_ожил_выход_остаётся_в_block(monkeypatch):
     core = _core(monkeypatch)
     core.tunnel.kill_switch = True
@@ -1323,6 +1337,34 @@ def test_основной_не_ожил_после_перезапуска_бер
     assert core.tunnel.outs == [HOME_VIA]
     assert core.prober.snapshot()["out"] == HOME_VIA
     assert core.tunnel.restarts == ["home"]
+    assert _said(core, "запасной nl-3.conf отвечает")
+    assert "home" not in core._kicked
+
+
+def test_kill_switch_основной_не_ожил_берётся_ответивший_запасной(monkeypatch):
+    core = _core(monkeypatch)
+    core.tunnel.kill_switch = True
+    core.tunnel.out = buildconfig.BLOCK_TAG
+    tried, made = _spare_confs(monkeypatch, core, {"nl-2": "error", "nl-3": "up"})
+    home = core.tunnel.home
+
+    def carried():
+        core.tunnel.delay_ms = 90
+        return [(home, "")]
+
+    seen = _reload(monkeypatch, core, carried)
+
+    state = _rounds(core, 1)
+    assert core.tunnel.restarts == ["home"] and tried == []
+
+    core._back_at = 0.0
+    _rounds(core, 1, state)
+
+    assert tried == [("nl-2", True), ("nl-3", True)]
+    assert made == [("home", "nl-3")]
+    assert len(seen) == 1 and seen[0]["locked"]
+    assert core.tunnel.outs == [HOME_VIA]
+    assert core.prober.snapshot()["out"] == HOME_VIA
     assert _said(core, "запасной nl-3.conf отвечает")
     assert "home" not in core._kicked
 

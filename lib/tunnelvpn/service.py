@@ -1949,6 +1949,7 @@ class Core:
             return out, False
         if not self.tunnel.set_out(tag):
             return out, True
+        self.prober.set(out=tag, exit_state="unknown", exit_is_peer=False)
         self._kicked = tuple(tid for tid in self._kicked if tid != main.tid)
         self.log(f"→ «{main.title}» везёт (проверка за {ms} мс) — выход снова через него")
         self.prober.remeasure()

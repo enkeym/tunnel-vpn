@@ -779,3 +779,34 @@ def test_ответ_dns_снимает_молчание(monkeypatch):
 
     assert not p.tun_dns_dead()
     assert not p._dns_said
+
+
+def test_возврат_выхода_на_туннель_заново_отсчитывает_молчание_dns():
+    p = probe.Prober()
+    p.st["out"] = "block"
+    p._dns_ok = 1.0
+    assert p.tun_dns_dead()
+
+    p.set(out="via-t1")
+
+    assert not p.tun_dns_dead()
+
+
+def test_увод_выхода_не_забывает_молчание_dns():
+    p = probe.Prober()
+    p.st["out"] = "via-t1"
+    p._dns_ok = 1.0
+
+    p.set(out="block")
+
+    assert p.tun_dns_dead()
+
+
+def test_remeasure_заново_отсчитывает_молчание_dns():
+    p = probe.Prober()
+    p._dns_ok = 1.0
+    assert p.tun_dns_dead()
+
+    p.remeasure()
+
+    assert not p.tun_dns_dead()
