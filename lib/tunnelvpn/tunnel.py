@@ -448,6 +448,7 @@ class Tunnel:
                     f"сетевой адаптер")
 
         self.log("→ собираю конфиг из conf\\…")
+        built_at = time.monotonic()
         try:
             # Без отказа «sing-box уже работает»: следы прошлого запуска убраны
             # выше, а из нашей папки сейчас работают только проверки (trial).
@@ -455,6 +456,7 @@ class Tunnel:
         except SystemExit as exc:
             # buildconfig сообщает об ошибках через sys.exit с текстом.
             return str(exc) or "не удалось собрать конфиг — проверьте conf\\*.conf"
+        self.log(f"· фаза «buildconfig»: {time.monotonic() - built_at:.1f} с")
         if self.cancel.is_set():
             return CANCELLED
         self.profile = want
@@ -467,6 +469,7 @@ class Tunnel:
         # Отдельной строкой: сборка и проверка шли под одной, и по журналу
         # нельзя было сказать, кто из них ест до 11 с включения.
         self.log("→ проверяю конфиг (sing-box check)…")
+        check_at = time.monotonic()
 
         # Все конфиги разом: по очереди каждый check (~0,4 с) прибавлялся к
         # включению. Ошибку отдаём первую по порядку — основной раньше туннелей.
@@ -474,6 +477,7 @@ class Tunnel:
                 *(buildconfig.side_json(s.tid) for s in self.sides))
         with ThreadPoolExecutor(len(cfgs)) as pool:
             err = next((e for e in pool.map(_check_config, cfgs) if e), "")
+        self.log(f"· фаза «sing-box check»: {time.monotonic() - check_at:.1f} с")
         if err:
             return err
         if self.cancel.is_set():
@@ -493,9 +497,11 @@ class Tunnel:
         else:
             self.log(f"!! IPv6 заблокировать не вышло: {winnet.last_error or 'без причины'}")
 
+        peers_at = time.monotonic()
         peers = self._peer_ips([side.tid for side in self.sides])
         if not peers:
             return "не определить адреса пиров — прерываю, иначе будет петля"
+        self.log(f"· фаза «адреса пиров»: {time.monotonic() - peers_at:.1f} с")
         self.log(f"→ пиры (пойдут мимо туннеля): {', '.join(peers)}")
 
         # Порядок важен: сперва вывести пиров из-под туннеля, потом ставить
@@ -554,6 +560,7 @@ class Tunnel:
         )
 
         tun_idx = None
+        tun_at = time.monotonic()
         deadline = time.time() + 30
         while time.time() < deadline:
             if self.cancel.wait(0.25):
@@ -569,6 +576,7 @@ class Tunnel:
         if tun_idx is None:
             self.stop()
             return "tun не поднялся за 30с"
+        self.log(f"· фаза «tun»: {time.monotonic() - tun_at:.1f} с")
         self.log(f"→ tun: интерфейс {tun_idx}")
         self.own("tun", tun_idx)
         self._tun_hint = tun_idx
@@ -588,7 +596,9 @@ class Tunnel:
         # смотреть в мёртвый tun.
         for half in HALVES:
             self.own("net", half, tun_idx)
+        cover_at = time.monotonic()
         cover = self._await_cover(tun_idx)
+        self.log(f"· фаза «маршруты»: {time.monotonic() - cover_at:.1f} с")
         if self.cancel.is_set():
             return CANCELLED
         if cover:
@@ -1335,39 +1345,59 @@ class Tunnel:
             data = resp.read()
         return json.loads(data) if data else {}
 
-    def set_out(self, tag):
+    def set_out(self, tag, deadline=None):
         """Переключает выход наружу на tag без перезапуска. True — вышло."""
-        if not self._select(buildconfig.OUT_TAG, tag):
+        if not self._select(buildconfig.OUT_TAG, tag, deadline=deadline):
             return False
         self.log(f"→ выход наружу: {tag}")
         return True
 
-    def _select(self, group, tag):
+    def _select(self, group, tag, deadline=None):
         """Выбор selector group — tag через clash_api. True — вышло."""
+        timeout = 5
+        if deadline is not None:
+            timeout = min(timeout, deadline - time.monotonic())
+            if timeout <= 0:
+                return False
         try:
-            self._clash(f"/proxies/{group}", "PUT", {"name": tag})
+            self._clash(f"/proxies/{group}", "PUT", {"name": tag},
+                        timeout=timeout)
         except (OSError, ValueError) as exc:
             self.log(f"!! {group} на {tag} не переключить: {exc}")
             return False
         return True
 
-    def out_now(self):
+    def out_now(self, deadline=None):
         """Текущий выход наружу или '', если основной процесс не ответил."""
+        timeout = 5
+        if deadline is not None:
+            timeout = min(timeout, deadline - time.monotonic())
+            if timeout <= 0:
+                return ""
         try:
-            return self._clash(f"/proxies/{buildconfig.OUT_TAG}").get("now", "")
+            return self._clash(f"/proxies/{buildconfig.OUT_TAG}",
+                               timeout=timeout).get("now", "")
         except (OSError, ValueError):
             return ""
 
-    def delay(self, tag, timeout_ms=3000):
+    def delay(self, tag, timeout_ms=3000, deadline=None):
         """Задержка до DELAY_URL (иначе до DELAY_FALLBACK_URL) через выход tag
         в мс; None — не дошло ни до одного. Один недоступный адрес не делает
         вердикт «сервер не отвечает»: туннель мог везти остальное."""
         def check(url):
-            query = urllib.parse.urlencode({"url": url, "timeout": timeout_ms})
+            limit = timeout_ms
+            wait = limit / 1000 + 2
+            if deadline is not None:
+                left = deadline - time.monotonic()
+                if left < 0.001:
+                    return None
+                limit = min(limit, max(1, int(left * 1000)))
+                wait = min(wait, left)
+            query = urllib.parse.urlencode({"url": url, "timeout": limit})
             try:
                 reply = self._clash(
                     f"/proxies/{urllib.parse.quote(tag)}/delay?{query}",
-                    timeout=timeout_ms / 1000 + 2)
+                    timeout=wait)
             except (OSError, ValueError):
                 return None
             ms = reply.get("delay")

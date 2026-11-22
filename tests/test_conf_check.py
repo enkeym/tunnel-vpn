@@ -231,7 +231,8 @@ def test_живой_по_списку_снимает_прошлый_error_сет
     p.set(check_seq=3, checks={"t1": {"result": "error", "answer": "", "seq": 3},
                                "t2": {"result": "up", "answer": "1.2.3.4", "seq": 3}})
     p.check_one("t1", None)
-    assert p.snapshot()["checks"] == {"t1": {"result": "up", "answer": "по DNS", "seq": 3},
+    assert p.snapshot()["checks"] == {"t1": {"result": "up", "answer": "по DNS", "seq": 3,
+                                             "gen": 0, "conf": ""},
                                       "t2": {"result": "up", "answer": "1.2.3.4", "seq": 3}}
 
 
@@ -728,6 +729,8 @@ def test_живой_конфиг_не_проверяется_дважды_сра
 
 def test_поставленный_в_очередь_конфиг_остаётся_проверяемым(core, monkeypatch):
     _tunnel(monkeypatch)
+    with open(tunnels.conf_path("t1", "w2"), "w", encoding="utf-8") as fh:
+        fh.write(CONF)
     started = threading.Event()
     hold = threading.Event()
 

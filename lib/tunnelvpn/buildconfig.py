@@ -25,6 +25,7 @@ import re
 import secrets
 import sys
 import threading
+import time
 
 # Раскладку знает paths.py — здесь только имена.
 from . import forwardproxy, paths, proxy, tunnels, winnet
@@ -325,6 +326,11 @@ def resolve_peer(name, tag, log=print, net_dns=None):
     туннель работал, только если включён раньше основного. Пакеты к пиру
     идут мимо туннеля, через аплинк, поэтому и имя спрашиваем у DNS сети.
     """
+    began = time.monotonic()
+
+    def phase(source):
+        log(f"· фаза «DNS пира»: {time.monotonic() - began:.1f} с · {source}")
+
     known = _known_peer_ips().get(name)
     if net_dns:
         ip = winnet.resolve4_via(name, "127.0.0.1", SYSTEM_DNS_WAIT, port=net_dns)
@@ -335,10 +341,12 @@ def resolve_peer(name, tag, log=print, net_dns=None):
             # Удачный ответ — тоже в журнал: какой адрес и от кого получил
             # пир, — первое, что нужно, когда сервер «не отвечает».
             log(f"  [{tag}] {name} → {ip} (DNS сети, VPN поднят)")
+            phase("DNS сети")
             _remember_peer_ip(name, ip)
             return ip
         if known:
             log(f"  [{tag}] {name}: DNS сети не ответил, беру прошлый адрес {known}")
+            phase("прошлый адрес")
             return known
         log(f"  [{tag}] {name}: DNS сети не ответил, прошлого адреса нет — "
             f"спрашиваю системный")
@@ -361,9 +369,12 @@ def resolve_peer(name, tag, log=print, net_dns=None):
                          f"публичный DNS не ответил, прошлого адреса нет")
             log(f"  [{tag}] {name}: ни один DNS не ответил ({exc}), "
                 f"беру прошлый адрес {ip}")
+            phase("прошлый адрес")
             return ip
+        phase("публичный DNS")
     else:
         log(f"  [{tag}] {name} → {ip} (системный DNS)")
+        phase("системный DNS")
     _remember_peer_ip(name, ip)
     return ip
 

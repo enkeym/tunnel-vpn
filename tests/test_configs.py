@@ -649,6 +649,8 @@ def test_выключенный_не_становится_основным(core)
 class _Up:
     """Туннель-заглушка: start помнит флаги и режимы, с которыми собирал бы."""
 
+    main = None
+
     def __init__(self):
         self.seen = []
         self.sides = []
@@ -673,7 +675,8 @@ def up(core):
     core.lock = threading.Lock()
     core.busy = ""
     core.tunnel = _Up()
-    core.prober = types.SimpleNamespace(set=lambda **_: None, probe_fast=lambda: None)
+    core.prober = types.SimpleNamespace(set=lambda **_: None, probe_fast=lambda: None,
+                                        new_route=lambda: None)
     return core
 
 

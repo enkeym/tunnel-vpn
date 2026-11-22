@@ -145,13 +145,26 @@ def _silent_text(silent):
     return f"{names} {verb} · остальное работает"
 
 
+_TRAY_LINK = {
+    "off": "off", "error": "error", "waiting": "busy",
+    "leak": "leak", "blocked": "blocked", "fallback": "fallback",
+    "list": "up", "tunnel": "up", "idle": "fallback",
+    "checking": "side", "main_down": "side",
+}
+
+
 def _tray_state(st):
     """Состояние значка (ключ icon.TRAY) по статусу службы. Порядок — как
     у заголовка окна: утечка IPv6 раньше запасного выхода, а на запасном
     выходе адрес провайдера ожидаем, это не утечка. Повтор подъёма (retrying)
     — ожидание, не ошибка; молчащий «по списку» — после запасного и утечки."""
+    link = (st.get("link") or {}).get("kind")
+    if link in ("blocked", "leak"):
+        return _TRAY_LINK[link]
     if st.get("busy"):
         return "busy"
+    if link in _TRAY_LINK:
+        return _TRAY_LINK[link]
     if not st.get("up"):
         if st.get("retrying"):
             return "busy"

@@ -51,7 +51,8 @@ def test_проверка_окна_отдаёт_странице_ждущие_id
     """Плитки — по id туннеля: каждый перекрашивается, как только проверен он сам."""
     api, _, _ = _api(monkeypatch)
     sent = []
-    monkeypatch.setattr(api, "jsn", lambda fn, args: sent.append((fn, args[1])))
+    monkeypatch.setattr(api, "jsn", lambda fn, args: sent.append(
+        (fn, args[1])) if fn == "checkSides" else None)
     st = {"tunnels": [{"id": "work", "mode": "list"}, {"id": "lab", "mode": "list"},
                       {"id": "home", "mode": "all"}]}
 
@@ -75,18 +76,36 @@ def test_проверка_окна_рендерит_итог_свежим_ста
 
     def check_by_side(_on_side, lock=None):
         got["lock"] = lock
-        return {"ok": True, "status": {"stale": True}}
+        return {"ok": True, "status": {"stale": True}, "fresh": True}
     monkeypatch.setattr(ipc, "check_by_side", check_by_side)
     held = []
     monkeypatch.setattr(api, "js",
                         lambda fn, arg=None: held.append((fn, arg, api._render_lock.locked())))
+    monkeypatch.setattr(api, "jsn",
+                        lambda fn, args: held.append((fn, args, api._render_lock.locked())))
 
     api._check()
 
     assert got["lock"] is api._render_lock
     assert calls[-1] == ("status", {})
-    assert held == [("checkStart", None, False), ("render", {}, True),
-                    ("checkDone", None, False)]
+    call = held[0][1]
+    assert held == [("checkStart", call, False), ("render", {}, True),
+                    ("checkDone", (True, call), False)]
+
+
+def test_сбой_проверки_окна_приходит_на_страницу_как_ok_false(monkeypatch):
+    api, _, _ = _api(monkeypatch)
+
+    def boom(_on_side, lock=None):
+        raise ipc.NotRunning("нет службы")
+    monkeypatch.setattr(ipc, "check_by_side", boom)
+    held = []
+    monkeypatch.setattr(api, "js", lambda fn, arg=None: held.append((fn, arg)))
+    monkeypatch.setattr(api, "jsn", lambda fn, args: held.append((fn, args)))
+
+    api._check()
+
+    assert held[-1][0] == "checkDone" and held[-1][1][0] is False
 
 
 def test_статус_cli_пишет_итог_проверки_у_туннеля(capsys):

@@ -13,6 +13,7 @@ from tunnelvpn import buildconfig, killguard, paths, probe, service, tunnels
 class _Tunnel:
     log_start = None
     main_id = None
+    main = None
 
     def __init__(self, net):
         self.net = net
@@ -293,8 +294,11 @@ def test_итог_проверки_по_туннелям_проверенный_
                   {"id": "home", "name": "Личный", "mode": "all"})
     core.prober._take_slow()
     seq = core.prober.snapshot()["check_seq"]
-    core.prober.set(checks={"home": {"result": "up", "answer": "185.1.2.3", "seq": seq},
-                            "work": {"result": "error", "answer": "", "seq": seq - 1}})
+    gen = core.prober.route_gen()
+    core.prober.set(checks={"home": {"result": "up", "answer": "185.1.2.3", "seq": seq,
+                                     "gen": gen, "conf": ""},
+                            "work": {"result": "error", "answer": "", "seq": seq - 1,
+                                     "gen": gen, "conf": ""}})
 
     st = core._status()
 
@@ -302,6 +306,39 @@ def test_итог_проверки_по_туннелям_проверенный_
     assert (home["check"], home["answer"], home["checking"]) == ("up", "185.1.2.3", False)
     assert (work["check"], work["checking"]) == ("error", True)
     assert "checks" not in st
+
+
+def test_итог_прошлого_поколения_не_публикуется(monkeypatch):
+    core = _core(monkeypatch, up=True)
+    _quiet(monkeypatch, core)
+    _with_tunnels(monkeypatch, {"id": "work", "name": "Работа", "mode": "list"},
+                  {"id": "home", "name": "Личный", "mode": "all"})
+    gen = core.prober.route_gen()
+    core.prober.set(check_seq=1, checking=False, checks={
+        "work": {"result": "up", "answer": "10.1.1.5", "seq": 1,
+                 "gen": gen, "conf": ""},
+        "home": {"result": "up", "answer": "185.1.2.3", "seq": 1,
+                 "gen": gen, "conf": ""}})
+    core.prober.new_route()
+
+    st = core._status()
+
+    assert [(t["check"], t["answer"], t["seq"]) for t in st["tunnels"]] == [
+        ("", "", 0), ("", "", 0)]
+
+
+def test_итог_другого_конфига_не_публикуется(monkeypatch):
+    core = _core(monkeypatch, up=True)
+    _quiet(monkeypatch, core)
+    _with_tunnels(monkeypatch, {"id": "work", "name": "Работа", "mode": "list",
+                                "active": "w2"})
+    core.prober.set(checks={"work": {"result": "up", "answer": "10.1.1.5",
+                                     "seq": 1, "gen": core.prober.route_gen(),
+                                     "conf": "w1"}})
+
+    [work] = core._status()["tunnels"]
+
+    assert (work["check"], work["answer"], work["seq"]) == ("", "", 0)
 
 
 def test_прошлый_итог_по_id_туннеля_до_замены_файла(monkeypatch, tmp_path):
@@ -400,3 +437,54 @@ def test_после_включения_снимок_уже_с_туннелем(m
 
     snap = core.prober.snapshot()
     assert snap["tun"] == 7 and snap["r_low"]
+
+
+@pytest.mark.parametrize("st, main, kind", [
+    ({"up": False}, {"id": "home"}, "off"),
+    ({"up": False, "last_error": "нет конфига"}, {"id": "home"}, "error"),
+    ({"up": False, "retrying": True}, {"id": "home"}, "waiting"),
+    ({"up": True, "v6_leak": "2a00::1"}, {"id": "home"}, "leak"),
+    ({"up": True, "out": buildconfig.BLOCK_TAG}, {"id": "home"}, "blocked"),
+    ({"up": True, "out": buildconfig.DIRECT_TAG}, {"id": "home"}, "fallback"),
+    ({"up": True, "tunnels": [{"enabled": True, "carries": True}]}, None, "list"),
+    ({"up": True, "out": buildconfig.DIRECT_TAG,
+      "tunnels": [{"enabled": True, "carries": True}]}, None, "list"),
+    ({"up": True, "tunnels": [{"enabled": False, "carries": True}]}, None, "idle"),
+    ({"up": True, "checking": True}, {"id": "home"}, "checking"),
+    ({"up": True, "exit_state": "tunnel", "exit_is_peer": True},
+     {"id": "home"}, "tunnel"),
+    ({"up": True, "exit_state": "unknown"}, {"id": "home"}, "checking"),
+    ({"up": True, "exit_state": "tunnel", "exit_is_peer": False},
+     {"id": "home"}, "main_down"),
+])
+def test_оценка_связи_по_статусу(monkeypatch, st, main, kind):
+    core = _core(monkeypatch, up=True)
+    core.prober.set(check_gen=core.prober.route_gen(),
+                    check_at=service.time.monotonic())
+
+    assert core._link(st, main) == kind
+
+
+def test_протухший_успех_не_остаётся_зелёным(monkeypatch):
+    core = _core(monkeypatch, up=True)
+    clock = [1000.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: clock[0])
+    core.prober.set(check_gen=core.prober.route_gen(), check_at=clock[0])
+    st = {"up": True, "exit_state": "tunnel", "exit_is_peer": True}
+
+    clock[0] += probe.NET_TTL
+    assert core._link(st, {"id": "home"}) == "tunnel"
+
+    clock[0] += 0.001
+    assert core._link(st, {"id": "home"}) == "checking"
+
+
+def test_статус_отдаёт_оценку_связи_с_поколением_маршрута(monkeypatch):
+    core = _core(monkeypatch, up=True)
+    _quiet(monkeypatch, core)
+    _with_tunnels(monkeypatch, {"id": "home", "name": "Личный", "mode": "all"})
+    core.prober.set(out=buildconfig.DIRECT_TAG, exit_state="direct")
+
+    st = core._status()
+
+    assert st["link"] == {"kind": "fallback", "gen": st["route_gen"]}

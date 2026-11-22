@@ -532,6 +532,10 @@ _DEAD = {"id": "korolev", "name": "Работа", "mode": "list", "check": "erro
     ({"last_error": "нет конфига"}, "error"),
     ({"busy": "включаю", "last_error": "старая"}, "busy"),
     ({"up": True, "busy": "перезапускаю «Работа»"}, "busy"),
+    ({"up": True, "busy": "перезапускаю «Работа»",
+      "link": {"kind": "blocked"}}, "blocked"),
+    ({"up": True, "busy": "перезапускаю «Работа»",
+      "link": {"kind": "leak"}}, "leak"),
     ({"up": True, "tunnels": [_MAIN, _SIDE], "exit_state": "tunnel"}, "up"),
     ({"up": True, "tunnels": [_MAIN], "out": "direct"}, "fallback"),
     ({"up": True, "tunnels": [_MAIN], "exit_state": "direct"}, "fallback"),
@@ -555,6 +559,11 @@ _DEAD = {"id": "korolev", "name": "Работа", "mode": "list", "check": "erro
     ({"up": True, "tunnels": [_MAIN, {**_DEAD, "check": "ok"}]}, "up"),
     # Запасной выход — про весь интернет и важнее молчащего «по списку».
     ({"up": True, "tunnels": [_MAIN, _DEAD], "out": "direct"}, "fallback"),
+    ({"link": {"kind": "off", "gen": 0}}, "off"),
+    ({"link": {"kind": "list", "gen": 1}}, "up"),
+    ({"link": {"kind": "fallback", "gen": 1}}, "fallback"),
+    ({"link": {"kind": "checking", "gen": 1}}, "side"),
+    ({"link": {"kind": "main_down", "gen": 1}}, "side"),
 ])
 def test_состояние_значка_по_статусу(st, state):
     assert tray._tray_state(st) == state

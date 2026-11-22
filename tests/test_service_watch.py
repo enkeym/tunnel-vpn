@@ -4,12 +4,14 @@
 Core без службы: туннель — заглушка, аплинк кладём в снимок пробера руками,
 круги сторожа гоняем вызовом _watch_once без ожиданий."""
 
+import inspect
 import json
 import threading
 import types
 
 import pytest
 
+from conftest import SyncThread
 from tunnelvpn import buildconfig, probe, service, tunnel, tunnels
 
 OFFICE = (12, "192.168.19.1")
@@ -101,10 +103,10 @@ class _Tunnel:
         self.mends += 1
         return []
 
-    def out_now(self):
+    def out_now(self, deadline=None):
         return self.out
 
-    def set_out(self, tag):
+    def set_out(self, tag, deadline=None):
         self.out = tag
         self.outs.append(tag)
         return True
@@ -112,7 +114,7 @@ class _Tunnel:
     def away(self):
         return buildconfig.BLOCK_TAG if self.kill_switch else buildconfig.DIRECT_TAG
 
-    def delay(self, _tag):
+    def delay(self, _tag, timeout_ms=3000, deadline=None):
         return self.delay_ms
 
 
@@ -406,8 +408,10 @@ def test_готовность_проверяется_сразу_без_ожид�
     monkeypatch.setattr(service.time, "sleep", wait)
     monkeypatch.setattr(core.tunnel.cancel, "wait", wait)
     monkeypatch.setattr(core.tunnel, "delay",
-                        lambda tag: 25 if ready_at is not None
+                        lambda tag, timeout_ms=3000, deadline=None:
+                        25 if ready_at is not None
                         and clock[0] >= 100 + ready_at else None)
+    monkeypatch.setattr(core, "_user_path_ok", lambda _st: True)
 
     assert core._spare_works("home") is (ready_at is not None)
     assert clock[0] - 100 == (probe.SIDE_SETTLE if ready_at is None else ready_at)
@@ -427,6 +431,251 @@ def test_отмена_во_время_ожидания_готовности_не
 
     assert not core._spare_works("home")
     assert core.tunnel.outs == []
+
+
+def test_повторные_отказы_dns_ускоряют_обнаружение(monkeypatch):
+    core = _core(monkeypatch)
+    clock = [1000.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(probe, "TUN_DNS_EVERY", 100.0)
+    monkeypatch.setattr(core.prober, "check_now", lambda **kwargs: None)
+    core.prober._dns_ok = probe.time.monotonic()
+    core.prober._dns_fails = service.DNS_FAIL_HITS
+
+    assert not core._silent_main(core.tunnel.home, HOME_VIA)
+    assert core._confirm_ask
+    core.prober.set(check_seq=1, check_gen=core.prober.route_gen(),
+                    check_at=clock[0], exit_ip="", exit_state="unknown")
+    clock[0] += service.SILENT_FAST
+    assert not core._silent_main(core.tunnel.home, HOME_VIA)
+    clock[0] += service.SILENT_FAST
+    assert core._silent_main(core.tunnel.home, HOME_VIA)
+    assert any("не отвечает" in line for line in core.logged)
+
+
+def test_идущая_проверка_выхода_откладывает_увод_по_dns(monkeypatch):
+    core = _core(monkeypatch)
+    clock = [1000.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(core.prober, "check_now", lambda **kwargs: None)
+    core.prober._dns_ok = clock[0]
+    core.prober._dns_fails = service.DNS_FAIL_HITS
+    core.prober.slow_busy.set()
+
+    assert not core._silent_main(core.tunnel.home, HOME_VIA)
+    clock[0] += service.SILENT_FAST * 2
+    assert clock[0] - core.prober._dns_ok < probe.TUN_DNS_GAP
+    assert not core._silent_main(core.tunnel.home, HOME_VIA)
+    assert core._confirm_ask
+
+
+def test_дошедшая_проверка_выхода_отменяет_увод_по_dns(monkeypatch):
+    core = _core(monkeypatch)
+    clock = [1000.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(service.threading, "Thread", SyncThread)
+    asked = []
+    monkeypatch.setattr(core.prober, "check_now",
+                        lambda **kwargs: asked.append(kwargs))
+    core.prober._dns_ok = clock[0]
+    core.prober._dns_fails = service.DNS_FAIL_HITS
+    core.prober.set(check_seq=1, check_gen=core.prober.route_gen(),
+                    check_at=1000.0, exit_ip="203.0.113.9",
+                    exit_state="tunnel")
+
+    assert not core._silent_main(core.tunnel.home, HOME_VIA)
+
+    assert asked == [{"wait": 0}]
+    assert core._silent_at == 0.0
+    assert core._confirm_ask == 0.0
+    assert any("проверка выхода дошла" in line for line in core.logged)
+
+
+def test_проверка_выхода_не_перезапрашивается_до_итога(monkeypatch):
+    core = _core(monkeypatch)
+    clock = [1000.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(service.threading, "Thread", SyncThread)
+    asked = []
+    monkeypatch.setattr(core.prober, "check_now",
+                        lambda **kwargs: asked.append(kwargs))
+    core.prober._dns_ok = clock[0]
+    core.prober._dns_fails = service.DNS_FAIL_HITS
+
+    assert not core._silent_main(core.tunnel.home, HOME_VIA)
+    first = core._confirm_ask
+    clock[0] += 2.0
+    assert not core._silent_main(core.tunnel.home, HOME_VIA)
+    assert core._confirm_ask == first
+    assert asked == [{"wait": 0}]
+
+    core.prober.set(check_gen=core.prober.route_gen(), check_at=first + 1,
+                    exit_ip="203.0.113.9", exit_state="tunnel")
+    clock[0] += 1.0
+    assert not core._silent_main(core.tunnel.home, HOME_VIA)
+    assert core._confirm_ask == 0.0
+    assert any("проверка выхода дошла" in line for line in core.logged)
+
+
+def test_проверка_выхода_чужого_маршрута_не_подтверждает(monkeypatch):
+    core = _core(monkeypatch)
+    clock = [1000.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(service.threading, "Thread", SyncThread)
+    asked = []
+    monkeypatch.setattr(core.prober, "check_now",
+                        lambda **kwargs: asked.append(kwargs))
+    core.prober._dns_ok = clock[0]
+    core.prober._dns_fails = service.DNS_FAIL_HITS
+
+    assert not core._silent_main(core.tunnel.home, HOME_VIA)
+    core.prober.set(check_gen=core.prober.route_gen(), check_at=1001.0,
+                    exit_ip="203.0.113.9", exit_state="tunnel")
+    core.prober.new_route()
+    clock[0] += probe.TUN_DNS_EVERY + 1
+
+    assert not core._silent_main(core.tunnel.home, HOME_VIA)
+    assert core._confirm_ask == clock[0]
+    assert len(asked) == 2
+
+
+def test_после_перезапуска_перебор_не_ждёт_back_every(monkeypatch):
+    core = _core(monkeypatch)
+    clock = [100.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: clock[0])
+    core.tunnel.home.started = 90.0
+    core.tunnel.out = buildconfig.BLOCK_TAG
+    core._kicked = ("home",)
+    monkeypatch.setattr(core.tunnel, "delay",
+                        lambda tag, timeout_ms=3000: None)
+
+    def wait(seconds):
+        clock[0] += seconds
+        return False
+
+    monkeypatch.setattr(core.tunnel.cancel, "wait", wait)
+    fallen = []
+    monkeypatch.setattr(core, "_fallback",
+                        lambda side: (fallen.append(side.tid), True)[1])
+
+    core._mind_sides([], [])
+
+    assert fallen == ["home"]
+    assert clock[0] - 100.0 <= service.RETRY_BACK_BUDGET + probe.SETTLE_PAUSE
+
+
+def test_проверка_резерва_ограничена_бюджетом(monkeypatch):
+    core = _core(monkeypatch)
+    clock = [100.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(probe, "SIDE_SETTLE", 60.0)
+    monkeypatch.setattr(service, "SPARE_VERIFY_BUDGET", 3.0)
+    core.tunnel.home.started = clock[0]
+
+    def delay(tag, timeout_ms=3000, deadline=None):
+        clock[0] += timeout_ms / 1000
+        return None
+
+    def wait(seconds):
+        clock[0] += seconds
+        return False
+
+    monkeypatch.setattr(core.tunnel, "delay", delay)
+    monkeypatch.setattr(core.tunnel.cancel, "wait", wait)
+
+    assert not core._spare_works("home")
+    assert clock[0] - 100.0 <= service.SPARE_VERIFY_BUDGET + 0.1
+    assert any("не уложилась" in line for line in core.logged)
+
+
+def test_поздний_ответ_резерва_после_бюджета_не_принят(monkeypatch):
+    core = _core(monkeypatch)
+    clock = [100.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(probe, "SIDE_SETTLE", 60.0)
+    monkeypatch.setattr(service, "SPARE_VERIFY_BUDGET", 3.0)
+    core.tunnel.home.started = clock[0]
+    outs = []
+    monkeypatch.setattr(core.tunnel, "set_out",
+                        lambda tag: (outs.append(tag), True)[1])
+
+    def delay(_tag, timeout_ms=3000, deadline=None):
+        clock[0] += 4.0
+        return 120
+
+    monkeypatch.setattr(core.tunnel, "delay", delay)
+
+    assert not core._spare_works("home")
+    assert outs == []
+    assert any("не уложилась" in line for line in core.logged)
+
+
+def test_резерв_ответил_но_пользовательский_путь_не_подтвердился(monkeypatch):
+    core = _core(monkeypatch)
+    clock = [100.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(probe, "SIDE_SETTLE", 60.0)
+    monkeypatch.setattr(service, "SPARE_VERIFY_BUDGET", 3.0)
+    core.tunnel.home.started = clock[0]
+    core.tunnel.out = buildconfig.BLOCK_TAG
+    monkeypatch.setattr(core.tunnel, "delay",
+                        lambda _tag, timeout_ms=3000, deadline=None: 25)
+
+    def wait(seconds):
+        clock[0] += seconds
+        return False
+
+    monkeypatch.setattr(core.tunnel.cancel, "wait", wait)
+
+    assert not core._spare_works("home")
+    assert core.tunnel.outs == [HOME_VIA]
+    assert clock[0] - 100.0 <= service.SPARE_VERIFY_BUDGET + 0.1
+    assert any("трафик через него" in line for line in core.logged)
+
+
+def test_позднее_подтверждение_резерва_после_бюджета_не_принято(monkeypatch):
+    core = _core(monkeypatch)
+    clock = [100.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(probe, "SIDE_SETTLE", 60.0)
+    monkeypatch.setattr(service, "SPARE_VERIFY_BUDGET", 3.0)
+    core.tunnel.home.started = clock[0]
+    core.tunnel.out = buildconfig.BLOCK_TAG
+    monkeypatch.setattr(core.tunnel, "delay",
+                        lambda _tag, timeout_ms=3000, deadline=None: 25)
+
+    def wait(seconds):
+        clock[0] += seconds
+        return False
+
+    late = []
+    monkeypatch.setattr(core.tunnel.cancel, "wait", wait)
+
+    def confirm(_st):
+        late.append(clock[0])
+        clock[0] = 100.0 + service.SPARE_VERIFY_BUDGET + 0.1
+        return True
+
+    monkeypatch.setattr(core, "_user_path_ok", confirm)
+
+    assert not core._spare_works("home")
+    assert late == [100.0]
+    assert any("не принимаю" in line for line in core.logged)
+    assert not any("резерв подтверждён" in line for line in core.logged)
+
+
+def test_фаза_журнала_отличает_ручную_команду_от_сторожа(monkeypatch):
+    core = _core(monkeypatch)
+    core._human, core._round_human = 1, 0
+    core._mark("ручная проба", 0.0, "ok", src=True)
+    core._human = core._round_human = 0
+    core._mark("проба сторожа", 0.0, "ok", src=True)
+    core._mark("проба без источника", 0.0)
+
+    assert any("фаза «ручная проба»" in l and "ручная" in l for l in core.logged)
+    assert any("фаза «проба сторожа»" in l and "сторож" in l for l in core.logged)
+    assert any("фаза «проба без источника»" in l and "ручная" not in l
+               and "сторож" not in l for l in core.logged)
 
 
 def _mains_data():
@@ -585,7 +834,8 @@ def test_выключение_посреди_круга_новую_сеть_не
     state = _rounds(core, service.UPLINK_SETTLE - 1)
     # Последний круг ждёт проверку личного, а человек тем временем выключает.
     core.tunnel.out = buildconfig.DIRECT_TAG
-    monkeypatch.setattr(core.tunnel, "delay", lambda _tag: core._do_stop() and None)
+    monkeypatch.setattr(core.tunnel, "delay",
+                        lambda _tag, timeout_ms=3000: core._do_stop() and None)
 
     _rounds(core, 1, state)
 
@@ -716,7 +966,8 @@ def test_выключение_между_проверкой_и_повтором_
     def monotonic():
         # «Выключить» успевает между проверкой счётчика повторов и его уменьшением.
         if not stopped:
-            stopped.append(core._do_stop())
+            stopped.append(None)
+            stopped[0] = core._do_stop()
         return real()
 
     monkeypatch.setattr(service, "time", type(
@@ -915,8 +1166,52 @@ def test_ожил_личный_выход_возвращается_на_него
 
     assert core.tunnel.outs == [HOME_VIA]
     assert core.tunnel.restarts == []
-    assert _said(core, "«Личный» везёт (проверка за 120 мс)")
+    assert _said(core, "«Личный» отвечает (проверка за 120 мс)")
     assert core.prober.snapshot()["out"] == HOME_VIA
+
+
+def test_возврат_выхода_подтверждает_только_свежая_проверка(monkeypatch):
+    core = _core(monkeypatch)
+    core._kicked = ("home",)
+    core.tunnel.out = HOME_VIA
+    core.prober.set(check_gen=core.prober.route_gen(), check_at=0.0,
+                    exit_ip="203.0.113.9", exit_state="tunnel",
+                    exit_is_peer=True)
+
+    _rounds(core, 1)
+
+    assert core._kicked == ("home",)
+    assert not _said(core, "подтверждён проверкой")
+
+    core.prober.set(check_gen=core.prober.route_gen(),
+                    check_at=service.time.monotonic(),
+                    exit_ip="203.0.113.9", exit_state="tunnel",
+                    exit_is_peer=True)
+    _rounds(core, 1)
+
+    assert core._kicked == ()
+    assert _said(core, "выход через него подтверждён проверкой")
+
+
+def test_возврат_без_подтверждения_уводит_выход_в_безопасный(monkeypatch):
+    core = _core(monkeypatch)
+    clock = [1000.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: clock[0])
+    core._kicked = ("home",)
+    core.tunnel.kill_switch = True
+    core.tunnel.out = HOME_VIA
+    core.prober.set(check_gen=core.prober.route_gen(), check_at=0.0,
+                    exit_ip="203.0.113.9", exit_state="tunnel",
+                    exit_is_peer=True)
+
+    assert core._confirm_back(core.tunnel.home, HOME_VIA) == HOME_VIA
+    clock[0] += service.BACK_CONFIRM
+
+    assert core._confirm_back(core.tunnel.home, HOME_VIA) == buildconfig.BLOCK_TAG
+    assert core.tunnel.out_now() == buildconfig.BLOCK_TAG
+    assert core._kicked == ("home",)
+    assert core._back_wait == 0.0
+    assert _said(core, "не подтвердился")
 
 
 def test_упавший_личный_с_kill_switch_выход_в_block(monkeypatch):
@@ -956,6 +1251,26 @@ def test_возврат_из_block_не_блокирует_по_устаревш
     assert core.tunnel.outs == [HOME_VIA]
     assert core.tunnel.restarts == []
     assert core.prober.snapshot()["out"] == HOME_VIA
+
+
+@pytest.mark.parametrize("changed", [
+    lambda core: setattr(core, "_human", core._human + 1),
+    lambda core: core.prober.new_route(),
+    lambda core: setattr(core.tunnel, "out", buildconfig.BLOCK_TAG),
+])
+def test_возврат_отменяется_если_за_пробу_изменился_маршрут(monkeypatch, changed):
+    core = _core(monkeypatch)
+    core.tunnel.out = buildconfig.DIRECT_TAG
+
+    def delay(_tag, timeout_ms=3000, deadline=None):
+        changed(core)
+        return 25
+    monkeypatch.setattr(core.tunnel, "delay", delay)
+
+    assert core._try_back(core.tunnel.home, buildconfig.DIRECT_TAG) == (
+        buildconfig.DIRECT_TAG, None)
+    assert core.tunnel.outs == []
+    assert any("возврат отменён" in line for line in core.logged)
 
 
 def test_личный_не_ожил_выход_остаётся_в_block(monkeypatch):
@@ -1017,7 +1332,7 @@ def test_выключил_и_включил_посреди_круга_новый
     core = _core(monkeypatch)
     core.tunnel.out = buildconfig.DIRECT_TAG
 
-    def delay(_tag):
+    def delay(_tag, timeout_ms=3000, deadline=None):
         # Пока круг ждёт проверку личного, человек выключает и включает снова.
         core._do_stop()
         core._do_start()
@@ -1097,6 +1412,7 @@ def _spare_confs(monkeypatch, core, answers, during=None, t=HOME_T):
 def test_перебор_продолжается_после_неудачного_запасного(
         monkeypatch, failed_apply, manual):
     core = _core(monkeypatch)
+    monkeypatch.setattr(core, "_user_path_ok", lambda _st: True)
     home = core.tunnel.home
     core.tunnel.sides = [home]
     core.tunnel.out = buildconfig.BLOCK_TAG
@@ -1121,7 +1437,7 @@ def test_перебор_продолжается_после_неудачного
 
     _reload(monkeypatch, core, reload)
 
-    reply = core._do_start() if manual else {"ok": core._fallback(home)}
+    reply = core._do_start(failover=True) if manual else {"ok": core._fallback(home)}
 
     assert reply["ok"]
     assert tried == [("nl-2", True), ("nl-3", True)]
@@ -1146,7 +1462,7 @@ def test_ошибка_только_после_исчерпания_группы(
     tried, made = _spare_confs(
         monkeypatch, core, {"nl-2": "error", "nl-3": "error"}, during=during)
 
-    reply = core._do_start() if manual else {"ok": core._fallback(home)}
+    reply = core._do_start(failover=True) if manual else {"ok": core._fallback(home)}
 
     assert not reply["ok"]
     assert tried == [("nl-2", True), ("nl-3", True)]
@@ -1158,6 +1474,7 @@ def test_ошибка_только_после_исчерпания_группы(
 
 def test_последняя_успешная_проба_не_дублируется_перед_применением(monkeypatch):
     core = _core(monkeypatch)
+    monkeypatch.setattr(core, "_user_path_ok", lambda _st: True)
     tried, made = _spare_confs(monkeypatch, core, {"nl-2": "up"})
     core._conf_checks = {("home", "nl-2"): {"stamp": None, "result": "up"}}
 
@@ -1192,6 +1509,7 @@ def test_запасные_упорядочены_по_действительны
 
 def test_восстановившийся_основной_останавливает_перебор(monkeypatch):
     core = _core(monkeypatch)
+    monkeypatch.setattr(core, "_user_path_ok", lambda _st: True)
     core.tunnel.out = buildconfig.BLOCK_TAG
     core.tunnel.delay_ms = None
     core._back_at = 0
@@ -1313,6 +1631,7 @@ def test_ошибка_kill_switch_не_запускает_следующего_�
 
 def test_основной_не_ожил_после_перезапуска_берётся_ответивший_запасной(monkeypatch):
     core = _core(monkeypatch)
+    monkeypatch.setattr(core, "_user_path_ok", lambda _st: True)
     core.tunnel.out = buildconfig.DIRECT_TAG
     tried, made = _spare_confs(monkeypatch, core, {"nl-2": "error", "nl-3": "up"})
     home = core.tunnel.home
@@ -1343,6 +1662,7 @@ def test_основной_не_ожил_после_перезапуска_бер
 
 def test_kill_switch_основной_не_ожил_берётся_ответивший_запасной(monkeypatch):
     core = _core(monkeypatch)
+    monkeypatch.setattr(core, "_user_path_ok", lambda _st: True)
     core.tunnel.kill_switch = True
     core.tunnel.out = buildconfig.BLOCK_TAG
     tried, made = _spare_confs(monkeypatch, core, {"nl-2": "error", "nl-3": "up"})
@@ -1559,6 +1879,20 @@ def test_отвергнутая_правка_на_лету_полный_пере
     assert core.tunnel.starts == 1
 
 
+def test_полный_перезапуск_правки_при_нерабочем_основном_не_перебирает_запасные(monkeypatch):
+    core = _core(monkeypatch)
+    _reload(monkeypatch, core, None)
+    core.tunnel.out = buildconfig.DIRECT_TAG
+    monkeypatch.setattr(core, "_user_path_ok", lambda _st: False)
+    monkeypatch.setattr(core, "_try_spares",
+                        lambda *args: pytest.fail("правка перебирает запасные"))
+
+    assert core._apply() == {"ok": True, "applied": "full"}
+
+    assert core.tunnel.starts == 1
+    assert core.tunnel.out_now() == buildconfig.DIRECT_TAG
+
+
 def test_отложенная_правка_в_статусе_до_перезапуска(monkeypatch):
     """«Позже» в askFull: правила на диске, но не действуют — окно должно это видеть.
     Любая остановка её снимает: следующее включение соберёт всё с диска."""
@@ -1635,7 +1969,7 @@ def test_правка_посреди_круга_сторожа_перезапу�
     core.tunnel.work.proc = _Proc()
     _reload(monkeypatch, core, [(core.tunnel.work, "")])
 
-    def delay(_tag):
+    def delay(_tag, timeout_ms=3000, deadline=None):
         core._apply()
         return None
 
@@ -2030,16 +2364,27 @@ def test_обрыв_соединения_неизвестного_туннеля
     assert core.tunnel.restarts == [] and core.tunnel.outs == []
 
 
-def test_молчащий_dns_уводит_выход_и_перезапускает_основной(monkeypatch):
+def test_молчащий_dns_уводит_выход_только_после_проверки(monkeypatch):
     core = _core(monkeypatch)
-    _corp_says(monkeypatch, core, "")
+    clock = [1000.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(service.threading, "Thread", SyncThread)
+    asked = []
+    monkeypatch.setattr(core.prober, "check_now", lambda **kwargs: asked.append(kwargs))
     monkeypatch.setattr(core.prober, "tun_dns_dead", lambda: True)
 
-    _rounds(core, 1)
-
-    assert core.tunnel.out != HOME_VIA
-    assert core.tunnel.restarts == ["home"]
+    assert not core._silent_main(core.tunnel.home, HOME_VIA)
+    assert asked == [{"wait": 0}]
     assert _said(core, "молчит DNS")
+
+    clock[0] += service.SILENT_FAST * 2
+    assert not core._silent_main(core.tunnel.home, HOME_VIA)
+
+    core.prober.set(check_seq=1, check_gen=core.prober.route_gen(),
+                    check_at=clock[0], exit_ip="", exit_state="unknown")
+    assert not core._silent_main(core.tunnel.home, HOME_VIA)
+    clock[0] += service.SILENT_FAST
+    assert core._silent_main(core.tunnel.home, HOME_VIA)
 
 
 def test_живой_dns_не_трогает_основной(monkeypatch):
@@ -2117,6 +2462,142 @@ def test_после_подъёма_проверяет_конфиги_живых_
     assert core._do_start("p") == {"ok": True}
 
     assert checked == ["work", "home"]
+
+
+def test_включение_не_перебирает_резервы_под_замком(monkeypatch):
+    core = _core(monkeypatch)
+    checked = []
+    monkeypatch.setattr(core, "_spares",
+                        lambda tid: ({"id": tid, "name": "Личный", "active": "a",
+                                      "proto": "wg"}, ["b"]))
+    monkeypatch.setattr(core, "_spare_works",
+                        lambda tid: checked.append(("works", tid)) or True)
+    monkeypatch.setattr(core, "_try_spares",
+                        lambda *args, **kwargs: checked.append(("spares",)) or {"ok": True})
+
+    assert core._do_start("p") == {"ok": True}
+
+    assert checked == []
+
+
+def test_переподключение_сторожа_резервы_не_перебирает(monkeypatch):
+    core = _core(monkeypatch)
+    core._cmd = core._human = core._round_human = 0
+    tried = []
+    monkeypatch.setattr(core, "_spares",
+                        lambda tid: ({"id": tid, "name": "Личный", "active": "a",
+                                      "proto": "wg"}, ["b"]))
+    monkeypatch.setattr(core, "_spare_works", lambda tid: False)
+    monkeypatch.setattr(core, "_try_spares",
+                        lambda *args, **kwargs: tried.append("перебор")
+                        or {"ok": False, "error": "нет"})
+
+    core._do_start(reconnect=True)
+
+    assert tried == []
+
+
+def test_ручное_включение_резервы_перебирает(monkeypatch):
+    core = _core(monkeypatch)
+    core._cmd = core._human = core._round_human = 0
+    tried = []
+    monkeypatch.setattr(core, "_spares",
+                        lambda tid: ({"id": tid, "name": "Личный", "active": "a",
+                                      "proto": "wg"}, ["b"]))
+    monkeypatch.setattr(core, "_spare_works", lambda tid: False)
+    monkeypatch.setattr(core, "_try_spares",
+                        lambda *args, **kwargs: tried.append("перебор")
+                        or {"ok": False, "error": "нет"})
+
+    assert core._do_start(failover=True) == {"ok": False, "error": "нет"}
+
+    assert tried == ["перебор"]
+
+
+def test_команда_start_включает_перебор(monkeypatch):
+    core = _core(monkeypatch)
+    seen = []
+
+    def fake(profile="", **kwargs):
+        seen.append((profile, kwargs))
+        return {"ok": True}
+
+    monkeypatch.setattr(core, "_do_start", fake)
+
+    assert core._handle("start", {}, False) == {"ok": True}
+    assert core._handle("start-only", {"tunnel": "home"}, False) == {"ok": True}
+
+    assert seen == [("", {"wake": True, "failover": True}),
+                    ("", {"only": "home", "failover": True})]
+
+
+def test_фоновые_пути_не_включают_перебор_сами():
+    for fn in (service.Core._do_start, service.Core._start_locked,
+               service.Core._apply_locked):
+        assert inspect.signature(fn).parameters["failover"].default is False
+
+
+def test_запасной_применяется_без_своего_перебора(monkeypatch):
+    core = _core(monkeypatch)
+    core._cmd = core._human = core._round_human = 0
+    core.tunnel.uplink = object()
+    t = {"id": "home", "name": "Личный", "active": "a", "proto": "wg"}
+    seen = []
+    monkeypatch.setattr(core, "_conf_stamp", lambda *args: None)
+    monkeypatch.setattr(core, "_set_active",
+                        lambda name, tunnel="": {"ok": True})
+    monkeypatch.setattr(core, "_apply_locked",
+                        lambda **kwargs: seen.append(kwargs.get("failover", "нет"))
+                        or {"ok": False, "error": "нет"})
+
+    assert not core._take_spare(t, "b", locked=True)["ok"]
+
+    assert seen == [False]
+
+
+def test_запасной_при_нерабочем_основном_применяется_правкой(monkeypatch):
+    core = _core(monkeypatch)
+    monkeypatch.setattr(core, "_user_path_ok", lambda _st: True)
+    home = core.tunnel.home
+    core.tunnel.sides = [home]
+    tried, made = _spare_confs(monkeypatch, core, {"nl-2": "up"})
+    starts = []
+    monkeypatch.setattr(core, "_start_locked",
+                        lambda **kw: starts.append(kw) or {"ok": True})
+    seen = _reload(monkeypatch, core, [(home, "")])
+    core.tunnel.delay_ms = 25
+
+    assert core._fallback(home)
+
+    assert tried == [("nl-2", True)]
+    assert made == [("home", "nl-2")]
+    assert starts == []
+    assert seen == [{"busy": "", "locked": True, "plan": "plan"}]
+    assert core.last_error == ""
+    assert core.tunnel.out_now() == HOME_VIA
+
+
+@pytest.mark.parametrize("result, phase", [
+    ({"ok": True}, "резерв применён"),
+    ({"ok": False, "error": "нет"}, "перебор исчерпан"),
+    ({"ok": False, "cancelled": True}, "перебор отменён"),
+])
+def test_перебор_даёт_одну_итоговую_метку(monkeypatch, result, phase):
+    core = _core(monkeypatch)
+    core._cmd = core._human = core._round_human = 0
+    monkeypatch.setattr(core, "_try_spares", lambda *args: result)
+
+    core._try_spares_marked("home", lambda t, name: {"ok": True},
+                            lambda: False, 2)
+
+    marks = [line for line in core.logged if "фаза «" in line]
+    assert len(marks) == 2
+    assert "перебор начат" in marks[0] and "кандидатов 2" in marks[0]
+    finals = [line for line in marks if any(x in line for x in (
+        "резерв применён", "перебор исчерпан", "перебор отменён"))]
+    assert len(finals) == 1 and phase in finals[0]
+    assert not any(name in line for line in marks
+                   for name in ("b.conf", "nl-2", "nl-3", "Личный"))
 
 
 def test_мигание_сети_в_журнале(monkeypatch):
@@ -2391,3 +2872,94 @@ def test_испорченная_статистика_не_мешает_выкл�
 
     assert core.tunnel.uplink is None
     assert _saved(_paths_file) == {"awg-personal": {"2.2.2.2": 1}}
+
+
+def test_фаза_очереди_и_ответа_команды(monkeypatch):
+    core = _core(monkeypatch)
+    core._human, core._round_human, core._running = 0, 0, None
+    clock = [100.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: clock[0])
+    class SlowLock:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def acquire(self, timeout=None):
+            got = self.inner.acquire(timeout=timeout)
+            clock[0] += 10.0
+            return got
+
+        def release(self):
+            self.inner.release()
+
+        def locked(self):
+            return self.inner.locked()
+
+    core.lock = SlowLock(core.lock)
+
+    def run():
+        clock[0] += 2.0
+        return {"ok": True}
+
+    assert core._command(("start", "p", False, ""), run) == {"ok": True}
+
+    [queue] = _said(core, "фаза «очередь команды»")
+    assert "start" in queue and "ручная" in queue and "10.0 с" in queue
+    [answer] = _said(core, "фаза «ответ команды»")
+    assert "2.0 с" in answer and "ok" in answer
+
+
+def test_итог_перебора_не_включает_очередь_команды(monkeypatch):
+    core = _core(monkeypatch)
+    core._cmd = core._human = core._round_human = 0
+    core._running = None
+    clock = [100.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: clock[0])
+    class SlowLock:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def acquire(self, timeout=None):
+            got = self.inner.acquire(timeout=timeout)
+            clock[0] += 10.0
+            return got
+
+        def release(self):
+            self.inner.release()
+
+        def locked(self):
+            return self.inner.locked()
+
+    core.lock = SlowLock(core.lock)
+
+    def try_spares(*args):
+        clock[0] += 3.0
+        return {"ok": True}
+
+    monkeypatch.setattr(core, "_try_spares", try_spares)
+
+    def run():
+        return core._try_spares_marked("home", lambda t, name: {"ok": True},
+                                       lambda: False, 2)
+
+    assert core._command(("start", "p", False, ""), run) == {"ok": True}
+
+    [queue] = _said(core, "фаза «очередь команды»")
+    assert "10.0 с" in queue
+    [final] = _said(core, "фаза «резерв применён»")
+    assert "3.0 с" in final
+
+
+def test_подтверждение_выхода_основного_в_журнале(monkeypatch):
+    core = _core(monkeypatch)
+    core.tunnel.home.started = 100.0
+    clock = [100.0]
+    monkeypatch.setattr(service.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(core.tunnel.cancel, "wait", lambda seconds: False)
+    monkeypatch.setattr(core.tunnel, "delay",
+                        lambda tag, timeout_ms=3000, deadline=None: 25)
+    monkeypatch.setattr(core, "_user_path_ok", lambda _st: True)
+
+    assert core._spare_works("home")
+
+    [line] = _said(core, "фаза «выход подтверждён»")
+    assert "25 мс" in line

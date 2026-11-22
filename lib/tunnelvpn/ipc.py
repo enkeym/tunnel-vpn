@@ -355,6 +355,8 @@ def check_by_side(on_side, poll=CHECK_POLL, lock=None):
     # Проверка уже идёт — check дождётся её, и её ответ тоже свежий; нет —
     # свежей будет только следующая.
     need = st.get("check_seq", 0) + (0 if st.get("checking") else 1)
+    gen = st.get("route_gen")
+    started = {t["id"] for t in st.get("tunnels") or []}
     result = {}
 
     def work():
@@ -375,6 +377,8 @@ def check_by_side(on_side, poll=CHECK_POLL, lock=None):
                 st = call("status").get("status") or {}
             except NotRunning:
                 continue
+            if gen is None or st.get("route_gen") != gen:
+                continue
             seqs = {t["id"]: t.get("seq", 0) for t in st.get("tunnels") or []}
             # Туннель удалили посреди проверки — ждать его нечего.
             fresh = {tid for tid in pending if seqs.get(tid, need) >= need}
@@ -384,7 +388,19 @@ def check_by_side(on_side, poll=CHECK_POLL, lock=None):
     worker.join()
     if "error" in result:
         raise result["error"]
-    return result["reply"]
+    reply = result.get("reply") or {}
+    final = reply.get("status") or {}
+    seqs = {t["id"]: t.get("seq", 0) for t in final.get("tunnels") or []}
+    seen = started.intersection(seqs)
+    reply["fresh"] = (reply.get("ok") is True
+                      and bool(final)
+                      and not final.get("busy")
+                      and not final.get("checking")
+                      and gen is not None
+                      and final.get("route_gen") == gen
+                      and bool(seen)
+                      and all(seqs[tid] >= need for tid in seen))
+    return reply
 
 
 # ERROR_BROKEN_PIPE: сервер закрыл свой конец — после ответа это нормальный конец.

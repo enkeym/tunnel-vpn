@@ -1512,6 +1512,54 @@ def test_задержка_живого_и_мёртвого_выхода(clash):
     assert any("connectivitycheck.gstatic.com" in path for path in FakeClash.paths_seen)
 
 
+def test_дедлайн_проверки_резерва_ограничивает_http_вызов(clash, monkeypatch):
+    tun, _seen = clash
+    waits = []
+
+    def request(_path, timeout):
+        waits.append(timeout)
+        return {"delay": 42}
+
+    monkeypatch.setattr(tun, "_clash", request)
+
+    assert tun.delay(HOME_SOCKS, timeout_ms=3000,
+                     deadline=time.monotonic() + 1.0) == 42
+    assert waits and all(wait <= 1.0 for wait in waits)
+    assert tun.delay(HOME_SOCKS,
+                     deadline=time.monotonic() - 1.0) is None
+
+
+def test_дедлайн_урезает_и_запрос_и_ожидание(clash, monkeypatch):
+    tun, _seen = clash
+    asked = []
+
+    def request(path, timeout):
+        asked.append((int(path.split("timeout=")[1].split("&")[0]), timeout))
+        return {"delay": 42}
+
+    monkeypatch.setattr(tun, "_clash", request)
+
+    deadline = time.monotonic() + 0.25
+    assert tun.delay(HOME_SOCKS, timeout_ms=3000, deadline=deadline) == 42
+    assert asked
+    for limit, wait in asked:
+        assert 1 <= limit <= 250
+        assert wait <= 0.25
+
+    asked.clear()
+    assert tun.delay(HOME_SOCKS, deadline=time.monotonic() - 0.001) is None
+    assert asked == []
+
+
+def test_положительный_остаток_дедлайна_меньше_миллисекунды(clash, monkeypatch):
+    tun, _seen = clash
+    monkeypatch.setattr(tunnel.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(tun, "_clash",
+                        lambda *a, **kw: pytest.fail("спросил без времени"))
+
+    assert tun.delay(HOME_SOCKS, deadline=100.0005) is None
+
+
 def test_быстрый_адрес_проверки_не_ждёт_медленный(clash, monkeypatch):
     tun, _seen = clash
     primary = threading.Event()

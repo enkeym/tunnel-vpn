@@ -639,20 +639,23 @@ class Api:
     def _check(self):
         """Проверка туннелей службой сейчас; страница на это время пишет
         «проверяю…» — у каждой плитки, пока не проверен её туннель."""
-        self.js("checkStart")
+        call = time.monotonic_ns()
+        self.js("checkStart", call)
 
         def on_side(st, pending):
-            self.jsn("checkSides", (st, sorted(pending)))
+            self.jsn("checkSides", (st, sorted(pending), call))
 
         # Итог — свежим статусом под замком, а не статусом из ответа check:
         # тот собран раньше и мог лечь поверх статуса опроса.
+        ok = False
         try:
-            ipc.check_by_side(on_side, lock=self._render_lock)
+            reply = ipc.check_by_side(on_side, lock=self._render_lock)
+            ok = bool(reply.get("fresh"))
         except ipc.NotRunning:
             pass
         finally:
             self.refresh()
-            self.js("checkDone")
+            self.jsn("checkDone", (ok, call))
 
     def _test_group(self, arg):
         for name in arg["names"]:

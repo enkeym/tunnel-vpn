@@ -46,6 +46,21 @@ paths:
   `_tunnel_entries`, `_sync_menu`), CLI. Старых `profiles`/`corp`/`last`/`split` в статусе нет.
 - `checking` — `lib/tunnelvpn/service.py:_status` (из `lib/tunnelvpn/probe.py:Prober.slow_busy`) → `checking` в
   `lib/tunnelvpn/ui/js/model.js:model` и `cards.js:cardState`: «проверяю…», пока идёт сетевая проверка.
+- `link` — `lib/tunnelvpn/service.py:_link`/`_status`: одна вычисленная службой оценка `{kind, gen}`, чтобы трей и
+  окно не повторяли сетевые правила. `kind`: `off`, `error`, `waiting`, `leak`, `blocked`, `fallback`, `idle`,
+  `list`, `checking`, `tunnel`, `main_down`; `gen` — `route_gen`, к которому относится оценка. Читают
+  `lib/tunnelvpn/tray.py:_tray_state` (`_TRAY_LINK`), `lib/tunnelvpn/ui/js/model.js:model` (`headOf`,
+  `problemsOf`), `cards.js:cardState`. Новый `kind` без ветки в этих читателях — «Всё работает» или спиннер
+  вместо отказа; `list` (нет активного `all`) — рабочий VPN по списку, не запасной выход.
+- `route_gen` — `lib/tunnelvpn/probe.py:Prober.route_gen`/`new_route` (`lib/tunnelvpn/service.py:_start_locked`,
+  `_stop_locked`, `_restart_side`, `_take_spare`): поколение маршрута, растёт при смене или перезапуске
+  основного/активного конфига, смене `out`, аплинка и остановке. `_status` кладёт в `route_gen`, оценка — в
+  `link.gen`; `Prober.net_fresh(gen)` и `_net_stale` считают успех протухшим (`NET_TTL`), а не «всё работает».
+  Поздний результат пробы прежнего поколения отбрасывает `Prober.set_if`, поэтому чужое молчание и старый
+  успех не попадают в новый маршрут.
+- `check_gen`/`check_at` — `lib/tunnelvpn/probe.py:Prober._slow_guarded`: поколение и монотонное время
+  завершения сетевой проверки; пишутся только для того же `route_gen`. По ним `_status` отличает свежий
+  результат от протухшего (`checking`), не выдавая старый успех за действующий.
 - `job` — текущая фоновая задача (реестр `lib/tunnelvpn/service.py:_job_start`/`_job_progress`/`_job_finish`,
   отдаёт `_job_now`) → `paintJob`/`jobRunningText` в `lib/tunnelvpn/ui/js/topbar.js`. Проверка ссылок: `done`,
   `total`, `added`, `failed`, `problems`. Amnezia Premium: `mode: "amnezia_single"`, фаза `phase` («выдача»,

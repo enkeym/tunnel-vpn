@@ -123,9 +123,14 @@ def _closed_after(m):
 # минуты висело «не работает»). Тогда смотрим на проверку выхода в probe: адреса
 # нет вовсе или виден свой — столько секунд подряд, и основной молчащий.
 SILENT_GAP = 30.0
+SILENT_FAST = 8.0
+DNS_FAIL_HITS = 2
 # Пока выход идёт напрямую, личный проверяем задержкой через его socks не чаще
 # этого: проверка ждёт до 5 с, а круг сторожа — раз в FAST_EVERY.
 BACK_EVERY = 15.0
+RETRY_BACK_BUDGET = 8.0
+BACK_CONFIRM = probe.CHECK_WAIT
+SPARE_VERIFY_BUDGET = probe.SIDE_SETTLE + 5.0
 # Пауза между кругами сторожа длиннее этого (при шаге FAST_EVERY) — компьютер спал:
 # после пробуждения сеть и туннель чаще всего и ломаются, и без отметки
 # о сне дыра в штампах журнала читается как зависшая служба.
@@ -386,6 +391,12 @@ class Core:
     _dead_hits = ()
     # Когда в следующий раз проверять, везёт ли личный, пока выход напрямую.
     _back_at = 0.0
+    _back_wait = 0.0
+    _back_forced = {}
+    _dns_fast_said = frozenset()
+    _confirm_at = 0.0
+    _confirm_ask = 0.0
+    _confirm_gen = 0
     # Сторож перезапускал процессы этих туннелей, а лучше не стало: тогда пробуем
     # их запасные конфиги (_fallback), круг — не раньше _fallback_at этого туннеля.
     _kicked = ()
@@ -503,9 +514,9 @@ class Core:
         if op == "howto":
             return {"ok": True, "howto": self._howto(trusted)}
         if op == "start":
-            return self._do_start(payload.get("profile", ""), wake=True)
+            return self._do_start(payload.get("profile", ""), wake=True, failover=True)
         if op == "start-only":
-            return self._do_start(only=tid)
+            return self._do_start(only=tid, failover=True)
         if op == "stop":
             return self._do_stop()
         if op == "apply":
@@ -614,10 +625,44 @@ class Core:
             self._rev = max(self._rev + 1, time.monotonic_ns() // 1000)
             return self._rev
 
+    def _mark(self, phase, began, result="", src=False):
+        took = max(time.monotonic() - began, 0.0)
+        who = " · ручная" if src and self._round_human != self._human else (
+            " · сторож" if src else "")
+        said = f" · {result}" if result else ""
+        self.log(f"· фаза «{phase}»: {took:.1f} с{said}{who}")
+
+    def _link(self, st, main):
+        """Одна оценка связи для трея и окна: причина вместо повторных правил."""
+        if not st.get("up"):
+            if st.get("retrying"):
+                return "waiting"
+            return "error" if st.get("last_error") else "off"
+        if st.get("v6_leak") or st.get("exit_state") == "leak":
+            return "leak"
+        if st.get("out") == buildconfig.BLOCK_TAG or st.get("exit_state") == "blocked":
+            return "blocked"
+        if not main:
+            live = [t for t in st.get("tunnels") or []
+                    if t.get("enabled") is not False]
+            if not any(t.get("carries") is not False for t in live):
+                return "idle"
+            return "list"
+        if st.get("out") == buildconfig.DIRECT_TAG or st.get("exit_state") == "direct":
+            return "fallback"
+        if st.get("checking") or not self.prober.net_fresh(st.get("route_gen")):
+            return "checking"
+        if st.get("exit_state") == "tunnel" and st.get("exit_is_peer"):
+            return "tunnel"
+        if st.get("exit_state") in ("", "unknown"):
+            return "checking"
+        return "main_down"
+
     def _status(self):
         # Номер — раньше снимка: статус, начатый позже, и номер получит больший.
         rev = self._next_rev()
         st = self.prober.snapshot()
+        st["route_gen"] = self.prober.route_gen()
         st["rev"] = rev
         st["up"] = bool(st.get("tun")) and bool(st.get("r_low"))
         st["busy"] = self.busy
@@ -675,9 +720,13 @@ class Core:
         for t in st["tunnels"]:
             c = checks.get(t["id"]) or {}
             seq = c.get("seq", 0)
-            t.update(check=c.get("result", ""), answer=c.get("answer", ""),
-                     seq=seq, last=last.get(t["id"], ""),
-                     checking=st["checking"] and seq < st.get("check_seq", 0),
+            fresh = (c.get("gen") == st["route_gen"]
+                     and c.get("conf", "") == t.get("active", ""))
+            t.update(check=c.get("result", "") if fresh else "",
+                     answer=c.get("answer", "") if fresh else "",
+                     seq=seq if fresh else 0, last=last.get(t["id"], ""),
+                     checking=st["checking"] and (
+                         not fresh or seq < st.get("check_seq", 0)),
                      tests=self._tests_of(t["id"], t["confs"], t.get("proto", "wg")))
         # Основной включили или сменили на живом VPN (_apply): пока его процесс
         # поднимается, выход и его замер — от прежней раскладки, без основного
@@ -688,6 +737,9 @@ class Core:
             st.update(out="", exit_state="unknown", exit_is_peer=False)
             if not self.pending_apply:
                 next(t for t in st["tunnels"] if t["id"] == main["id"])["checking"] = True
+        main_st = next((t for t in st["tunnels"]
+                        if t["id"] == (main or {}).get("id")), None)
+        st["link"] = {"kind": self._link(st, main_st), "gen": st["route_gen"]}
         st["version"] = paths.version()
         st["singbox"] = self._singbox_version()
         # Галочка «подробный журнал» в окне: set-log-level пишет, читать — любому.
@@ -1131,18 +1183,21 @@ class Core:
             pass
         return cls._singbox_cached
 
-    def _do_start(self, profile="", reconnect=False, retries=0, wake=False, only=""):
+    def _do_start(self, profile="", reconnect=False, retries=0, wake=False, only="",
+                  failover=False):
         """Поднимает туннель (_start_locked). Переподключение сторожа берёт
         замок без ожидания: занято — значит, человек или правка уже делают своё.
         Команда человека и автозапуск — через _command."""
         if not reconnect:
             return self._command(
                 ("start", profile, wake, only),
-                lambda: self._start_locked(profile, retries=retries, wake=wake, only=only))
+                lambda: self._start_locked(profile, retries=retries, wake=wake,
+                                           only=only, failover=failover))
         if not self.lock.acquire(blocking=False):
             return {"ok": False, "error": f"уже идёт: {self.busy or 'операция'}"}
         try:
-            return self._start_locked(profile, reconnect=True, retries=retries, only=only)
+            return self._start_locked(profile, reconnect=True, retries=retries,
+                                      only=only, failover=False)
         finally:
             self.lock.release()
 
@@ -1156,6 +1211,7 @@ class Core:
         следующем шаге. Замок отдаётся не по очереди: выполняется последняя
         пришедшая, а та, что дождалась замка после неё, отвечает cancelled. Отмена —
         не ошибка (ok): трей и окно не показывают её и сразу берут статус."""
+        queued = time.monotonic()
         cur = self._running
         if cur is not None and cur["key"] == key:
             if cur["done"].wait(APPLY_WAIT):
@@ -1171,6 +1227,8 @@ class Core:
             self.tunnel.cancel.set()
         if not self.lock.acquire(timeout=APPLY_WAIT):
             return {"ok": False, "error": f"уже идёт: {self.busy or 'операция'}"}
+        self._mark("очередь команды", queued, key[0], src=True)
+        began = time.monotonic()
         rec = {"key": key, "done": threading.Event(),
                "reply": {"ok": True, "cancelled": True}}
         try:
@@ -1178,6 +1236,8 @@ class Core:
                 self.tunnel.cancel.clear()
                 self._running = rec
                 rec["reply"] = run()
+            self._mark("ответ команды", began,
+                       "ok" if rec["reply"].get("ok") else "ошибка", src=True)
             return rec["reply"]
         finally:
             # Отмена отработала или опоздала: старая не должна сорвать переподключение
@@ -1188,7 +1248,7 @@ class Core:
             self.lock.release()
 
     def _start_locked(self, profile="", reconnect=False, retries=0, wake=False, only="",
-                      failover=True):
+                      failover=False, keep_guard=False):
         """Поднимает туннель; замок уже взят. reconnect — сначала снять текущий:
         без этого start принял бы живой процесс за «уже работает» и ничего не
         сделал. retries — сколько повторов взвести, если не поднимется. Взводим
@@ -1217,6 +1277,7 @@ class Core:
                 self.log("→ конфигов нет — включать нечего")
                 return {"ok": False, "error": NO_CONFS}
             self.busy = "переподключаю" if reconnect else "включаю"
+            was_up = keep_guard or (reconnect and self.tunnel.uplink is not None)
             if reconnect:
                 self._flush_paths()
                 self.tunnel.stop()
@@ -1226,33 +1287,27 @@ class Core:
                 was, err = self._only(only)
             else:
                 err = self._wake_all() if wake else ""
-            command = self._cmd
             err = err or self.tunnel.start(profile)
-            if not err and failover:
-                for side in tuple(self.tunnel.sides):
-                    if command != self._cmd or self.tunnel.cancel.is_set():
-                        err = tunnel.CANCELLED
-                        break
-                    t, _ = self._spares(side.tid)
-                    if t is None or self._spare_works(side.tid):
-                        continue
-                    result = self._try_spares(
-                            side.tid,
+            if not err and failover and self.tunnel.main is not None:
+                main = self.tunnel.main
+                keep, names = self._spares(main.tid)
+                if keep is not None and names and not self._spare_works(main.tid):
+                    command = self._cmd
+                    result = self._try_spares_marked(
+                            main.tid,
                             lambda t, name: self._take_spare(t, name, locked=True),
                             lambda: (command != self._cmd
                                      or self.tunnel.cancel.is_set()
-                                     or self.prober.stop_event.is_set()))
+                                     or self.prober.stop_event.is_set()),
+                            len(names))
                     if not result["ok"]:
                         err = (tunnel.CANCELLED if result.get("cancelled")
                                else result["error"])
-                        break
-                if command != self._cmd or self.tunnel.cancel.is_set():
-                    err = tunnel.CANCELLED
             took = time.monotonic() - began
             if err == tunnel.CANCELLED:
                 self.log(f"→ включение отменено через {took:.1f} с — убираю")
                 self.tunnel.stop()
-                guard_err = self._release_guard()
+                guard_err = "" if was_up else self._release_guard()
                 if was:
                     self._restore_flags(was)
                 if guard_err:
@@ -1267,7 +1322,7 @@ class Core:
                 # Наполовину поднятое состояние опаснее выключенного: маршруты
                 # уже могли встать. Убираем за собой сразу, а не ждём человека.
                 self.tunnel.stop()
-                guard_err = self._release_guard()
+                guard_err = "" if was_up else self._release_guard()
                 if was:
                     self._restore_flags(was)
                 if guard_err:
@@ -1284,10 +1339,12 @@ class Core:
             self._side_after, self._side_noted = {}, {}
             self._side_said = set()
             self._back_at = 0.0
+            self._back_wait = 0.0
             self._silent_at = 0.0
             self._kicked, self._fallback_at = (), {}
             # Личный мог не подняться: проверка выхода на подъёме должна знать
             # это до первого круга сторожа, иначе увидит «утечку».
+            self.prober.new_route()
             self.prober.set(out=self.tunnel.out_now())
             for side in self.tunnel.sides:
                 if side.alive():
@@ -1398,7 +1455,7 @@ class Core:
         finally:
             self.lock.release()
 
-    def _apply_locked(self, ask=False, failover=True):
+    def _apply_locked(self, ask=False, failover=False):
         """Правка конфигов на поднятый VPN (_apply); замок уже взят.
         Ответ sides — когда sing-box уже принял rule-set (Tunnel._write_sets);
         отказ — полный перезапуск тут же, без вопроса: правка уже наполовину на VPN.
@@ -1445,8 +1502,10 @@ class Core:
                     **({"error": "; ".join(errs)} if errs else {})}
         self.log("→ на лету не применить (сменилось то, что держит основной процесс, "
                  "или sing-box не принял правила) — перезапускаю VPN")
+        keep_guard = self.tunnel.uplink is not None
         self._stop_locked()
-        return {**self._start_locked(failover=failover), "applied": "full"}
+        return {**self._start_locked(failover=failover, keep_guard=keep_guard),
+                "applied": "full"}
 
     def _forget_side(self, side):
         """Таймауты и пауза перезапуска процесса — от старого конфига."""
@@ -1456,6 +1515,8 @@ class Core:
         self._side_said.discard(side.tid)
         self._long_said.discard(side.tid)
         self._kicked = tuple(tid for tid in self._kicked if tid != side.tid)
+        if side.tid == self.tunnel.main_id:
+            self._back_wait = 0.0
         self._fallback_at = {k: v for k, v in self._fallback_at.items() if k != side.tid}
 
     def _do_stop(self):
@@ -1470,6 +1531,7 @@ class Core:
             self.busy = "выключаю"
             self._flush_paths()
             self.tunnel.stop()
+            self.prober.new_route()
             if release_guard:
                 guard_err = self._release_guard()
                 if guard_err:
@@ -1811,8 +1873,18 @@ class Core:
         dead = self._dead_tunnels(sides, lines)
         main = self.tunnel.main
         out, carries = self.tunnel.out_now(), None
+        if main and out not in buildconfig.AWAY_TAGS and main.tid in self._kicked:
+            out = self._confirm_back(main, out)
+        forced_failed = False
         if main and out in buildconfig.AWAY_TAGS and main.alive():
-            out, carries = self._try_back(main, out)
+            force = (main.tid in self._kicked
+                     and self._back_forced.get(main.tid) != main.started)
+            if force:
+                self._back_forced = {**self._back_forced, main.tid: main.started}
+                out, carries = self._try_back(main, out, RETRY_BACK_BUDGET)
+                forced_failed = carries is False
+            else:
+                out, carries = self._try_back(main, out)
         # Перезапуск не помог: вероятнее лежит сервер, а не процесс.
         if (main and out in buildconfig.AWAY_TAGS and main.tid in self._kicked
                 and (carries is False or not main.alive()) and self._fallback(main)):
@@ -1823,6 +1895,8 @@ class Core:
         for side in self.tunnel.sides:
             if self._round_human != self._human:
                 return
+            if forced_failed and side is main:
+                continue
             hits = dead.get(side.tid)
             kind, hits = hits if hits else ("", None)
             # Живой основной, через который проверка не дошла: трафика через
@@ -1847,6 +1921,8 @@ class Core:
                 away = self.tunnel.away()
                 if self.tunnel.set_out(away):
                     out = away
+                    self._mark("фактический away",
+                               self._silent_at or time.monotonic(), away, src=True)
                     # Назад — не раньше BACK_EVERY: 7 октября одна удачная проверка
                     # через 2 с после увода возвращала трафик в полуживой туннель,
                     # и выход за 40 с метался пять раз.
@@ -1854,6 +1930,14 @@ class Core:
                     self._silent_at = 0.0
                     self.prober.set(out=out)
                     self.prober.remeasure()
+                else:
+                    actual = self.tunnel.out_now()
+                    if actual and actual != out:
+                        out = actual
+                        self.prober.set(out=actual)
+                        self.prober.remeasure()
+                    self.log("!! не удалось увести выход в безопасный — "
+                             "оставляю фактический маршрут")
             if side.tid in self._kicked and self._fallback(side):
                 if side is main:
                     return
@@ -1871,6 +1955,7 @@ class Core:
             why = self._side_down(side, kind, hits)
             if why:
                 self._side_after[side.tid] = now + DEAD_GAP
+                self._mark("перезапуск начат", now, kind or "процесс")
                 self.log(f"!! {why} — перезапускаю процесс «{side.title}»")
                 self._restart_side(side)
 
@@ -1910,17 +1995,41 @@ class Core:
         """Процесс основного жив, выход через него, а probe не видит адреса или
         видит свой: на живом AWG-пире DEAD_RE молчит, и молчание иначе не
         заметить. True — так уже SILENT_GAP секунд, выход пора уводить."""
-        if out not in buildconfig.AWAY_TAGS and self.prober.tun_dns_dead():
+        going = out not in buildconfig.AWAY_TAGS
+        dead = going and self.prober.tun_dns_dead()
+        fails = self.prober.tun_dns_fails() if going else 0
+        failing = fails >= DNS_FAIL_HITS
+        if dead or failing:
+            self._confirm_exit()
             if main.tid not in self._dns_said:
                 self._dns_said.add(main.tid)
-                self.log(f"!! через «{main.title}» молчит DNS — увожу выход и "
-                         f"перезапускаю")
-            return True
-        self._dns_said.discard(main.tid)
+                why = ("молчит DNS" if dead
+                       else f"DNS не отвечает {fails} раз подряд")
+                self.log(f"!! {why} через «{main.title}» — проверяю выход, "
+                         f"без подтверждения не увожу")
+            if failing and main.tid not in self._dns_fast_said:
+                self._dns_fast_said = self._dns_fast_said | {main.tid}
+                self.log(f"!! DNS через «{main.title}» не отвечает {fails} раз "
+                         f"подряд — проверяю выход сейчас")
+        else:
+            self._dns_said.discard(main.tid)
+            self._dns_fast_said = self._dns_fast_said - {main.tid}
+            self._confirm_ask = 0.0
         st = self.prober.snapshot()
-        bad = (out not in buildconfig.AWAY_TAGS
+        bad = (going
                and (st.get("check_seq") or 0) > 0
                and (not st.get("exit_ip") or st.get("exit_state") == "leak"))
+        if dead or failing:
+            if not self._exit_check_done(st):
+                return False
+            if not bad:
+                self._silent_at = 0.0
+                self._confirm_ask = 0.0
+                if main.tid in self._dns_fast_said:
+                    self._dns_fast_said = self._dns_fast_said - {main.tid}
+                    self.log(f"· «{main.title}»: проверка выхода дошла — "
+                             f"отказы DNS не повод уводить рабочий выход")
+                return False
         if not bad:
             self._silent_at = 0.0
             return False
@@ -1928,32 +2037,148 @@ class Core:
         if not self._silent_at:
             self._silent_at = now
             return False
-        if now - self._silent_at < SILENT_GAP:
+        if now - self._silent_at < (SILENT_FAST if (dead or failing) else SILENT_GAP):
             return False
+        why = f"отказов DNS подряд {fails}" if failing else "молчит DNS"
         self.log(f"!! через «{main.title}» нет выхода (проверка не видит адрес "
-                 f"{now - self._silent_at:.0f} с) — увожу выход и перезапускаю")
+                 f"{now - self._silent_at:.0f} с, {why}) — "
+                 f"увожу выход и перезапускаю")
         return True
 
-    def _try_back(self, main, out):
+    def _exit_check_done(self, st):
+        gen = self.prober.route_gen()
+        return bool(self._confirm_ask
+                    and self._confirm_gen == gen
+                    and st.get("check_gen") == gen
+                    and (st.get("check_at") or 0) >= self._confirm_ask)
+
+    def _confirm_exit(self):
+        now = time.monotonic()
+        gen = self.prober.route_gen()
+        if self._confirm_ask and gen == self._confirm_gen:
+            if self._exit_check_done(self.prober.snapshot()):
+                return
+            if now - self._confirm_ask < probe.CHECK_WAIT:
+                return
+        if now < self._confirm_at:
+            return
+        self._confirm_at = now + probe.TUN_DNS_EVERY
+        self._confirm_ask = now
+        self._confirm_gen = gen
+        threading.Thread(target=self.prober.check_now,
+                         kwargs={"wait": 0}, daemon=True).start()
+
+    def _user_path_ok(self, st):
+        return (self.prober.net_fresh()
+                and st.get("exit_state") == "tunnel"
+                and st.get("exit_is_peer"))
+
+    def _confirm_back(self, main, out):
+        """Возврат выхода на основной подтверждён только свежей сетевой
+        проверкой пользовательского пути: ответ delay(via) говорит о живом
+        сервере, но не о том, что через него идёт трафик."""
+        st = self.prober.snapshot()
+        if self._user_path_ok(st):
+            self._kicked = tuple(tid for tid in self._kicked if tid != main.tid)
+            self._back_wait = 0.0
+            self.log(f"· «{main.title}»: выход через него подтверждён проверкой "
+                     f"({st.get('exit_ip')})")
+            return out
+        now = time.monotonic()
+        if not self._back_wait:
+            self._back_wait = now + BACK_CONFIRM
+            return out
+        if now < self._back_wait:
+            return out
+        self._back_wait = 0.0
+        away = self.tunnel.away()
+        if not self.tunnel.set_out(away) and self.tunnel.out_now() != away:
+            actual = self.tunnel.out_now()
+            self.log("!! возврат выхода не подтвердился, а увести в безопасный "
+                     "не удалось — оставляю фактический маршрут")
+            return actual or out
+        self.prober.set(out=away, exit_state="unknown", exit_is_peer=False)
+        self.prober.remeasure()
+        self._back_at = now + BACK_EVERY
+        self.log(f"!! «{main.title}»: выход через него не подтвердился за "
+                 f"{BACK_CONFIRM:.0f} с — увожу в безопасный")
+        return away
+
+    def _try_back(self, main, out, budget=0.0):
         """Выход out мимо основного (AWAY_TAGS), процесс основного main жив:
         если задержка через него дошла — вернуть выход на него. (выход, везёт ли):
         None — не проверяли, рано по BACK_EVERY. Задержка идёт прямо через
         via-<id>, не через out: и из block видно, ожил ли основной."""
-        now = time.monotonic()
-        if now < self._back_at:
-            return out, None
-        self._back_at = now + BACK_EVERY
+        began = now = time.monotonic()
+        gen = self.prober.route_gen()
+        if budget:
+            deadline = now + budget
+        else:
+            if now < self._back_at:
+                return out, None
+            self._back_at = now + BACK_EVERY
+            deadline = now
         tag = buildconfig.via_tag(main.tid)
-        ms = self.tunnel.delay(tag)
-        if ms is None:
-            return out, False
-        if not self.tunnel.set_out(tag):
-            return out, True
-        self.prober.set(out=tag, exit_state="unknown", exit_is_peer=False)
-        self._kicked = tuple(tid for tid in self._kicked if tid != main.tid)
-        self.log(f"→ «{main.title}» везёт (проверка за {ms} мс) — выход снова через него")
-        self.prober.remeasure()
-        return tag, True
+        if budget:
+            self.log(f"→ проверяю прежний путь после перезапуска: до "
+                     f"{budget:.0f} с")
+        while True:
+            timeout_ms = 3000
+            if budget:
+                timeout_ms = max(
+                    100, min(3000, int(max(deadline - now, 0.5) * 1000)))
+            ms = self.tunnel.delay(tag, timeout_ms=timeout_ms)
+            if ms is not None:
+                now = time.monotonic()
+                if budget and now < self._back_at:
+                    if deadline < self._back_at:
+                        self._mark("возврат отложен", began,
+                                   f"бюджет {budget:.0f} с")
+                        return out, None
+                    waited = time.monotonic()
+                    if self.tunnel.cancel.wait(self._back_at - now):
+                        return out, None
+                    self._mark("ожидание возврата", waited,
+                               f"{time.monotonic() - waited:.1f} с")
+                    continue
+                if (self._round_human != self._human
+                        or self.tunnel.cancel.is_set()
+                        or self.prober.stop_event.is_set()
+                        or self.prober.route_gen() != gen
+                        or main is not self.tunnel.main
+                        or self.tunnel.out_now() != out):
+                    self._mark("возврат отменён", began,
+                               "команда, маршрут или выход изменились")
+                    return out, None
+                if not self.tunnel.set_out(tag) and self.tunnel.out_now() != tag:
+                    actual = self.tunnel.out_now()
+                    if actual != out:
+                        self.prober.set(out=actual, exit_state="unknown",
+                                        exit_is_peer=False)
+                    self.log("!! не удалось вернуть выход на основной — "
+                             "оставляю защиту")
+                    self._mark("возврат не удался", began, actual)
+                    return actual, False
+                self.prober.set(out=tag, exit_state="unknown", exit_is_peer=False)
+                self.log(f"→ «{main.title}» отвечает (проверка за {ms} мс) — "
+                         f"выход снова через него, жду проверку")
+                self._mark("возврат выполнен", began, f"{ms} мс")
+                self.prober.remeasure()
+                self._back_wait = time.monotonic() + BACK_CONFIRM
+                return tag, None
+            now = time.monotonic()
+            if now >= deadline:
+                if budget:
+                    self.log(f"!! прежний путь после перезапуска не ответил за "
+                             f"{budget:.0f} с — перебираю резервы")
+                self._mark("возврат не подтверждён", began,
+                           f"бюджет {budget:.0f} с" if budget else "проверка")
+                return out, False
+            if (self._round_human != self._human or self.tunnel.cancel.is_set()
+                    or self.prober.stop_event.is_set()):
+                return out, None
+            if self.tunnel.cancel.wait(min(probe.SETTLE_PAUSE, deadline - now)):
+                return out, None
 
     def _fallback(self, side):
         """Туннель side не везёт и после перезапуска сторожем — остальные
@@ -1989,7 +2214,8 @@ class Core:
         if names:
             self.log(f"!! «{side.title}» не везёт и после перезапуска — пробую запасные "
                      f"конфиги: {', '.join(names)}")
-            result = self._try_spares(side.tid, self._take_spare, cancelled)
+            result = self._try_spares_marked(
+                side.tid, self._take_spare, cancelled, len(names))
         else:
             result = {"ok": False,
                       "error": f"Нет запасных конфигов туннеля «{t['name']}»"}
@@ -2005,6 +2231,18 @@ class Core:
         if side is self.tunnel.main:
             return self._failover_main(verify=True) is not None
         return False
+
+    def _try_spares_marked(self, tid, take, cancelled, count):
+        began = time.monotonic()
+        self._mark("перебор начат", began, f"кандидатов {count}", src=True)
+        result = self._try_spares(tid, take, cancelled)
+        if result["ok"]:
+            self._mark("резерв применён", began)
+        elif result.get("cancelled"):
+            self._mark("перебор отменён", began)
+        else:
+            self._mark("перебор исчерпан", began)
+        return result
 
     def _try_spares(self, tid, take, cancelled):
         t, names = self._spares(tid)
@@ -2056,6 +2294,7 @@ class Core:
             tests.get(name, {}).get("result"), 1))
 
     def _spare_works(self, tid):
+        began = time.monotonic()
         side = next((s for s in self.tunnel.sides if s.tid == tid), None)
         if side is None or not side.alive():
             return False
@@ -2065,15 +2304,68 @@ class Core:
             tag = buildconfig.via_tag(tid)
             command = self._cmd
             started = side.started
+            deadline = time.monotonic() + SPARE_VERIFY_BUDGET
             while side.alive():
-                ms = self.tunnel.delay(tag)
+                now = time.monotonic()
+                if now >= deadline:
+                    self.log(f"!! проверка резерва не уложилась в "
+                             f"{SPARE_VERIFY_BUDGET:.0f} с — беру следующий")
+                    return False
+                left = started + probe.SIDE_SETTLE - now
+                timeout_ms = max(100, min(
+                    3000, int(max(min(left, deadline - now), 0.5) * 1000)))
+                ms = self.tunnel.delay(tag, timeout_ms=timeout_ms,
+                                       deadline=deadline)
                 if (self.tunnel.cancel.is_set() or self.prober.stop_event.is_set()
                         or command != self._cmd or side.started != started):
                     return False
+                now = time.monotonic()
+                if now >= deadline:
+                    self.log(f"!! проверка резерва не уложилась в "
+                             f"{SPARE_VERIFY_BUDGET:.0f} с — беру следующий")
+                    return False
                 if ms is not None:
-                    return self.tunnel.out_now() == tag or self.tunnel.set_out(tag)
-                left = started + probe.SIDE_SETTLE - time.monotonic()
-                if left <= 0 or self.tunnel.cancel.wait(min(left, probe.SETTLE_PAUSE)):
+                    if (self.tunnel.out_now(deadline=deadline) != tag
+                            and not self.tunnel.set_out(tag, deadline=deadline)):
+                        self.log("!! не удалось перевести выход на резерв — "
+                                 "оставляю защиту")
+                        return False
+                    self.prober.set(out=tag, exit_state="unknown",
+                                    exit_is_peer=False)
+                    self.prober.remeasure()
+                    while True:
+                        now = time.monotonic()
+                        if now >= deadline:
+                            self.log(f"!! резерв ответил, но трафик через него "
+                                     f"не подтвердился за "
+                                     f"{SPARE_VERIFY_BUDGET:.0f} с — беру "
+                                     f"следующий")
+                            return False
+                        st = self.prober.snapshot()
+                        if (self.tunnel.cancel.is_set()
+                                or self.prober.stop_event.is_set()
+                                or command != self._cmd
+                                or side.started != started):
+                            return False
+                        if self._user_path_ok(st):
+                            if time.monotonic() >= deadline:
+                                self.log(f"!! резерв подтвердился после "
+                                         f"{SPARE_VERIFY_BUDGET:.0f} с — не принимаю")
+                                return False
+                            self._mark("выход подтверждён", began, f"{ms} мс")
+                            return True
+                        if self.tunnel.cancel.wait(
+                                min(probe.SETTLE_PAUSE, deadline - now)):
+                            return False
+                left = started + probe.SIDE_SETTLE - now
+                if left <= 0:
+                    return False
+                if now >= deadline:
+                    self.log(f"!! проверка резерва не уложилась в "
+                             f"{SPARE_VERIFY_BUDGET:.0f} с — беру следующий")
+                    return False
+                if self.tunnel.cancel.wait(
+                        min(left, probe.SETTLE_PAUSE, deadline - now)):
                     return False
             return False
         return self.prober.check_one(tid, self.tunnel.delay)[0] in ("up", "none")
@@ -2085,6 +2377,7 @@ class Core:
         решил сам — ничего не меняем. True — правка применена."""
         if not locked and not self.lock.acquire(blocking=False):
             return {"ok": False, "cancelled": True}
+        began = time.monotonic()
         try:
             if (self.prober.stop_event.is_set() or self.tunnel.cancel.is_set()
                     or (not locked and self._round_human != self._human)):
@@ -2119,6 +2412,7 @@ class Core:
                 return {"ok": False, "cancelled": True}
             if not works:
                 return {"ok": False, "retry": True}
+            self._mark("селектор сменён", began, "резерв отвечает")
             self.prober.set(out=self.tunnel.out_now())
             self.prober.remeasure()
             return {"ok": True}
@@ -2135,8 +2429,11 @@ class Core:
             if (self.tunnel.uplink is None or self.prober.stop_event.is_set()
                     or self._round_human != self._human):
                 return
+            began = time.monotonic()
             self.busy = f"перезапускаю туннель «{side.title}»"
             err = self.tunnel.restart_side(side)
+            self._mark("перезапуск завершён", began, err or "ok", src=True)
+            self.prober.new_route()
             if side.tid not in self._kicked:
                 self._kicked = self._kicked + (side.tid,)
             if err:
@@ -3656,9 +3953,16 @@ class Core:
         if not reply["ok"] or proc is None or proc.poll() is not None:
             return reply
         out, away = self.tunnel.out_now(), self.tunnel.away()
-        if out in buildconfig.AWAY_TAGS and out != away and self.tunnel.set_out(away):
-            self.prober.set(out=away)
-            self.prober.remeasure()
+        if out in buildconfig.AWAY_TAGS and out != away:
+            if self.tunnel.set_out(away):
+                self.prober.set(out=away)
+                self.prober.remeasure()
+            else:
+                actual = self.tunnel.out_now()
+                if actual != out:
+                    self.prober.set(out=actual)
+                self.log("!! kill-switch: выход не переключён — "
+                         "оставляю защиту")
         return reply
 
     def _tail_log(self, lines):

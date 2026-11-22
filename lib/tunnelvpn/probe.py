@@ -32,6 +32,8 @@ from . import buildconfig, paths, settings, tunnels, winnet
 # Быстрый опрос — несколько WMI-запросов по 10–20 мс (см. winnet). Пока они
 # шли через запуск PowerShell, цикл стоил секунды и приходилось реже.
 FAST_EVERY = 2.0
+NET_TTL = 60.0
+NET_REFRESH_AT = 45.0
 # Сколько check_now ждёт уже идущую проверку: при плохой сети она до ~12 с —
 # столько стоит корп-HTTPS с повтором, на свежем процессе — до SIDE_SETTLE
 # сверху; запас — на медленный резолв имён.
@@ -372,10 +374,13 @@ class Prober:
         self._dns_ok = 0.0
         self._dns_busy = False
         self._dns_said = False
+        self._dns_fails = 0
+        self._gen = 0
 
     def remeasure(self):
         """Сетевая проверка, как на подъёме туннеля, даже если цикл не
         видел его падения. Увидел — проверка всё равно одна."""
+        self.new_route()
         self._dns_reset()
         self._remeasure.set()
         self._wake.set()
@@ -384,6 +389,21 @@ class Prober:
         """Круг цикла run сейчас, а не по истечении FAST_EVERY."""
         self._wake.set()
 
+    def net_fresh(self, gen=None):
+        with self.lock:
+            seq_gen = self.st.get("check_gen")
+            at = self.st.get("check_at") or 0.0
+            gen = self._gen if gen is None else gen
+            return seq_gen == gen and time.monotonic() - at <= NET_TTL
+
+    def _net_stale(self):
+        with self.lock:
+            at = self.st.get("check_at") or 0.0
+            gen = self.st.get("check_gen")
+            if not at or gen != self._gen:
+                return True
+            return time.monotonic() - at >= NET_REFRESH_AT
+
     def stop(self):
         """Остановка цикла run без досыпания текущего круга."""
         self.stop_event.set()
@@ -391,11 +411,28 @@ class Prober:
 
     def set(self, **kw):
         with self.lock:
-            back = ("out" in kw and kw["out"] != self.st.get("out")
-                    and kw["out"] not in buildconfig.AWAY_TAGS)
+            moved = "out" in kw and kw["out"] != self.st.get("out")
+            back = moved and kw["out"] not in buildconfig.AWAY_TAGS
+            if moved:
+                self._gen += 1
             self.st.update(kw)
         if back:
             self._dns_reset()
+
+    def set_if(self, gen, **kw):
+        with self.lock:
+            if self._gen != gen:
+                return False
+            self.st.update(kw)
+            return True
+
+    def route_gen(self):
+        with self.lock:
+            return self._gen
+
+    def new_route(self):
+        with self.lock:
+            self._gen += 1
 
     def snapshot(self):
         with self.lock:
@@ -450,6 +487,7 @@ class Prober:
         running = set(buildconfig.side_ids(cfg))
         dns = buildconfig.tunnel_dns(cfg)
         return [{"id": t["id"], "name": t["name"], "mode": t["mode"],
+                 "conf": t.get("active", ""),
                  "host": _probe_host(t) if t["mode"] == "list" else "",
                  "dns": dns.get(t["id"], "") if t["mode"] == "list" else "",
                  "running": t["enabled"] and t["id"] in running and _has_conf(t)}
@@ -535,6 +573,7 @@ class Prober:
         его не держит.
         """
         took = {}
+        gen = self.route_gen()
         seq = self.snapshot().get("check_seq", 0)
         plan = self.check_plan()
         by_id = {p["id"]: p for p in plan}
@@ -546,9 +585,10 @@ class Prober:
             answer = fn(p)
             got[p["id"]][how] = answer
             if p is work:
-                self.set(**{legacy[how]: "" if answer == DNS_NO_ADDR else answer})
+                self.set_if(gen, **{legacy[how]: "" if answer == DNS_NO_ADDR else answer})
 
-        jobs = {"exit": self._slow_exit, "v6": self._slow_v6}
+        jobs = {"exit": functools.partial(self._slow_exit, gen),
+                "v6": functools.partial(self._slow_v6, gen)}
         # id туннеля → части, после которых известен его итог.
         waits = {}
         for p in plan:
@@ -562,19 +602,24 @@ class Prober:
                 mine.add(name)
             waits[p["id"]] = mine
         wid = work["id"] if work else ""
-        self.set(corp_dns=work["dns"] if work else "",
-                 **{field: "" for how, field in legacy.items()
-                    if f"{how} {wid}" not in jobs})
+        self.set_if(gen, corp_dns=work["dns"] if work else "",
+                    **{field: "" for how, field in legacy.items()
+                       if f"{how} {wid}" not in jobs})
 
         def finish(name):
             """Итог туннеля известен. Под self.lock; номер — вместе с итогом:
             кто увидел свежий seq, видит и свежий итог."""
+            if self._gen != gen:
+                return
             result, answer = _check_result(by_id[name], got, self.st)
             # Новый словарь, а не правка прежнего: snapshot отдаёт его без замка.
             self.st["checks"] = {**(self.st.get("checks") or {}), name: {
-                "result": result, "answer": answer, "seq": seq}}
+                "result": result, "answer": answer, "seq": seq,
+                "gen": gen, "conf": by_id[name].get("conf", "")}}
 
         with self.lock:
+            if self._gen != gen:
+                return
             # Итоги удалённых туннелей не таскаем; прежний итог остаётся до свежего.
             kept = self.st.get("checks") or {}
             self.st["checks"] = {tid: kept[tid] for tid in by_id if tid in kept}
@@ -610,7 +655,7 @@ class Prober:
             pass                  # WMI не ответил — судим по прошлому кругу
         s = self.snapshot()
         if not (s.get("tun") and s.get("r_low")):
-            self.set(exit_state="unknown", exit_is_peer=False)
+            self.set_if(gen, exit_state="unknown", exit_is_peer=False)
         if self.log:
             self.log(self._slow_summary(time.monotonic() - began, took, plan, got))
 
@@ -646,7 +691,10 @@ class Prober:
         return (f"→ проверка сети за {total:.1f} с: {'; '.join(lines)}; "
                 f"{v6}, {sec('v6')}")
 
-    def _slow_exit(self):
+    def _slow_exit(self, gen=None):
+        began = time.monotonic()
+        if gen is None:
+            gen = self.route_gen()
         peers = self.peer_addrs()
         main_tag = self.main_tag()
         try:
@@ -680,18 +728,26 @@ class Prober:
                 state = "tunnel"          # адрес другой — значит не наш провайдер
             else:
                 state = "unknown"         # реальный адрес неизвестен, сравнить не с чем
-            self.set(exit_ip=ip, exit_country=info.get("country", ""),
-                     exit_city=info.get("city", ""), exit_org=info.get("org", "")[:26],
-                     exit_real=real, exit_state=state,
-                     exit_is_peer=(state == "tunnel"))
+            prev = self.snapshot().get("exit_state")
+            if self.set_if(gen, exit_ip=ip, exit_country=info.get("country", ""),
+                           exit_city=info.get("city", ""),
+                           exit_org=info.get("org", "")[:26],
+                           exit_real=real, exit_state=state,
+                           exit_is_peer=(state == "tunnel")):
+                if self.log and state == "tunnel" and prev != "tunnel":
+                    self.log(f"· фаза «первый HTTPS через выход»: "
+                             f"{time.monotonic() - began:.1f} с · {state}")
         except Exception:
-            self.set(exit_ip="", exit_country="", exit_city="", exit_org="",
-                     exit_is_peer=False, exit_state="unknown")
+            self.set_if(gen, exit_ip="", exit_country="", exit_city="",
+                        exit_org="", exit_is_peer=False, exit_state="unknown")
 
-    def _slow_v6(self):
+    def _slow_v6(self, gen=None):
+        if gen is None:
+            gen = self.route_gen()
         # IPv6: любой ответ здесь означает, что трафик идёт мимо туннеля.
         v6 = self._get("https://api6.ipify.org", 6)
-        self.set(v6_leak=v6 if re.match(r"^[0-9a-fA-F:]+$", v6 or "") else "")
+        self.set_if(gen,
+                    v6_leak=v6 if re.match(r"^[0-9a-fA-F:]+$", v6 or "") else "")
 
     def check_one(self, tid, delay):
         """(итог, ответ) одного живого туннеля — проверка конфига, с которым
@@ -705,14 +761,15 @@ class Prober:
         if p["mode"] == "all":
             ms = delay(buildconfig.via_tag(tid))
             return ("up", f"{ms} мс") if ms else ("error", "сервер не отвечает")
+        gen = self.route_gen()
         before = (self.snapshot().get("checks") or {}).get(tid)
         got = {}
         if p["dns"] or p["host"]:
             got[_list_part(p)] = self._list_ask(p)
-        self._note_check(p, got, before)
+        self._note_check(p, got, before, gen)
         return _test_result(p, got)
 
-    def _note_check(self, p, got, before):
+    def _note_check(self, p, got, before, gen):
         """Итог check_one туннеля «по списку» — в checks. Без этого ↻ на карточке
         говорил «работает», а пилюля держала «не отвечает» прошлой сетевой
         проверки: 13 октября её сделали через секунду после замены конфига, пока
@@ -721,12 +778,16 @@ class Prober:
         сверяет свежесть ↻. Итог сменился за время замера (сетевая проверка
         закончила туннель, VPN опустили) — он свежее, не трогаем."""
         with self.lock:
+            if self._gen != gen:
+                return
             checks = self.st.get("checks") or {}
             if checks.get(p["id"]) is not before:
                 return
             result, answer = _check_result(p, {p["id"]: got}, self.st)
             self.st["checks"] = {**checks, p["id"]: {
-                "result": result, "answer": answer, "seq": (before or {}).get("seq", 0)}}
+                "result": result, "answer": answer,
+                "seq": (before or {}).get("seq", 0),
+                "gen": gen, "conf": p.get("conf", "")}}
 
     def tunnel_answer(self, tid):
         """Ответ DNS туннеля tid через туннель (_slow_dns): адрес или DNS_NO_ADDR —
@@ -826,6 +887,7 @@ class Prober:
                 pass
             s = self.snapshot()
             up = bool(s.get("tun")) and bool(s.get("r_low"))
+            prev_up = was_up
 
             # Сетевая проверка — один раз на подъём туннеля, дальше только
             # check_now. До подъёма мерить выход наружу бессмысленно: получим
@@ -833,12 +895,16 @@ class Prober:
             if up and (not was_up or self._remeasure.is_set()):
                 self._remeasure.clear()
                 want_slow = True
+            elif up and self._net_stale():
+                want_slow = True
             was_up = up
 
             if not up:
                 want_slow = False
                 self.set(exit_ip="", corp_ip="", corp_http="", v6_leak="",
                          exit_is_peer=False, exit_state="unknown")
+                if prev_up:
+                    self.new_route()
                 self._forget_checks()
                 self._dns_reset()
             else:
@@ -863,9 +929,11 @@ class Prober:
         with self._dns_lock:
             self._dns_at = self._dns_ok = 0.0
             self._dns_said = False
+            self._dns_fails = 0
 
     def _tun_dns(self):
         now = time.monotonic()
+        gen = self.route_gen()
         with self._dns_lock:
             if self._dns_busy or now < self._dns_at:
                 return
@@ -873,34 +941,50 @@ class Prober:
             if not self._dns_ok:
                 self._dns_ok = now
             self._dns_busy = True
-        threading.Thread(target=self._dns_ask, daemon=True).start()
+        threading.Thread(target=self._dns_ask, args=(gen,), daemon=True).start()
 
-    def _dns_ask(self):
+    def _dns_ask(self, gen):
         try:
             name = f"x{os.urandom(4).hex()}.example.com"
             answered, _ = winnet.dns_ask_via(name, paths.TUN_DNS,
                                              timeout=TUN_DNS_TIMEOUT)
         except Exception:
             answered = False
-        now = time.monotonic()
-        with self._dns_lock:
-            self._dns_busy = False
-            if answered:
-                self._dns_ok = now
-                said, self._dns_said = self._dns_said, False
-            else:
-                said = not self._dns_said and now - self._dns_ok > TUN_DNS_GAP
-                if said:
-                    self._dns_said = True
+        with self.lock:
+            with self._dns_lock:
+                now = time.monotonic()
+                self._dns_busy = False
+                if self._gen != gen:
+                    return
+                if answered:
+                    fails, self._dns_fails = self._dns_fails, 0
+                    self._dns_ok = now
+                    said, self._dns_said = self._dns_said, False
+                    if fails and self.log:
+                        self.log(f"· фаза «DNS снова отвечает»: "
+                                 f"после отказов {fails}")
+                else:
+                    self._dns_fails += 1
+                    if self._dns_fails == 1 and self.log:
+                        self.log(f"· фаза «первая неудачная проба DNS»: "
+                                 f"поколение {gen}")
+                    silent = now - self._dns_ok
+                    said = not self._dns_said and silent > TUN_DNS_GAP
+                    if said:
+                        self._dns_said = True
         if said and self.log:
             if answered:
                 self.log("→ DNS через туннель снова отвечает")
             else:
-                self.log(f"!! DNS через туннель молчит {now - self._dns_ok:.0f} с")
+                self.log(f"!! DNS через туннель молчит {silent:.0f} с")
 
     def tun_dns_dead(self):
         with self._dns_lock:
             return bool(self._dns_ok) and time.monotonic() - self._dns_ok > TUN_DNS_GAP
+
+    def tun_dns_fails(self):
+        with self._dns_lock:
+            return self._dns_fails
 
     def forget_check(self, tid):
         """Туннель tid удалён — его итог прочь: service._new_tid отдаёт
@@ -933,13 +1017,17 @@ class Prober:
             self._slow_guarded()
             return
         deadline = time.monotonic() + wait
-        while self.slow_busy.is_set() and time.monotonic() < deadline:
+        while (self.slow_busy.is_set() and not self.stop_event.is_set()
+               and time.monotonic() < deadline):
             time.sleep(0.1)
 
     def _slow_guarded(self):
+        gen = self.route_gen()
         try:
             self.probe_slow()
         except Exception:
             pass
         finally:
+            if gen == self.route_gen():
+                self.set_if(gen, check_gen=gen, check_at=time.monotonic())
             self.slow_busy.clear()

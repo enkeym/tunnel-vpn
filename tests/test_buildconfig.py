@@ -1639,3 +1639,28 @@ def test_vless_сборка_пишет_боковой_конфиг_без_conf(t
     side = _load(tmp_path / "tunnel-home.json")
     assert side["outbounds"][0]["type"] == "vless"
     assert side["route"]["final"] == buildconfig.VLESS_TAG
+
+
+def test_фаза_dns_пира_называет_источник_без_адреса(monkeypatch):
+    said = []
+    monkeypatch.setattr(buildconfig, "_known_peer_ips", lambda: {})
+    monkeypatch.setattr(buildconfig, "_remember_peer_ip", lambda *_: None)
+    monkeypatch.setattr(buildconfig, "_ask_dns",
+                        lambda name, wait: ("203.0.113.5", {}))
+
+    assert buildconfig.resolve_peer("vpn.example", "main", said.append) == "203.0.113.5"
+
+    [system] = [line for line in said if "фаза «DNS пира»" in line]
+    assert "системный DNS" in system
+    assert "203.0.113.5" not in system
+
+    said.clear()
+    monkeypatch.setattr(buildconfig, "_ask_dns",
+                        lambda name, wait: (OSError("молчит"),
+                                            {"8.8.8.8": "198.51.100.7"}))
+
+    assert buildconfig.resolve_peer("vpn.example", "main", said.append) == "198.51.100.7"
+
+    [public] = [line for line in said if "фаза «DNS пира»" in line]
+    assert "публичный DNS" in public
+    assert "198.51.100.7" not in public

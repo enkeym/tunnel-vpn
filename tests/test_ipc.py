@@ -230,7 +230,7 @@ def test_сбой_не_от_windows_не_роняет_цикл_канала(win,
 
 
 def _status(check_seq, checking, home, work):
-    return {"check_seq": check_seq, "checking": checking,
+    return {"check_seq": check_seq, "checking": checking, "route_gen": 1,
             "tunnels": [{"id": "work", "seq": work}, {"id": "home", "seq": home}]}
 
 
@@ -277,6 +277,7 @@ def test_check_by_side_отдаёт_основной_не_дожидаясь_р�
 
     assert seen[0] == (need, frozenset({"work"}))
     assert _seq(reply["status"], "work") == need
+    assert reply["fresh"] is True
 
 
 def test_check_by_side_прошлый_итог_не_считает_свежим(monkeypatch):
@@ -361,3 +362,101 @@ def test_check_by_side_удалённый_туннель_не_ждёт(monkeypat
     ipc.check_by_side(on_side, poll=0.01)
 
     assert seen[0] == frozenset()
+
+
+def test_check_by_side_занятая_служба_не_отдаёт_свежий_итог(monkeypatch):
+    st = _status(3, True, home=4, work=4)
+
+    def call(_op, **_payload):
+        return {"ok": True, "status": {**st, "busy": "перезапускаю"}}
+
+    monkeypatch.setattr(ipc, "call", call)
+
+    reply = ipc.check_by_side(lambda _st, _pending: None, poll=0.01)
+
+    assert reply["fresh"] is False
+
+
+def test_check_by_side_прошлый_seq_не_свежий(monkeypatch):
+    st = _status(3, False, home=3, work=3)
+
+    def call(_op, **_payload):
+        return {"ok": True, "status": st}
+
+    monkeypatch.setattr(ipc, "call", call)
+
+    reply = ipc.check_by_side(lambda _st, _pending: None, poll=0.01)
+
+    assert reply["fresh"] is False
+
+
+def test_check_by_side_без_туннелей_не_свежий(monkeypatch):
+    st = {**_status(3, False, home=3, work=3), "tunnels": []}
+
+    def call(_op, **_payload):
+        return {"ok": True, "status": st}
+
+    monkeypatch.setattr(ipc, "call", call)
+
+    reply = ipc.check_by_side(lambda _st, _pending: None, poll=0.01)
+
+    assert reply["fresh"] is False
+
+
+def test_check_by_side_смена_маршрута_не_свежий(monkeypatch):
+    st = _status(3, False, home=3, work=3)
+
+    def call(op, **_payload):
+        if op == "check":
+            return {"ok": True, "status": {**st, "check_seq": 4,
+                                           "route_gen": 2,
+                                           "tunnels": [{"id": "work", "seq": 4},
+                                                       {"id": "home", "seq": 4}]}}
+        return {"ok": True, "status": st}
+
+    monkeypatch.setattr(ipc, "call", call)
+
+    reply = ipc.check_by_side(lambda _st, _pending: None, poll=0.01)
+
+    assert reply["fresh"] is False
+
+
+def test_check_by_side_чужое_поколение_не_гасит_ожидание(monkeypatch):
+    st = _status(3, False, home=3, work=3)
+    changed = {**_status(4, False, home=4, work=4), "route_gen": 2}
+    release = threading.Event()
+    seen = []
+    statuses = []
+
+    def call(op, **_payload):
+        if op == "check":
+            release.wait(2)
+            return {"ok": True, "status": changed}
+        statuses.append(op)
+        if len(statuses) == 1:
+            return {"ok": True, "status": st}
+        release.set()
+        return {"ok": True, "status": changed}
+
+    monkeypatch.setattr(ipc, "call", call)
+
+    reply = ipc.check_by_side(
+        lambda got, pending: seen.append((got.get("route_gen"), pending)),
+        poll=0.01)
+
+    assert seen == []
+    assert len(statuses) >= 2
+    assert reply["fresh"] is False
+
+
+def test_check_by_side_идущая_проверка_не_свежая(monkeypatch):
+    st = _status(4, False, home=4, work=4)
+
+    def call(_op, **_payload):
+        return {"ok": True, "status": {**st, "checking": True}}
+
+    monkeypatch.setattr(ipc, "call", call)
+
+    reply = ipc.check_by_side(lambda _st, _pending: None, poll=0.01)
+
+    assert reply["fresh"] is False

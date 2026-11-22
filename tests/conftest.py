@@ -86,11 +86,11 @@ class FakeWFP:
 class SyncThread:
     """Поток, который выполняет цель сразу: тесту нечего ждать."""
 
-    def __init__(self, target, args=(), daemon=None):
-        self.target, self.args = target, args
+    def __init__(self, target, args=(), kwargs=None, daemon=None):
+        self.target, self.args, self.kwargs = target, args, kwargs or {}
 
     def start(self):
-        self.target(*self.args)
+        self.target(*self.args, **self.kwargs)
 
 
 class NoTimer:

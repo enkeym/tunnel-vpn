@@ -37,3 +37,18 @@ def test_плитка_при_поднятии_желает_и_vpn_включён
 
 def test_отказ_команды_откатывает_желаемое():
     assert "WANT.clear()" in _src("core.js")
+
+
+def test_проверка_не_заменяет_прошлый_ответ_конфига():
+    cards = _src("cards.js")
+    assert ("if (testing(t, name)) return ['busy', test ? "
+            "testState(test, '')[1] : 'проверяю…'];" in cards)
+    assert ("if (m.checking(t) || m.link === 'checking') "
+            "return ['busy', ping || 'проверяю…'];" in cards)
+
+
+def test_ручной_итог_проверки_привязан_к_своему_вызову():
+    model = _src("model.js")
+    assert "CHECK_BY_HAND = call;" in model
+    assert "CHECK_BY_HAND === call" in model
+    assert "CHECK_HAND_PENDING = true;" in _src("topbar.js")

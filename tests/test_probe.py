@@ -85,6 +85,22 @@ def test_kill_switch_без_адреса_выхода_закрыт_а_не_не�
     assert p.snapshot()["exit_state"] == state
 
 
+def test_первый_https_через_выход_пишет_фазу_с_длительностью(monkeypatch):
+    monkeypatch.setattr(probe.Prober, "peer_addrs",
+                        lambda self: {"wg-home": "185.12.4.9"})
+    monkeypatch.setattr(probe.Prober, "_exit_info",
+                        lambda self: {"ip": "185.12.4.9"})
+    monkeypatch.setattr(probe.Prober, "main_tag", staticmethod(lambda: "wg-home"))
+    said = []
+    p = probe.Prober(log=said.append)
+
+    p._slow_exit()
+
+    [line] = [text for text in said
+              if "фаза «первый HTTPS через выход»" in text]
+    assert " с · tunnel" in line
+
+
 def test_основной_за_kill_switch_не_работает():
     p = {"running": True, "mode": "all", "id": "home"}
     st = {"exit_ip": "185.12.4.9", "out": "block", "exit_state": "tunnel"}
@@ -228,15 +244,15 @@ def _plan(monkeypatch, *items):
 
 
 def _p_work(**over):
-    p = {"id": "work", "name": "Работа", "mode": "list", "host": "git.corp.example",
-         "dns": "10.0.0.1", "running": True}
+    p = {"id": "work", "name": "Работа", "mode": "list", "conf": "",
+         "host": "git.corp.example", "dns": "10.0.0.1", "running": True}
     p.update(over)
     return p
 
 
 def _p_home(**over):
-    p = {"id": "home", "name": "Личный", "mode": "all", "host": "", "dns": "",
-         "running": True}
+    p = {"id": "home", "name": "Личный", "mode": "all", "conf": "",
+         "host": "", "dns": "", "running": True}
     p.update(over)
     return p
 
@@ -250,7 +266,7 @@ def test_части_probe_slow_идут_параллельно_а_не_скла�
 
     def part(name):
         def run(self, *p):
-            started.append((name, *(x["id"] for x in p)))
+            started.append((name, *(x["id"] for x in p if isinstance(x, dict))))
             time.sleep(0.3)
         return run
 
@@ -270,7 +286,7 @@ def test_части_probe_slow_идут_параллельно_а_не_скла�
 def test_основной_проверен_раньше_молчащего_рабочего(monkeypatch):
     work_go = threading.Event()
     for name in ("_slow_exit", "_slow_v6"):
-        monkeypatch.setattr(probe.Prober, name, lambda self: None)
+        monkeypatch.setattr(probe.Prober, name, lambda self, *a: None)
     monkeypatch.setattr(probe.Prober, "_slow_dns",
                         lambda self, p: work_go.wait(2) and "")
     monkeypatch.setattr(probe.Prober, "probe_fast", lambda self: None)
@@ -287,7 +303,8 @@ def test_основной_проверен_раньше_молчащего_ра�
     work_go.set()
     check.join(2)
     s = p.snapshot()
-    assert s["checks"]["work"] == {"result": "error", "answer": "", "seq": 1}
+    assert s["checks"]["work"] == {"result": "error", "answer": "", "seq": 1,
+                                   "gen": 0, "conf": ""}
 
 
 def _exit_services(monkeypatch, answers):
@@ -344,7 +361,7 @@ def _slow_parts(monkeypatch, up=True, dns=None, http=None, **st):
     asked = []
 
     def part(*keys):
-        def run(self):
+        def run(self, *a):
             self.set(**{k: st[k] for k in keys if k in st})
         return run
 
@@ -495,6 +512,18 @@ def test_туннель_опустился_итоги_стираются_ном�
     try:
         assert _wait(lambda: p.snapshot()["checks"]["work"]["result"] == "")
         assert p.snapshot()["checks"]["work"] == {"result": "", "answer": "", "seq": 3}
+    finally:
+        _stop_loop(p, loop)
+
+
+def test_опускание_туннеля_меняет_поколение_маршрута(monkeypatch):
+    net = {"up": True}
+    p, loop = _run_loop(monkeypatch, net, lambda self: None)
+    try:
+        assert _wait(lambda: p.snapshot().get("r_low"))
+        gen = p.route_gen()
+        net["up"] = False
+        assert _wait(lambda: p.route_gen() != gen)
     finally:
         _stop_loop(p, loop)
 
@@ -762,7 +791,7 @@ def test_dns_через_туннель_молчит_после_провалов(
         monotonic=lambda: 100.0 + probe.TUN_DNS_GAP + 1))
     p._dns_ok = 100.0
 
-    p._dns_ask()
+    p._dns_ask(p.route_gen())
 
     assert p.tun_dns_dead()
 
@@ -775,10 +804,122 @@ def test_ответ_dns_снимает_молчание(monkeypatch):
     p._dns_ok = 100.0
     p._dns_said = True
 
-    p._dns_ask()
+    p._dns_ask(p.route_gen())
 
     assert not p.tun_dns_dead()
     assert not p._dns_said
+
+
+def test_отказы_dns_считаются_подряд_и_сбрасываются(monkeypatch):
+    p = probe.Prober()
+    monkeypatch.setattr(probe.winnet, "dns_ask_via", lambda *a, **k: (False, ""))
+    p._dns_ask(p.route_gen())
+    p._dns_ask(p.route_gen())
+    assert p.tun_dns_fails() == 2
+
+    monkeypatch.setattr(probe.winnet, "dns_ask_via", lambda *a, **k: (True, ""))
+    p._dns_ask(p.route_gen())
+    assert p.tun_dns_fails() == 0
+
+    monkeypatch.setattr(probe.winnet, "dns_ask_via", lambda *a, **k: (False, ""))
+    p._dns_ask(p.route_gen())
+    assert p.tun_dns_fails() == 1
+    p.set(out="via-t1")
+    assert p.tun_dns_fails() == 0
+
+
+def test_поздний_ответ_dns_старого_поколения_не_считается(monkeypatch):
+    p = probe.Prober()
+    p._dns_busy = True
+
+    def ask(*a, **k):
+        p.new_route()
+        return False, ""
+
+    monkeypatch.setattr(probe.winnet, "dns_ask_via", ask)
+    monkeypatch.setattr(probe, "time", types.SimpleNamespace(monotonic=lambda: 100.0))
+
+    p._dns_ask(p.route_gen())
+
+    assert not p._dns_busy
+    assert p.tun_dns_fails() == 0
+    assert not p.tun_dns_dead()
+
+
+def test_результат_старого_поколения_не_пишется():
+    p = probe.Prober()
+    gen = p.route_gen()
+    p.new_route()
+
+    assert not p.set_if(gen, exit_state="direct")
+    assert "exit_state" not in p.snapshot()
+
+
+def test_смена_выхода_меняет_поколение():
+    p = probe.Prober()
+    p.set(out="via-t1")
+    gen = p.route_gen()
+    p.set(out="via-t1")
+    assert p.route_gen() == gen
+    p.set(out="direct")
+    assert p.route_gen() != gen
+
+
+def test_протухший_результат_просит_свежую_проверку():
+    p = probe.Prober()
+    gen = p.route_gen()
+    p.set(check_gen=gen, check_at=time.monotonic())
+    assert not p._net_stale()
+    p.set(check_at=time.monotonic() - probe.NET_TTL - 1)
+    assert p._net_stale()
+    p.set(check_at=time.monotonic())
+    p.new_route()
+    assert p._net_stale()
+
+
+def test_сетевой_результат_обновляется_до_истечения_срока():
+    p = probe.Prober()
+    p.set(check_gen=p.route_gen(),
+          check_at=time.monotonic() - probe.NET_REFRESH_AT - 1)
+
+    assert p.net_fresh()
+    assert p._net_stale()
+
+
+def test_границы_обновления_и_срока_годности(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(probe.time, "monotonic", lambda: clock[0])
+    p = probe.Prober()
+    p.set(check_gen=p.route_gen(), check_at=clock[0])
+
+    clock[0] += probe.NET_REFRESH_AT
+    assert p.net_fresh() and p._net_stale()
+
+    clock[0] = 1000.0 + probe.NET_TTL
+    assert p.net_fresh()
+
+    clock[0] += 0.001
+    assert not p.net_fresh() and p._net_stale()
+
+
+def test_ожидание_проверки_выходит_по_остановке():
+    p = probe.Prober()
+    p.slow_busy.set()
+    p.stop()
+    began = time.monotonic()
+    p.check_now(wait=5)
+    assert time.monotonic() - began < 1
+
+
+def test_ответ_выхода_старого_поколения_не_пишется(monkeypatch):
+    p = probe.Prober()
+    gen = p.route_gen()
+    monkeypatch.setattr(p, "_exit_info", lambda: {})
+    p.new_route()
+
+    p._slow_exit(gen)
+
+    assert "exit_state" not in p.snapshot()
 
 
 def test_возврат_выхода_на_туннель_заново_отсчитывает_молчание_dns():
