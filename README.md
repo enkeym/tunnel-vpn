@@ -795,6 +795,16 @@ powershell -ExecutionPolicy Bypass -File installer\build.ps1
 * `installer\Output\SHA256SUMS.txt` — контрольные суммы установщика и
   портативной версии (`sha256sum -c SHA256SUMS.txt` или `Get-FileHash`).
 
+Для повседневных проверок есть быстрая локальная сборка: она работает на диске
+`%LOCALAPPDATA%\TunnelVPN\build`, переиспользует окружение и каталог сборки,
+установщик пишет без сжатия и не собирает портативную версию (её делает CI):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File installer\dev\build-local.ps1
+```
+
+`-Full` добавляет портативную версию, `-TestHooks` — тестовый установщик.
+
 Подпись кода — только при заданном `TVPN_SIGN_SHA1`: отпечаток сертификата
 в хранилище Windows (токен или импортированный .pfx), нужен `signtool.exe` из
 Windows SDK. Подписываются оба exe, портативная версия, установщик и

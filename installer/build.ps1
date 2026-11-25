@@ -15,7 +15,7 @@
 # ломает в нём первую попытку шага (TestHook в tunnelvpn.iss). Не в CI, не с
 # подписью и без SHA256SUMS.txt: в релиз такой не уходит.
 
-param([switch]$TestHooks)
+param([switch]$TestHooks, [switch]$Fast)
 
 $ErrorActionPreference = 'Stop'
 
@@ -80,6 +80,7 @@ if (Test-Path $Cfg) {
 }
 # Окружение на другой версии пересоздаём: иначе новый Python до сборки
 # не дошёл бы никогда.
+$VenvCreated = $false
 if (-not $Have.StartsWith("$PyVersion.")) {
     # Лаунчер py, а если его нет или он этой версии не знает (на раннере CI
     # Python ставит setup-python) — python из PATH. Берём только нужную версию.
@@ -106,25 +107,56 @@ if (-not $Have.StartsWith("$PyVersion.")) {
     }
     & $SysPy -m venv $Venv
     if ($LASTEXITCODE -ne 0) { throw "venv на $SysPy вернул $LASTEXITCODE" }
+    $VenvCreated = $true
 }
 $Py = Join-Path $Venv 'Scripts\python.exe'
-& $Py -m pip install -q --upgrade pip
-& $Py -m pip install -q -r (Join-Path $Root 'requirements.txt')
-if ($LASTEXITCODE -ne 0) { throw "pip install вернул $LASTEXITCODE" }
+if ($VenvCreated) {
+    & $Py -m pip install -q --disable-pip-version-check --upgrade pip
+}
+$ReqFile = Join-Path $Root 'requirements.txt'
+$ReqHash = (Get-FileHash $ReqFile -Algorithm SHA256).Hash
+$ReqStamp = Join-Path $Venv 'requirements.sha256'
+$HaveReq = if (Test-Path $ReqStamp) { (Get-Content $ReqStamp -Raw).Trim() } else { '' }
+if ($HaveReq -eq $ReqHash) {
+    Write-Host '-> зависимости не изменились, pip пропущен'
+} else {
+    & $Py -m pip install -q --disable-pip-version-check -r $ReqFile
+    if ($LASTEXITCODE -ne 0) { throw "pip install вернул $LASTEXITCODE" }
+    Set-Content $ReqStamp $ReqHash -Encoding Ascii
+}
 # PyInstaller нужен только сборке, поэтому он не в requirements.txt.
-& $Py -m pip install -q pyinstaller==6.22.3
-if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller вернул $LASTEXITCODE" }
+$PyInstallerVersion = '6.22.3'
+$HavePyInstaller = ''
+try { $HavePyInstaller = (& $Py -c 'import PyInstaller; print(PyInstaller.__version__)' 2>$null) } catch { }
+if ("$HavePyInstaller".Trim() -ne $PyInstallerVersion) {
+    & $Py -m pip install -q --disable-pip-version-check "pyinstaller==$PyInstallerVersion"
+    if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller вернул $LASTEXITCODE" }
+}
 
 # --- Значок и картинки мастера: всё из lib\tunnelvpn\icon.py в installer\gen.
 $Gen = Join-Path $Inst 'gen'
-& $Py (Join-Path $Inst 'make_icon.py') $Gen
-if ($LASTEXITCODE -ne 0) { throw "make_icon.py вернул $LASTEXITCODE" }
+Add-Type -AssemblyName System.Drawing
 # Списки и размеры — те же, что WIZARD и WIZARD_SMALL в make_icon.py и
 # WizardImageFile/WizardSmallImageFile в tunnelvpn.iss: пропал масштаб —
 # Inno растянет соседний, и при 150–250 % картинка поплывёт.
-Add-Type -AssemblyName System.Drawing
 $WizardFiles = @('202x386', '269x515', '336x643', '403x772', '430x824', '534x1022' | ForEach-Object { "wizard-$_.png" }) +
                @(58, 77, 97, 116, 124, 159 | ForEach-Object { "wizard-small-$_.png" })
+$GenSources = @((Join-Path $Inst 'make_icon.py'), (Join-Path $Root 'lib\tunnelvpn\icon.py'))
+$GenFresh = $true
+foreach ($name in @('TunnelVPN.ico') + $WizardFiles) {
+    $file = Join-Path $Gen $name
+    if (-not (Test-Path $file)) { $GenFresh = $false; break }
+    $stamp = (Get-Item $file).LastWriteTime
+    foreach ($src in $GenSources) {
+        if ($stamp -lt (Get-Item $src).LastWriteTime) { $GenFresh = $false }
+    }
+}
+if ($Fast -and $GenFresh) {
+    Write-Host '-> картинки не изменились, make_icon.py пропущен'
+} else {
+    & $Py (Join-Path $Inst 'make_icon.py') $Gen
+    if ($LASTEXITCODE -ne 0) { throw "make_icon.py вернул $LASTEXITCODE" }
+}
 $WizardBytes = 0
 foreach ($name in $WizardFiles) {
     $file = Join-Path $Gen $name
@@ -147,14 +179,67 @@ foreach ($s in 16, 20, 24, 32, 40, 48, 64, 128, 256) {
     if ($IcoSizes -notcontains $s) { throw "в TunnelVPN.ico нет $s×$s (есть: $($IcoSizes -join ', '))" }
 }
 
+function Get-ArgLine([string[]]$Items) {
+    ($Items | ForEach-Object {
+        if ("$_" -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { "$_" }
+    }) -join ' '
+}
+
 Push-Location $Root
 try {
-    Write-Host '-> собираю exe (установочные + портативный)...'
-    & $Py -m PyInstaller --noconfirm --clean `
-        --distpath (Join-Path $Root 'dist') `
-        --workpath (Join-Path $Root 'build') `
-        (Join-Path $Inst 'tunnelvpn.spec')
-    if ($LASTEXITCODE -ne 0) { throw "PyInstaller вернул $LASTEXITCODE" }
+    $DistPath = Join-Path $Root 'dist'
+    $SpecInstalled = Join-Path $Inst 'tunnelvpn.spec'
+    $SpecPortable = Join-Path $Inst 'portable.spec'
+    if ($Fast) {
+        Write-Host '-> собираю exe (установочные)...'
+        & $Py -m PyInstaller --noconfirm --distpath $DistPath --workpath (Join-Path $Root 'build') $SpecInstalled
+        if ($LASTEXITCODE -ne 0) { throw "PyInstaller вернул $LASTEXITCODE" }
+    } else {
+        Write-Host '-> собираю exe (установочные + портативный, параллельно)...'
+        $WorkInstalled = Join-Path $Root 'build\installed'
+        $WorkPortable = Join-Path $Root 'build\portable'
+        foreach ($wp in $WorkInstalled, $WorkPortable) {
+            if (Test-Path $wp) { Remove-Item $wp -Recurse -Force }
+        }
+        $LogDir = Join-Path $Root 'build'
+        New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+        $InstalledOut = Join-Path $LogDir 'pyinstaller-installed.log'
+        $InstalledErr = Join-Path $LogDir 'pyinstaller-installed.err'
+        $PortableOut = Join-Path $LogDir 'pyinstaller-portable.log'
+        $PortableErr = Join-Path $LogDir 'pyinstaller-portable.err'
+        $Common = @('-m', 'PyInstaller', '--noconfirm', '--distpath', $DistPath)
+        $procs = foreach ($spec in @(
+                @((Get-ArgLine ($Common + @('--workpath', $WorkInstalled, $SpecInstalled))), $InstalledOut, $InstalledErr),
+                @((Get-ArgLine ($Common + @('--workpath', $WorkPortable, $SpecPortable))), $PortableOut, $PortableErr))) {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $Py
+            $psi.Arguments = $spec[0]
+            $psi.WorkingDirectory = $Root
+            $psi.UseShellExecute = $false
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $proc = New-Object System.Diagnostics.Process
+            $proc.StartInfo = $psi
+            [void]$proc.Start()
+            [pscustomobject]@{
+                Process = $proc
+                Out = $proc.StandardOutput.ReadToEndAsync()
+                Err = $proc.StandardError.ReadToEndAsync()
+                OutFile = $spec[1]
+                ErrFile = $spec[2]
+            }
+        }
+        foreach ($p in $procs) { $p.Process.WaitForExit() }
+        foreach ($p in $procs) {
+            [IO.File]::WriteAllText($p.OutFile, $p.Out.Result)
+            [IO.File]::WriteAllText($p.ErrFile, $p.Err.Result)
+        }
+        $Failed = $procs | Where-Object { $_.Process.ExitCode -ne 0 }
+        if ($Failed) {
+            $f = $Failed[0]
+            throw "PyInstaller вернул $($f.Process.ExitCode), журнал: $($f.ErrFile)"
+        }
+    }
 
     # Бинарники кладём рядом с exe: paths.BIN у обычной сборки — это папка
     # приложения, и sing-box ищет wintun.dll в своём каталоге.
@@ -167,8 +252,9 @@ try {
     # До дымовых проверок: они гоняют уже подписанные exe.
     if ($SignTool) {
         Write-Host '-> подписываю exe...'
-        Sign-Files (Join-Path $Dist 'tunnelvpn.exe'), (Join-Path $Dist 'TunnelVPN-Tray.exe'),
-                   (Join-Path $Root 'dist\TunnelVPN-Portable.exe')
+        $SignTargets = @((Join-Path $Dist 'tunnelvpn.exe'), (Join-Path $Dist 'TunnelVPN-Tray.exe'))
+        if (-not $Fast) { $SignTargets += (Join-Path $Root 'dist\TunnelVPN-Portable.exe') }
+        Sign-Files @SignTargets
     }
 
     # Дымовая проверка: установщик зовёт tunnelvpn.exe для службы, и если под
@@ -196,8 +282,9 @@ try {
     }
     # Ресурс версии собирает tunnelvpn.spec. Пустое описание — и диспетчер
     # задач снова покажет вместо «TunnelVPN» имя файла.
-    foreach ($exe in (Join-Path $Dist 'tunnelvpn.exe'), (Join-Path $Dist 'TunnelVPN-Tray.exe'),
-                     (Join-Path $Root 'dist\TunnelVPN-Portable.exe')) {
+    $CheckedExe = @((Join-Path $Dist 'tunnelvpn.exe'), (Join-Path $Dist 'TunnelVPN-Tray.exe'))
+    if (-not $Fast) { $CheckedExe += (Join-Path $Root 'dist\TunnelVPN-Portable.exe') }
+    foreach ($exe in $CheckedExe) {
         $desc = (Get-Item $exe).VersionInfo.FileDescription
         if (-not $desc) { throw "у $exe нет FileDescription — ресурс версии не собрался" }
     }
@@ -206,7 +293,7 @@ try {
 }
 
 $Portable = Join-Path $Root 'dist\TunnelVPN-Portable.exe'
-if (Test-Path $Portable) {
+if ((Test-Path $Portable) -and -not $Fast) {
     $mb = [math]::Round((Get-Item $Portable).Length / 1MB)
     Write-Host "-> портативный: dist\TunnelVPN-Portable.exe ($mb МБ)"
 }
@@ -226,6 +313,7 @@ if (-not $Iscc) {
 }
 
 $IsccArgs = @("/DMyVersion=$Version")
+if ($Fast) { $IsccArgs += '/DBUILDFAST' }
 if ($SignTool) {
     # Inno подписывает сам setup и деинсталлятор внутри него (SignTool=tvpn в
     # tunnelvpn.iss). $q — кавычка, $f — подписываемый файл.
@@ -266,7 +354,9 @@ if ($TestHooks) {
 
 # --- Контрольные суммы к релизу, в формате sha256sum: проверить скачанное —
 # «sha256sum -c SHA256SUMS.txt» или Get-FileHash.
-$Sums = foreach ($f in $Setup, $Portable) {
+$SumFiles = @($Setup)
+if (-not $Fast) { $SumFiles += $Portable }
+$Sums = foreach ($f in $SumFiles) {
     if (Test-Path $f) {
         '{0}  {1}' -f (Get-FileHash $f -Algorithm SHA256).Hash.ToLower(), (Split-Path $f -Leaf)
     }

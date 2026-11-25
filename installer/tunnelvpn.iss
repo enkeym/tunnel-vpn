@@ -99,7 +99,11 @@ OutputBaseFilename={#MyName}-{#MyVersion}-testhooks-setup
 OutputBaseFilename={#MyName}-{#MyVersion}-setup
 #endif
 SetupIconFile=gen\TunnelVPN.ico
+#ifdef BUILDFAST
+Compression=none
+#else
 Compression=lzma2/max
+#endif
 SolidCompression=yes
 ; Только тёмный, как окно приложения, и с тёмным заголовком окна; без
 ; линий-разделителей. Цвет фона — --bg окна, для мастера и деинсталлятора.

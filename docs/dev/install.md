@@ -32,7 +32,9 @@ Exit codes change → update step 3, the README table and `lib/tunnelvpn/update.
 
 A `v*` tag makes CI publish the release, and every installed copy offers it as an update: the tag goes last.
 
-1. Build locally in the background: `installer/build.ps1` ([run.md](run.md)); `VERSION` still holds the old number.
+1. Build locally in the background: `installer/dev/build-local.ps1` ([run.md](run.md)) — same code, built on
+   `C:` with the fast local options; the portable exe comes from CI. `installer/build.ps1` for an exact
+   release-shaped build. `VERSION` still holds the old number.
 2. Install the local `installer\Output\TunnelVPN-*-setup.exe` by the steps above.
 3. Check every change of the release live on that build; something wrong → fix, back to step 1.
 4. All good → commit `VERSION` as «Релиз X.Y.Z: …» (the body is what «Что нового» shows), tag `vX.Y.Z` on it,
