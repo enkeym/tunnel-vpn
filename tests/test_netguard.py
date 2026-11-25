@@ -1,5 +1,6 @@
 import ipaddress
 import socket
+import ssl
 
 import pytest
 
@@ -161,6 +162,94 @@ def test_ошибка_dns(monkeypatch):
 def _info(url):
     return {"url": url, "host": "sub.example.test", "port": 443,
             "path": "/", "ips": [PUBLIC]}
+
+
+def _cert_error(message):
+    exc = ssl.SSLCertVerificationError(1, "certificate verify failed")
+    exc.verify_message = message
+    return exc
+
+
+def test_неполная_цепочка_докачивается(monkeypatch):
+    contexts, attempts = [], []
+
+    def context(cadata=""):
+        contexts.append(cadata)
+        return cadata
+
+    def exchange(info, ctx, timeout, max_bytes):
+        attempts.append(ctx)
+        if len(attempts) == 1:
+            raise _cert_error("unable to get local issuer certificate")
+        return 200, None, b"body"
+
+    monkeypatch.setattr(netguard, "_tls_context", context)
+    monkeypatch.setattr(netguard, "_exchange", exchange)
+    monkeypatch.setattr(netguard, "_completed_chain",
+                        lambda info, timeout: "ЦЕПОЧКА")
+
+    result = netguard._request(_info("https://sub.example.test/"), 10, 1024)
+
+    assert result == (200, None, b"body")
+    assert contexts == ["", "ЦЕПОЧКА"]
+
+
+def test_без_докачки_виден_сертификат(monkeypatch):
+    def exchange(info, ctx, timeout, max_bytes):
+        raise _cert_error("unable to get local issuer certificate")
+
+    monkeypatch.setattr(netguard, "_exchange", exchange)
+    monkeypatch.setattr(netguard, "_completed_chain", lambda info, timeout: "")
+
+    with pytest.raises(ValueError, match="промежуточный сертификат"):
+        netguard._request(_info("https://sub.example.test/"), 10, 1024)
+
+
+def test_повторный_отказ_называет_причину(monkeypatch):
+    def exchange(info, ctx, timeout, max_bytes):
+        raise _cert_error("certificate has expired")
+
+    monkeypatch.setattr(netguard, "_tls_context", lambda cadata="": cadata)
+    monkeypatch.setattr(netguard, "_exchange", exchange)
+    monkeypatch.setattr(netguard, "_completed_chain", lambda info, timeout: "ЦЕПОЧКА")
+
+    with pytest.raises(ValueError, match="истёк"):
+        netguard._request(_info("https://sub.example.test/"), 10, 1024)
+
+
+def test_отказ_windows_виден_целиком(monkeypatch):
+    def exchange(info, ctx, timeout, max_bytes):
+        raise _cert_error("unable to get local issuer certificate")
+
+    def chain(info, timeout):
+        raise ValueError("сертификат источника не подтверждён Windows (0x800B0109)")
+
+    monkeypatch.setattr(netguard, "_exchange", exchange)
+    monkeypatch.setattr(netguard, "_completed_chain", chain)
+
+    with pytest.raises(ValueError, match="Windows"):
+        netguard._request(_info("https://sub.example.test/"), 10, 1024)
+
+
+def test_сеть_недоступна(monkeypatch):
+    def exchange(info, ctx, timeout, max_bytes):
+        raise OSError("нет маршрута")
+
+    monkeypatch.setattr(netguard, "_exchange", exchange)
+
+    with pytest.raises(ValueError, match="недоступен по HTTPS"):
+        netguard._request(_info("https://sub.example.test/"), 10, 1024)
+
+
+@pytest.mark.parametrize("message, expected", [
+    ("unable to get local issuer certificate", "промежуточный сертификат"),
+    ("certificate has expired", "истёк"),
+    ("Hostname mismatch", "другому имени"),
+    ("self-signed certificate", "самоподписанный"),
+    ("нечто иное", "не подтверждён"),
+])
+def test_причина_сертификата(message, expected):
+    assert expected in netguard._cert_reason(_cert_error(message))
 
 
 def _patch_http(monkeypatch, responses):

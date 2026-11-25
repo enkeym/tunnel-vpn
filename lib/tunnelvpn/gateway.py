@@ -4,6 +4,7 @@ import json
 import os
 import platform
 import secrets
+import socket
 import time
 import uuid
 
@@ -192,10 +193,16 @@ def _post(body, timeout):
                 raise ValueError(f"ответ шлюза больше {MAX_BODY} байт")
             chunks.append(chunk)
         return response.status, b"".join(chunks), headers
+    except socket.gaierror:
+        raise ValueError(
+            f"шлюз Amnezia не разрешается в адрес: {HOST}") from None
     except TimeoutError:
-        raise
-    except (OSError, http.client.HTTPException):
-        raise ValueError("шлюз Amnezia недоступен") from None
+        raise ValueError(f"шлюз Amnezia не ответил за {timeout:g} с: "
+                         f"{HOST}:{PORT}") from None
+    except (OSError, http.client.HTTPException) as exc:
+        code = getattr(exc, "winerror", None) or getattr(exc, "errno", None)
+        raise ValueError(f"шлюз Amnezia недоступен: {HOST}:{PORT}"
+                         + (f" (код {code})" if code else "")) from None
     finally:
         conn.close()
 

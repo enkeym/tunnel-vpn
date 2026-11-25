@@ -1,5 +1,6 @@
 import base64
 import json
+import socket
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
@@ -275,3 +276,42 @@ def test_id_установки_постоянен(monkeypatch, tmp_path):
     assert first
     assert gateway.installation_uuid() == first
     assert (tmp_path / "gateway.json").exists()
+
+
+class _BrokenConnection:
+    def __init__(self, error):
+        self.error = error
+
+    def request(self, *args, **kwargs):
+        raise self.error
+
+    def close(self):
+        pass
+
+
+def _broken(monkeypatch, error):
+    monkeypatch.setattr(gateway.http.client, "HTTPConnection",
+                        lambda *args, **kwargs: _BrokenConnection(error))
+
+
+def test_шлюз_не_разрешается(monkeypatch):
+    _broken(monkeypatch, socket.gaierror(-2, "нет адреса"))
+
+    with pytest.raises(ValueError, match="не разрешается"):
+        gateway._post(b"{}", 5)
+
+
+def test_шлюз_не_ответил(monkeypatch):
+    _broken(monkeypatch, TimeoutError("timed out"))
+
+    with pytest.raises(ValueError, match="не ответил за 5 с") as exc:
+        gateway._post(b"{}", 5)
+
+    assert "gw.amnezia.org:80" in str(exc.value)
+
+
+def test_шлюз_недоступен_с_кодом(monkeypatch):
+    _broken(monkeypatch, OSError(10061, "отказано"))
+
+    with pytest.raises(ValueError, match="код 10061"):
+        gateway._post(b"{}", 5)

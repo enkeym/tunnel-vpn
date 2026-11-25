@@ -4,6 +4,8 @@ import socket
 import ssl
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
+from . import winchain
+
 MAX_REDIRECTS = 3
 MAX_BODY = 1 << 20
 MAX_URL = 4096
@@ -135,12 +137,51 @@ def check_url(url, allow_private=False):
     return info
 
 
-def _tls_context():
+def _tls_context(cadata=""):
     context = ssl.create_default_context()
     context.check_hostname = True
     context.verify_mode = ssl.CERT_REQUIRED
     context.minimum_version = ssl.TLSVersion.TLSv1_2
+    if cadata:
+        context.load_verify_locations(cadata=cadata)
     return context
+
+
+def _cert_reason(exc):
+    message = getattr(exc, "verify_message", "") or ""
+    if "local issuer" in message or "first certificate" in message:
+        return "источник не прислал промежуточный сертификат"
+    if "expired" in message:
+        return "сертификат источника истёк"
+    if "hostname" in message.casefold() or "match" in message:
+        return "сертификат источника выдан другому имени"
+    if "self-signed" in message or "self signed" in message:
+        return "источник предъявил самоподписанный сертификат"
+    return "сертификат источника не подтверждён"
+
+
+def _peer_certificate(info, timeout):
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    conn = _PinnedHTTPSConnection(info["host"], info["port"], info["ips"],
+                                  context, timeout)
+    try:
+        conn.connect()
+        return conn.sock.getpeercert(True)
+    finally:
+        conn.close()
+
+
+def _completed_chain(info, timeout):
+    if not winchain.available():
+        return ""
+    try:
+        der = _peer_certificate(info, timeout)
+    except (OSError, ssl.SSLError):
+        return ""
+    return "".join(winchain.pems(der))
 
 
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
@@ -150,18 +191,23 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         self._context = context
 
     def connect(self):
+        last = None
         for ip in self._ips:
             try:
                 sock = socket.create_connection((ip, self.port), self.timeout)
-            except OSError:
+            except OSError as exc:
+                last = exc
                 continue
             try:
                 self.sock = self._context.wrap_socket(
                     sock, server_hostname=self.host)
-            except (OSError, ssl.SSLError):
+            except (OSError, ssl.SSLError) as exc:
                 sock.close()
-                raise
+                last = exc
+                continue
             return
+        if last is not None:
+            raise last
         raise OSError("нет доступных адресов источника")
 
 
@@ -179,9 +225,9 @@ def _read_body(stream, max_bytes):
     return b"".join(chunks)
 
 
-def _request(info, timeout, max_bytes):
+def _exchange(info, context, timeout, max_bytes):
     conn = _PinnedHTTPSConnection(info["host"], info["port"], info["ips"],
-                                  _tls_context(), timeout)
+                                  context, timeout)
     try:
         conn.request("GET", info["path"], headers={
             "User-Agent": "TunnelVPN",
@@ -205,10 +251,25 @@ def _request(info, timeout, max_bytes):
             if size > max_bytes:
                 raise ValueError(f"ответ больше {max_bytes} байт")
         return status, location, _read_body(response, max_bytes)
-    except (OSError, ssl.SSLError, http.client.HTTPException):
-        raise ValueError("источник недоступен по HTTPS") from None
     finally:
         conn.close()
+
+
+def _request(info, timeout, max_bytes):
+    try:
+        return _exchange(info, _tls_context(), timeout, max_bytes)
+    except ssl.SSLCertVerificationError as exc:
+        cadata = _completed_chain(info, timeout)
+        if not cadata:
+            raise ValueError(_cert_reason(exc)) from None
+        try:
+            return _exchange(info, _tls_context(cadata), timeout, max_bytes)
+        except ssl.SSLCertVerificationError as again:
+            raise ValueError(_cert_reason(again)) from None
+        except (OSError, ssl.SSLError, http.client.HTTPException):
+            raise ValueError("источник недоступен по HTTPS") from None
+    except (OSError, ssl.SSLError, http.client.HTTPException):
+        raise ValueError("источник недоступен по HTTPS") from None
 
 
 def open_https(url, allow_private=False, timeout=DEFAULT_TIMEOUT,
