@@ -9,18 +9,14 @@ say so in one line and ask, do not build an environment. Running commands from W
 `ip netns identify $$` → `awg-term`: the shell and every MCP server Claude starts live in a network namespace whose
 traffic goes through `amnezia`, not TunnelVPN.
 
-- `127.0.0.1` there is the namespace's own: Windows ports (CDP `9222`, windows-mcp `8790`) answer ECONNREFUSED to
-  `curl` from the shell. Check a Windows port from Windows:
-  `powershell.exe -NoProfile -Command 'Get-NetTCPConnection -State Listen -LocalPort 9222'`.
-- `powershell.exe`, `python.exe` and `wsl.exe` run outside it and reach Windows loopback. So both MCP servers run on
-  Windows through `powershell.exe` (stdio crosses interop): `playwright-cdp` is Windows `npx @playwright/mcp`,
-  `windows-mcp` is the `mcp-remote` bridge to `127.0.0.1:8790`. Registration — in their sections below. `.wslconfig`
+- `127.0.0.1` there is the namespace's own: Windows ports answer ECONNREFUSED to `curl` from the shell; check one
+  from Windows: `powershell.exe -NoProfile -Command 'Get-NetTCPConnection -State Listen -LocalPort <port>'`.
+- `powershell.exe`, `python.exe` and `wsl.exe` run outside it and reach Windows loopback. `.wslconfig`
   does not help: `mirrored` shares loopback with the root namespace only.
-- `Set-Location $env:TEMP` before `npx.cmd`: started from the UNC project folder, cmd prints its UNC warning.
 - The agent's link does not ride the tunnel: ⏻ of the main tunnel and «Выключить» keep it.
 - The mock page (`http.server` + `playwright`) lives inside the namespace and works as is.
-- Empty `ip netns identify` → the old setup: WSL loopback is Windows loopback (`networkingMode=mirrored`), the MCP
-  servers connect directly, and the agent's link rides the tunnel.
+- Empty `ip netns identify` → the old setup: WSL loopback is Windows loopback (`networkingMode=mirrored`), MCP
+  clients connect directly, and the agent's link rides the tunnel.
 
 ## Layers
 
@@ -28,52 +24,14 @@ traffic goes through `amnezia`, not TunnelVPN.
 | --- | --- |
 | Python logic: service, tunnels, update, settings, tray menu | `python.exe -m pytest tests -q -n auto` (~20 s; `-n` needs `pip install pytest-xdist`, without it ~50 s); one test: `python.exe -m pytest tests/<file>.py -q -k <name>` |
 | Window: layout, texts, states, bridge calls | mock page in Playwright — [playwright.md](playwright.md) |
-| Window against the live service | the app window over CDP — [playwright.md](playwright.md) |
-| Real wizard, uninstaller, tray menu, toasts: clicks, texts, states | Windows-MCP (below) |
 | Wizard and uninstaller pages: look, texts | `installer/dev/mock/index.html?page=<id>` in Playwright — [README](../../installer/dev/mock/README.md) |
 | Real wizard window, one page | `installer/dev/snap.ps1 [-Script probe.iss] [-Pages N] [-SetupArgs …]` — builds, starts, screenshots into `installer/dev/screenshots/` |
 | Silent install and update, exit codes, failure paths | real host by [install.md](install.md); failures — `build.ps1 -TestHooks`, then `/testhook=service,tunnel,webview2` (README, «Установка») |
 
 ## Window in Playwright
 
-Mock page and live window over CDP moved to [playwright.md](playwright.md): the page, opening the
+Mock page moved to [playwright.md](playwright.md): the page, opening the
 «Туннелирование» sheet for a check, screenshots, console, MCP registration.
-
-## Windows-MCP: wizard and tray
-
-Claude Code starts `installer/dev/windows-mcp-bridge.ps1` once, at session start: nothing on `127.0.0.1:8790` → it
-starts the server elevated, waits for the port (~16 s cold), then runs the `mcp-remote` bridge. No `/mcp` reconnect.
-
-UI Automation over real windows: Inno wizard, uninstaller, tray menu, toasts. The wizard, the tray and the
-window run elevated, and UIPI keeps an unelevated process from driving them, so the server runs elevated over
-HTTP on `127.0.0.1:8790` rather than over stdio.
-
-The agent uses it on its own, without asking: the tray icon, its tooltip and menu, toasts, the window, Windows
-Settings — whatever a check needs on the real desktop. The user confirms only UAC prompts.
-
-1. The server lives until a reboot (or step 4). Stopped mid-session → `/mcp` → reconnect `windows-mcp`: the bridge
-   starts it again.
-2. No `windows-mcp` tools → `claude mcp list` (`✔ Connected` or the error) and
-   `Get-NetTCPConnection -State Listen -LocalPort 8790` from `powershell.exe`.
-3. Only the UI tools: an elevated server with `PowerShell`, `Registry` or `FileSystem` on a local port is
-   administrator rights for whoever holds the key. Commands still go through Bash.
-4. Left running between sessions. To stop it on request, elevated: the owner of port 8790 and its `uvx.exe` parent —
-   `powershell.exe -NoProfile -Command '$o = (Get-NetTCPConnection -State Listen -LocalPort 8790).OwningProcess | Select-Object -Unique; $p = (Get-CimInstance Win32_Process -Filter "ProcessId=$o").ParentProcessId; Start-Process powershell.exe -ArgumentList "-NoProfile","-Command","Stop-Process -Id $o,$p -Force" -Verb RunAs -WindowStyle Hidden -Wait'`.
-
-Once per machine: `uvx windows-mcp auth --transport streamable-http --host 127.0.0.1 --port 8790` writes the key
-into `%USERPROFILE%\.windows-mcp\config.toml`; then
-`claude mcp add -s local windows-mcp -- powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(wslpath -w installer/dev/windows-mcp-bridge.ps1)" -Key <key>`
-— the key stays in the local Claude config, never in the repository.
-
-Tray and toasts:
-- The icon sits on the taskbar or in the overflow: not among the taskbar buttons in `Snapshot` → click «Показать
-  скрытые значки» to open the overflow, a second click closes it. The icon's tooltip is the name of its button in
-  the `Snapshot` tree, its colour — on a `Screenshot`.
-- The tray balloon only shows when Windows notifications are on (Settings → System → Notifications;
-  `ToastEnabled` in `HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications`). Writing the registry
-  value alone does not take effect — flip the switch in Settings, and put it back after the check.
-- A balloon leaves the notification centre soon after it shows: catch it with a `Screenshot` right after the
-  trigger; an empty centre later proves nothing. «No second toast» — a `Screenshot` right after the same trigger.
 
 ## Scenarios that drop the tunnel
 
