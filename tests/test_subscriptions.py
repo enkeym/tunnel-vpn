@@ -10,6 +10,7 @@ from tunnelvpn import happ, netguard, paths, proxy, subscriptions, vless
 UUID1 = "00000000-0000-4000-8000-000000000001"
 UUID2 = "00000000-0000-4000-8000-000000000002"
 UUID3 = "00000000-0000-4000-8000-000000000003"
+UUID4 = "00000000-0000-4000-8000-000000000004"
 HOST = "vpn.example.test"
 
 
@@ -374,6 +375,234 @@ def test_добавление_singbox_подписки(monkeypatch):
 
     assert sub["kind"] == "singbox"
     assert subscriptions.load()["profiles"][0]["name"] == "JSON"
+
+
+def _fake_bodies(monkeypatch, bodies):
+    calls = []
+
+    def fake(url, allow_private=False, timeout=None, max_bytes=None):
+        calls.append(url)
+        return bodies[url]
+
+    monkeypatch.setattr(netguard, "open_https", fake)
+    return calls
+
+
+def test_новая_ссылка_с_теми_же_профилями_заменяет_подписку(monkeypatch):
+    old = "\n".join((_link(name="Германия"),
+                     _link(uuid=UUID2, path="/b", name="Польша")))
+    new = "\n".join((_link(uuid=UUID3, name="Германия"),
+                     _link(uuid=UUID2, path="/b2", name="Польша")))
+    _fake_bodies(monkeypatch, {"https://sub.example.test/old": old,
+                               "https://sub.example.test/new": new})
+
+    first = subscriptions.add("https://sub.example.test/old", name="Riot")
+    before = {p["name"]: p["id"] for p in subscriptions.load()["profiles"]}
+    again = subscriptions.add("https://sub.example.test/new")
+
+    data = subscriptions.load()
+    assert again["id"] == first["id"]
+    assert again["url"] == "https://sub.example.test/new"
+    assert again["name"] == "Riot"
+    assert len(data["subscriptions"]) == 1
+    assert len(data["profiles"]) == 2
+    assert {p["name"]: p["id"] for p in data["profiles"]} == before
+    assert all(p["source"] == {"subscription": first["id"]}
+               for p in data["profiles"])
+
+
+def test_половина_общих_имён_уже_обновление(monkeypatch):
+    old = "\n".join((_link(name="Германия"), _link(uuid=UUID2, name="Польша")))
+    new = "\n".join((_link(uuid=UUID3, name="Германия"), _link(uuid=UUID2, name="Чехия")))
+    _fake_bodies(monkeypatch, {"https://sub.example.test/old": old,
+                               "https://sub.example.test/new": new})
+
+    first = subscriptions.add("https://sub.example.test/old")
+    again = subscriptions.add("https://sub.example.test/new")
+
+    assert again["id"] == first["id"]
+    assert len(subscriptions.load()["subscriptions"]) == 1
+
+
+def test_мало_общих_имён_остаётся_новой_подпиской(monkeypatch):
+    old = "\n".join(_link(name=n, path=f"/{i}")
+                    for i, n in enumerate(("Германия", "Польша", "Чехия")))
+    new = "\n".join(_link(uuid=UUID3, name=n, path=f"/{i}")
+                    for i, n in enumerate(("Германия", "Швеция", "Норвегия")))
+    _fake_bodies(monkeypatch, {"https://sub.example.test/old": old,
+                               "https://sub.example.test/new": new})
+
+    subscriptions.add("https://sub.example.test/old")
+    again = subscriptions.add("https://sub.example.test/new")
+
+    data = subscriptions.load()
+    assert len(data["subscriptions"]) == 2
+    assert again["url"] == "https://sub.example.test/new"
+
+
+def test_другой_хост_не_заменяет_подписку(monkeypatch):
+    old = _link(name="Германия")
+    new = _link(uuid=UUID3, name="Германия", host="other.example.test")
+    _fake_bodies(monkeypatch, {"https://sub.example.test/old": old,
+                               "https://other.example.test/new": new})
+
+    subscriptions.add("https://sub.example.test/old")
+    subscriptions.add("https://other.example.test/new")
+
+    assert len(subscriptions.load()["subscriptions"]) == 2
+
+
+def test_выбирается_подписка_с_большим_совпадением(monkeypatch):
+    first = "\n".join((_link(name="A", path="/a"),
+                       _link(uuid=UUID2, name="B", path="/b")))
+    second = "\n".join((_link(uuid=UUID3, name="C", path="/c"),
+                        _link(uuid=UUID1, name="D", path="/d")))
+    new = "\n".join((_link(uuid=UUID3, name="C", path="/c"),
+                     _link(uuid=UUID1, name="D", path="/d"),
+                     _link(uuid=UUID2, name="E", path="/e")))
+    _fake_bodies(monkeypatch, {"https://sub.example.test/one": first,
+                               "https://sub.example.test/two": second,
+                               "https://sub.example.test/new": new})
+
+    one = subscriptions.add("https://sub.example.test/one")
+    two = subscriptions.add("https://sub.example.test/two")
+    again = subscriptions.add("https://sub.example.test/new")
+
+    assert again["id"] == two["id"] != one["id"]
+    assert len(subscriptions.load()["subscriptions"]) == 2
+
+
+def _touch_sub(sid, updated_at):
+    data = subscriptions.load()
+    next(s for s in data["subscriptions"] if s["id"] == sid)["updated_at"] = updated_at
+    subscriptions.save(data)
+
+
+def _rename_profiles(sid, names):
+    data = subscriptions.load()
+    mine = [p for p in data["profiles"]
+            if p["source"] == {"subscription": sid}]
+    for record, name in zip(mine, names):
+        record["name"] = name
+    subscriptions.save(data)
+
+
+def _clone_sub(sid, url, updated_at, uuid, serial):
+    data = subscriptions.load()
+    src = next(s for s in data["subscriptions"] if s["id"] == sid)
+    mine = [p for p in data["profiles"]
+            if p["source"] == {"subscription": sid}]
+    new_id = f"s_{serial:016x}"
+    data["subscriptions"].append(dict(src, id=new_id, url=url,
+                                      updated_at=updated_at))
+    for i, record in enumerate(mine):
+        data["profiles"].append(
+            dict(record, id=f"p_{(serial << 8) + i:016x}",
+                 source={"subscription": new_id},
+                 **{record["proto"]: dict(record[record["proto"]], uuid=uuid)}))
+    subscriptions.save(data)
+    return new_id
+
+
+def test_дубли_подписок_оставляют_самую_свежую(monkeypatch):
+    old = "\n".join((_link(name="Германия"),
+                     _link(uuid=UUID2, name="Польша", path="/b")))
+    other = "\n".join((_link(uuid=UUID3, name="США", path="/c"),
+                       _link(uuid=UUID3, name="Канада", path="/d")))
+    _fake_bodies(monkeypatch, {"https://sub.example.test/old": old,
+                               "https://sub.example.test/other": other})
+
+    first = subscriptions.add("https://sub.example.test/old")
+    kept_other = subscriptions.add("https://sub.example.test/other")
+    fresh = _clone_sub(first["id"], "https://sub.example.test/old-new",
+                       "2999-01-01T00:00:00+00:00", UUID4, 0xb0)
+
+    result = subscriptions.dedupe()
+
+    data = subscriptions.load()
+    assert result["removed"] == [first["id"]]
+    assert result["kept"] == [fresh]
+    assert {s["id"] for s in data["subscriptions"]} == {fresh, kept_other["id"]}
+    assert len(data["profiles"]) == 4
+    assert all(p["source"] == {"subscription": fresh}
+               for p in data["profiles"] if p["name"] in ("Германия", "Польша"))
+
+
+def test_ровно_половина_общих_имён_это_дубль(monkeypatch):
+    first = "\n".join(_link(name=n, path=f"/{i}")
+                      for i, n in enumerate(("A1", "A2", "A3", "A4")))
+    second = "\n".join(_link(uuid=UUID2, name=n, path=f"/b{i}")
+                       for i, n in enumerate(("B1", "B2", "B3", "B4")))
+    _fake_bodies(monkeypatch, {"https://sub.example.test/old": first,
+                               "https://sub.example.test/new": second})
+
+    old = subscriptions.add("https://sub.example.test/old")
+    new = subscriptions.add("https://sub.example.test/new")
+    _rename_profiles(new["id"], ("A1", "A2", "B3", "B4"))
+    _touch_sub(old["id"], "2026-01-01T00:00:00+00:00")
+    _touch_sub(new["id"], "2026-02-01T00:00:00+00:00")
+
+    result = subscriptions.dedupe()
+
+    data = subscriptions.load()
+    assert result["removed"] == [old["id"]]
+    assert [s["id"] for s in data["subscriptions"]] == [new["id"]]
+
+
+def test_меньше_половины_общих_имён_не_дубль(monkeypatch):
+    first = "\n".join(_link(name=n, path=f"/{i}")
+                      for i, n in enumerate(("A1", "A2", "A3", "A4")))
+    second = "\n".join(_link(uuid=UUID2, name=n, path=f"/b{i}")
+                       for i, n in enumerate(("B1", "B2", "B3", "B4")))
+    _fake_bodies(monkeypatch, {"https://sub.example.test/old": first,
+                               "https://sub.example.test/new": second})
+
+    subscriptions.add("https://sub.example.test/old")
+    new = subscriptions.add("https://sub.example.test/new")
+    _rename_profiles(new["id"], ("A1", "B2", "B3", "B4"))
+
+    result = subscriptions.dedupe()
+
+    assert result["removed"] == []
+    assert len(subscriptions.load()["subscriptions"]) == 2
+
+
+def test_дубли_на_разных_хостах_не_удаляются(monkeypatch):
+    same = "\n".join((_link(name="Германия"),
+                      _link(uuid=UUID2, name="Польша", path="/b")))
+    other = "\n".join((_link(uuid=UUID3, name="Германия", host="other.example.test"),
+                       _link(uuid=UUID2, name="Польша", path="/b",
+                             host="other.example.test")))
+    _fake_bodies(monkeypatch, {"https://sub.example.test/old": same,
+                               "https://other.example.test/new": other})
+
+    first = subscriptions.add("https://sub.example.test/old")
+    second = subscriptions.add("https://other.example.test/new")
+    fresh = _clone_sub(first["id"], "https://sub.example.test/old-new",
+                       "2999-01-01T00:00:00+00:00", UUID4, 0xb1)
+
+    result = subscriptions.dedupe()
+
+    assert result["removed"] == [first["id"]]
+    assert {s["id"] for s in subscriptions.load()["subscriptions"]} == {
+        fresh, second["id"]}
+
+
+def test_повторная_чистка_ничего_не_удаляет(monkeypatch):
+    body = "\n".join((_link(name="Германия"),
+                      _link(uuid=UUID2, name="Польша", path="/b")))
+    _fake_bodies(monkeypatch, {"https://sub.example.test/old": body})
+
+    first = subscriptions.add("https://sub.example.test/old")
+    _clone_sub(first["id"], "https://sub.example.test/old-new",
+               "2999-01-01T00:00:00+00:00", UUID4, 0xb2)
+
+    subscriptions.dedupe()
+    before = subscriptions.load()
+    again = subscriptions.dedupe()
+
+    assert again == {"removed": [], "kept": []}
+    assert subscriptions.load() == before
 
 
 def test_full_не_скачивается(monkeypatch):

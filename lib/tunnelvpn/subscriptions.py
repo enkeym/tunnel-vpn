@@ -440,6 +440,75 @@ def _check_full_url(info):
                          "импортируются только VLESS outbounds")
 
 
+def _sub_host(url):
+    if happ.is_link(url):
+        return ""
+    try:
+        return netguard.parse_url(url)["host"]
+    except (OSError, ValueError):
+        return ""
+
+
+def _sub_names(data, sid):
+    return {p["name"] for p in data["profiles"]
+            if p["source"] == {"subscription": sid}}
+
+
+def _replace_target(data, host, profiles):
+    if not host:
+        return None
+    names = {p["name"] for p in profiles}
+    best = None
+    for sub in data["subscriptions"]:
+        if _sub_host(sub["url"]) != host:
+            continue
+        overlap = len(names & _sub_names(data, sub["id"]))
+        if overlap * 2 < len(names):
+            continue
+        if best is None or overlap > best[0]:
+            best = (overlap, sub)
+    return best[1] if best else None
+
+
+def _replace(data, sub, profiles, source, detected, allow_private, name):
+    own = {"subscription": sub["id"]}
+    by_name = {}
+    for record in data["profiles"]:
+        if record["source"] == own:
+            by_name.setdefault(record["name"], []).append(record)
+    other_marks = {p["fingerprint"] for p in data["profiles"]
+                   if p["source"] != own}
+    taken = {p["id"] for p in data["profiles"]}
+    used = set()
+    seen = set()
+    records = []
+    for profile in profiles:
+        mark = proxy.fingerprint(profile)
+        if mark in seen or mark in other_marks:
+            continue
+        seen.add(mark)
+        same = [p for p in by_name.get(profile["name"], [])
+                if p["id"] not in used]
+        record = same[0] if len(same) == 1 else None
+        if record is None:
+            record = _record(profile, own, taken)
+        else:
+            record = {"id": record["id"], "name": profile["name"],
+                      "proto": profile["proto"], "fingerprint": mark,
+                      profile["proto"]: proxy.fields(profile),
+                      "source": own, "missing": False}
+            used.add(record["id"])
+        records.append(record)
+    data["profiles"] = ([p for p in data["profiles"] if p["source"] != own]
+                        + records)
+    sub["url"] = source
+    sub["kind"] = detected
+    sub["allow_private"] = allow_private
+    sub["updated_at"] = _now()
+    sub["last_error"] = ""
+    sub["name"] = _name(name) or sub["name"]
+
+
 def add(url, name="", allow_private=False, kind="auto"):
     info, detected, profiles = fetch(url, allow_private, kind)
     with LOCK:
@@ -448,6 +517,12 @@ def add(url, name="", allow_private=False, kind="auto"):
         key = _url_key(source)
         if any(_url_key(item["url"]) == key for item in data["subscriptions"]):
             raise ValueError("такая подписка уже добавлена")
+        candidate = _replace_target(data, info["host"], profiles)
+        if candidate is not None:
+            _replace(data, candidate, profiles, source, detected,
+                     allow_private, name)
+            save(data)
+            return candidate
         taken = {s["id"] for s in data["subscriptions"]}
         sid = _new_id("s_", taken)
         profile_ids = {p["id"] for p in data["profiles"]}
@@ -606,6 +681,43 @@ def delete(sub_id):
                             if p["source"] != {"subscription": sub_id}]
         save(data)
         return True
+
+
+def _same_profiles(first, second):
+    return (bool(first) and bool(second)
+            and len(first & second) * 2 >= min(len(first), len(second)))
+
+
+def dedupe():
+    with LOCK:
+        data = load()
+        ordered = sorted(data["subscriptions"],
+                         key=lambda s: (s.get("updated_at") or "", s["id"]),
+                         reverse=True)
+        groups = []
+        for sub in ordered:
+            host = _sub_host(sub["url"])
+            names = _sub_names(data, sub["id"])
+            for group in groups:
+                if (host and group["host"] == host
+                        and any(_same_profiles(names, other)
+                                for other in group["names"])):
+                    group["names"].append(names)
+                    group["subs"].append(sub)
+                    break
+            else:
+                groups.append({"host": host, "names": [names], "subs": [sub]})
+        removed = [sub for group in groups for sub in group["subs"][1:]]
+        if removed:
+            gone = {sub["id"] for sub in removed}
+            data["subscriptions"] = [s for s in data["subscriptions"]
+                                     if s["id"] not in gone]
+            data["profiles"] = [p for p in data["profiles"]
+                                if p["source"].get("subscription") not in gone]
+            save(data)
+        return {"removed": [sub["id"] for sub in removed],
+                "kept": [group["subs"][0]["id"] for group in groups
+                         if len(group["subs"]) > 1]}
 
 
 def remove_profile(pid):

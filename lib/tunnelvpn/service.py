@@ -58,7 +58,7 @@ CONF_OPS = frozenset({
     "remove-configs", "save-config",
     "move-config", "add-tunnel", "set-tunnel", "remove-tunnel", "set-log-level",
     "set-kill-switch", "remove-subscription", "remove-profile",
-    "set-allow-private"})
+    "dedupe-subscriptions", "set-allow-private"})
 JOBS_KEPT = 20
 AMNEZIA_TRIAL = "amnezia"
 # Сколько кругов пробера (по FAST_EVERY) новая сеть должна продержаться,
@@ -610,6 +610,8 @@ class Core:
                                         payload.get("name", ""))
         if op == "remove-subscription":
             return self._remove_subscription(payload.get("id", ""))
+        if op == "dedupe-subscriptions":
+            return self._dedupe_subscriptions()
         if op == "remove-profile":
             return self._remove_profile(payload.get("id", ""), tid,
                                         payload.get("drop_tunnel") is True)
@@ -3280,6 +3282,16 @@ class Core:
             return {"ok": False, "error": str(exc)}
         self.log(f"→ удалена подписка {sid}")
         return {"ok": True, "id": sid}
+
+    def _dedupe_subscriptions(self):
+        try:
+            result = subscriptions.dedupe()
+            self._drop_profiles()
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        for sid in result["removed"]:
+            self.log(f"→ удалена подписка {sid} (дубль)")
+        return {"ok": True, **result}
 
     def _remove_profile(self, pid, tunnel="", drop_tunnel=False):
         """Удаляет профиль; main — как у _remove_config: активный основной по

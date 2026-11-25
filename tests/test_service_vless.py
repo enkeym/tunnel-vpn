@@ -13,6 +13,7 @@ from tunnelvpn.service import Core
 UUID1 = "00000000-0000-4000-8000-000000000001"
 UUID2 = "00000000-0000-4000-8000-000000000002"
 UUID3 = "00000000-0000-4000-8000-000000000003"
+UUID4 = "00000000-0000-4000-8000-000000000004"
 HOST = "vpn.example.test"
 SUB = "https://sub.example.test/sub"
 
@@ -75,6 +76,23 @@ def _serve(monkeypatch, *links):
 
 def _tunnel(reply):
     return tunnels.find(tunnels.load(), reply["tunnel"])
+
+
+def _clone_sub(sid, url, updated_at, uuid, serial):
+    data = subscriptions.load()
+    src = next(s for s in data["subscriptions"] if s["id"] == sid)
+    mine = [p for p in data["profiles"]
+            if p["source"] == {"subscription": sid}]
+    new_id = f"s_{serial:016x}"
+    data["subscriptions"].append(dict(src, id=new_id, url=url,
+                                      updated_at=updated_at))
+    for i, record in enumerate(mine):
+        data["profiles"].append(
+            dict(record, id=f"p_{(serial << 8) + i:016x}",
+                 source={"subscription": new_id},
+                 **{record["proto"]: dict(record[record["proto"]], uuid=uuid)}))
+    subscriptions.save(data)
+    return new_id
 
 
 def test_ссылка_делает_основной_vless_туннель():
@@ -329,6 +347,25 @@ def test_удаление_подписки_снимает_выбор(monkeypatch
     assert reply == {"ok": True, "id": added["subscription"]}
     assert subscriptions.list_profiles() == []
     assert _tunnel(added)["active"] == ""
+
+
+def test_удаление_дублей_оставляет_свежую_подписку(monkeypatch):
+    _serve(monkeypatch, _link())
+    core = _core()
+    first = core.handle("add-subscription", {"url": SUB}, True)
+    _serve(monkeypatch, _link(uuid=UUID2, name="Other", path="/other"))
+    other = core.handle("add-subscription",
+                        {"url": "https://sub.example.test/other"}, True)
+    fresh = _clone_sub(first["subscription"], "https://sub.example.test/new",
+                       "2999-01-01T00:00:00+00:00", UUID4, 0xc0)
+
+    reply = core.handle("dedupe-subscriptions", {}, True)
+
+    assert reply["ok"] is True
+    assert reply["removed"] == [first["subscription"]]
+    assert reply["kept"] == [fresh]
+    assert {s["id"] for s in subscriptions.load()["subscriptions"]} == {
+        fresh, other["subscription"]}
 
 
 def test_удаление_активного_профиля_берёт_первый_оставшийся(monkeypatch):

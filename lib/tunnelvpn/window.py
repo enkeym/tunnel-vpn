@@ -355,6 +355,8 @@ class Api:
             return self._subscription_op("update-subscription", arg or {})
         elif name == "remove_subscription":
             return self._subscription_op("remove-subscription", arg or {})
+        elif name == "dedupe_subscriptions":
+            return self._subscription_op("dedupe-subscriptions", arg or {})
         elif name == "remove_profile":
             return self._subscription_op("remove-profile", arg or {})
         elif name == "set_allow_private":
