@@ -65,6 +65,32 @@ def test_новый_файл_после_потолка_продолжается_
     assert len(paths.log_files(PREFIX)) == 2
 
 
+def _block(path, text):
+    with open(path, "ab") as fh:
+        fh.write(text.encode("utf-8"))
+        return fh.tell()
+
+
+def test_причина_не_из_прошлого_запуска(tmp_path):
+    path = str(tmp_path / "trial.log")
+    _block(path, "+0300 2026-11-25 13:31:57 ERROR [1 66ms] "
+                 "connection: open connection: EOF\n")
+    start = _block(path, "\n=== 2026-11-25 13:32:22 TunnelVPN ===\n")
+
+    assert tunnel._fatal_line(path, start) == "sing-box ничего не напечатал"
+
+
+def test_своя_ошибка_без_номера_соединения(tmp_path):
+    path = str(tmp_path / "trial.log")
+    _block(path, "+0300 2026-11-25 13:31:57 ERROR [1 66ms] "
+                 "connection: open connection: EOF\n")
+    start = _block(path, "\n=== 2026-11-25 13:32:22 TunnelVPN ===\n")
+    _block(path, "+0300 2026-11-25 13:32:38 ERROR [2 5ms] "
+                 "connection: другой отказ\n")
+
+    assert tunnel._fatal_line(path, start) == "connection: другой отказ"
+
+
 def test_старые_сверх_keep_logs_удаляются(logs):
     for day in range(1, tunnel.KEEP_LOGS + 2):
         path = os.path.join(paths.LOGS, f"{PREFIX}-2000-01-{day:02d}_000000.log")

@@ -569,7 +569,8 @@ class Tunnel:
                 # Туннели без основного никому не нужны: в socks никто не зайдёт.
                 for side in self.sides:
                     self._stop_side(side)
-                return f"sing-box упал на старте: {_fatal_line(log_path)}"
+                return (f"sing-box упал на старте: "
+                        f"{_fatal_line(log_path, self.log_start[1])}")
             tun_idx = winnet.tun_index(paths.TUN_IP)
             if tun_idx is not None:
                 break
@@ -770,6 +771,7 @@ class Tunnel:
             except OSError as exc:
                 return None, f"конфиг процесса «{side.title}» не записать: {exc}"
         self.log(f"→ запускаю процесс «{side.title}», журнал: {logfile.name}")
+        start = logfile.tell()
         proc = subprocess.Popen(
             [paths.SINGBOX, "run", "-c", cfg_path, "--disable-color"],
             cwd=paths.BIN,
@@ -779,13 +781,14 @@ class Tunnel:
         deadline = time.time() + SIDE_WAIT
         while time.time() < deadline:
             if proc.poll() is not None:
-                return proc, (f"процесс «{side.title}» упал на старте: "
-                              f"{_fatal_line(logfile.name)}")
+                return proc, (f"процесс «{side.title}» упал на старте "
+                              f"(pid {proc.pid}): {_fatal_line(logfile.name, start)}")
             if _port_open(link["port"]):
                 return proc, ""
             time.sleep(0.25)
         _end(proc)
-        return None, f"процесс «{side.title}» не открыл socks за {SIDE_WAIT}с"
+        return None, (f"процесс «{side.title}» не открыл socks за {SIDE_WAIT}с "
+                      f"(pid {proc.pid})")
 
     def side_with_key(self, key):
         """id работающего бокового процесса с приватным ключом key, иначе None.
@@ -900,6 +903,7 @@ class Tunnel:
                 if peer:
                     route = self._trial_route_up(peer, uplink)
                 logfile = self.open_log(f"{TRIAL_PREFIX}-{tid}")
+                start = logfile.tell()
                 with self._trials_lock:
                     proc = subprocess.Popen(
                         [paths.SINGBOX, "run", "-c", path, "--disable-color"],
@@ -913,8 +917,8 @@ class Tunnel:
                         break
                     time.sleep(0.25)
                 else:
-                    self.log(f"!! {label}: sing-box не открыл вход: "
-                             f"{_fatal_line(logfile.name)}")
+                    self.log(f"!! {label}: sing-box не открыл вход "
+                             f"(pid {proc.pid}): {_fatal_line(logfile.name, start)}")
             except OSError as exc:
                 self.log(f"!! {label}: {exc}")
             yield got
@@ -1706,7 +1710,7 @@ def _check_config(cfg_path):
     return ""
 
 
-def _fatal_line(log_path):
+def _fatal_line(log_path, start=0):
     """Причина падения sing-box из его лога — одной строкой, для окна и трея.
 
     Раньше в статус уходил только путь к логу: человек видел «упал, смотри
@@ -1714,12 +1718,20 @@ def _fatal_line(log_path):
     ещё и не открыть.
     """
     try:
-        with open(log_path, encoding="utf-8", errors="replace") as fh:
-            lines = fh.read().splitlines()[-40:]
+        with open(log_path, "rb") as fh:
+            fh.seek(start)
+            lines = fh.read().decode("utf-8", "replace").splitlines()
     except OSError:
         return f"подробности — в {log_path}"
     for word in ("FATAL", "ERROR"):
         for line in reversed(lines):
             if word in line:
-                return line.split(word, 1)[1].strip(" []:")[:200]
+                rest = line.split(word, 1)[1].strip()
+                if rest.startswith("["):
+                    end = rest.find("]")
+                    if end != -1:
+                        rest = rest[end + 1:].lstrip()
+                return rest[:200]
+    if not lines:
+        return "sing-box ничего не напечатал"
     return f"подробности — в {log_path}"
