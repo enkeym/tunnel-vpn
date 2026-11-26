@@ -41,7 +41,7 @@ def test_отказ_команды_откатывает_желаемое():
 
 def test_проверка_не_заменяет_прошлый_ответ_конфига():
     cards = _src("cards.js")
-    assert ("if (testing(t, name)) return ['busy', test ? "
+    assert ("if (testing(t, name)) return ['busy', test && test.result ? "
             "testState(test, '')[1] : 'проверяю…'];" in cards)
     assert ("if (m.checking(t) || m.link === 'checking') "
             "return ['busy', ping || 'проверяю…'];" in cards)
