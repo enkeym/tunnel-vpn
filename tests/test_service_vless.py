@@ -72,7 +72,34 @@ def _core():
 
 def _serve(monkeypatch, *links):
     monkeypatch.setattr(netguard, "open_https",
-                        lambda url, allow_private=False: "\n".join(links))
+                        lambda url, allow_private=False, **kwargs: "\n".join(links))
+
+
+def _transport_open(monkeypatch, failures, body):
+    calls = []
+
+    def check(url, allow_private=False):
+        return {"url": url, "host": HOST, "port": 443, "path": "/sub",
+                "ips": ["93.184.216.34"]}
+
+    def exchange(info, ctx, timeout, max_bytes):
+        calls.append(timeout)
+        if len(calls) <= failures:
+            raise OSError("нет маршрута")
+        return 200, None, body.encode("utf-8")
+
+    monkeypatch.setattr(netguard, "check_url", check)
+    monkeypatch.setattr(netguard, "_tls_context", lambda cadata="": cadata)
+    monkeypatch.setattr(netguard, "_exchange", exchange)
+    return calls
+
+
+def _sleeps(monkeypatch):
+    slept = []
+    clock = types.SimpleNamespace(monotonic=lambda: 0.0, sleep=slept.append)
+    monkeypatch.setattr(subscriptions, "time", clock, raising=False)
+    monkeypatch.setattr(netguard, "time", clock)
+    return slept
 
 
 def _tunnel(reply):
@@ -952,6 +979,109 @@ def test_новая_подписка_не_переключает_выбранн�
     assert added["ok"] is True
     assert added["tunnel"] == first["tunnel"]
     assert _tunnel(first)["active"] == first["profile"]
+
+
+def test_повторное_добавление_подписки_дополняет_только_новыми_ссылками(monkeypatch):
+    _serve(monkeypatch, _link(name="First"), _link(uuid=UUID2, name="Same", path="/b"))
+    core = _core()
+    first = core.handle("add-subscription", {"url": SUB, "name": "Моя"}, True)
+    sid = first["subscription"]
+    subscriptions.set_auto(sid, True)
+    existing = subscriptions.list_profiles(sid)
+    other_link = _reality("a1b2")
+    manual = core.handle("add-link", {"link": other_link}, True)
+    assert manual["ok"]
+    tunnel_data = tunnels.load()
+
+    _serve(monkeypatch, _link(name="Renamed"),
+           _link(uuid=UUID3, name="Same", path="/c"), other_link)
+    reply = core.handle("add-subscription", {"url": SUB, "name": "Другая"}, True)
+
+    assert reply["ok"] is True
+    assert reply["subscription"] == sid
+    assert reply["profiles"] == 3
+    assert reply["added"] == 1
+    profiles = subscriptions.list_profiles(sid)
+    assert profiles[:2] == existing
+    assert profiles[2]["name"] == "Same"
+    kept = subscriptions.find_profile(subscriptions.load(), manual["profile"])
+    assert kept["source"] == {"manual": True}
+    stored = subscriptions.list_subscriptions()
+    assert len(stored) == 1 and stored[0]["name"] == "Моя" and stored[0]["auto"]
+    assert tunnels.load() == tunnel_data
+    again = core.handle("add-subscription", {"url": SUB}, True)
+    assert again["ok"] and again["added"] == 0
+    assert subscriptions.list_profiles(sid) == profiles
+    assert tunnels.load() == tunnel_data
+
+
+def test_повторное_добавление_подписки_не_восстанавливает_удалённый_туннель(monkeypatch):
+    _serve(monkeypatch, _link())
+    core = _core()
+    first = core.handle("add-subscription", {"url": SUB}, True)
+    data = tunnels.load()
+    data["tunnels"] = []
+    tunnels.save(data)
+
+    _serve(monkeypatch, _link(uuid=UUID2, name="Second", path="/b"))
+    reply = core.handle("add-subscription", {"url": SUB}, True)
+
+    assert reply["ok"] is True
+    assert reply["subscription"] == first["subscription"]
+    assert reply["profiles"] == 2
+    assert reply["added"] == 1
+    assert tunnels.load()["tunnels"] == []
+
+
+def test_повтор_add_после_транспортного_сбоя_дополняет_и_не_меняет_профиль(monkeypatch):
+    original = netguard.open_https
+    _serve(monkeypatch, _link(name="First"))
+    core = _core()
+    first = core.handle("add-subscription", {"url": SUB, "name": "Моя"}, True)
+    sid = first["subscription"]
+    existing = subscriptions.list_profiles(sid)
+    tunnel_data = tunnels.load()
+    stored = subscriptions.list_subscriptions()
+    monkeypatch.setattr(netguard, "open_https", original)
+    body = "\n".join((_link(name="First"),
+                      _link(uuid=UUID2, name="Second", path="/b")))
+    slept = _sleeps(monkeypatch)
+    calls = _transport_open(monkeypatch, 2, body)
+
+    again = core.handle("add-subscription", {"url": SUB}, True)
+
+    assert again["ok"] is True and again["added"] == 1
+    assert again["subscription"] == sid
+    profiles = subscriptions.list_profiles(sid)
+    assert profiles[:1] == existing
+    assert [p["name"] for p in profiles] == ["First", "Second"]
+    assert tunnels.load() == tunnel_data
+    assert [(s["name"], s["url"], s["auto"])
+            for s in subscriptions.list_subscriptions()] == [
+        (s["name"], s["url"], s["auto"]) for s in stored]
+    assert calls[0] > 9.0 and len(calls) == 3
+    assert slept == [1.0]
+
+
+def test_повтор_add_при_недоступном_источнике_не_меняет_данные(monkeypatch):
+    original = netguard.open_https
+    _serve(monkeypatch, _link(name="First"))
+    core = _core()
+    first = core.handle("add-subscription", {"url": SUB, "name": "Моя"}, True)
+    sid = first["subscription"]
+    existing = subscriptions.list_profiles(sid)
+    tunnel_data = tunnels.load()
+    monkeypatch.setattr(netguard, "open_https", original)
+    slept = _sleeps(monkeypatch)
+    calls = _transport_open(monkeypatch, 10 ** 6, "")
+
+    reply = core.handle("add-subscription", {"url": SUB}, True)
+
+    assert reply["ok"] is False and "недоступен" in reply["error"]
+    assert subscriptions.list_profiles(sid) == existing
+    assert tunnels.load() == tunnel_data
+    assert calls[0] > 9.0 and len(calls) == 10
+    assert slept == [1.0, 2.0, 4.0, 8.0]
 
 
 def test_подписка_только_по_https():

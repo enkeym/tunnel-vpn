@@ -12,6 +12,12 @@ MAX_BODY = 1 << 20
 MAX_URL = 4096
 MAX_ADDRESSES = 32
 DEFAULT_TIMEOUT = 10.0
+TRANSPORT_ERROR = "источник недоступен по HTTPS"
+
+
+class TransportError(ValueError):
+    pass
+
 
 _RFC1918 = (
     ipaddress.ip_network("10.0.0.0/8"),
@@ -282,11 +288,20 @@ def _request(info, timeout, max_bytes):
                 raise ValueError("источник недоступен по HTTPS") from None
         except (OSError, ssl.SSLError, http.client.HTTPException):
             continue
-    raise ValueError("источник недоступен по HTTPS")
+    raise TransportError(TRANSPORT_ERROR)
+
+
+def _hop_timeout(timeout, deadline):
+    if deadline is None:
+        return timeout
+    left = min(timeout, deadline - time.monotonic())
+    if left <= 0:
+        raise TransportError(TRANSPORT_ERROR)
+    return left
 
 
 def open_https(url, allow_private=False, timeout=DEFAULT_TIMEOUT,
-               max_bytes=MAX_BODY):
+               max_bytes=MAX_BODY, deadline=None):
     if max_bytes <= 0:
         raise ValueError("предел размера ответа должен быть больше нуля")
     seen = set()
@@ -295,8 +310,10 @@ def open_https(url, allow_private=False, timeout=DEFAULT_TIMEOUT,
         if current in seen:
             raise ValueError("циклический redirect подписки")
         seen.add(current)
+        left = _hop_timeout(timeout, deadline)
         info = check_url(current, allow_private)
-        status, location, body = _request(info, timeout, max_bytes)
+        left = _hop_timeout(timeout, deadline)
+        status, location, body = _request(info, left, max_bytes)
         if status == 200:
             return body
         if status in (301, 302, 303, 307, 308):

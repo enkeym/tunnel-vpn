@@ -3277,7 +3277,7 @@ class Core:
             sub = subscriptions.add(url, name, allow_private, kind)
             profiles = subscriptions.list_profiles(sub["id"])
             tid = pid = ""
-            if profiles:
+            if profiles and "added" not in sub:
                 with tunnels.LOCK:
                     data = tunnels.load()
                     t = self._attach_profile(data, profiles[0])
@@ -3289,10 +3289,17 @@ class Core:
         except (OSError, ValueError) as exc:
             self.log(f"!! подписка не добавлена: {exc}")
             return {"ok": False, "error": str(exc)}
-        self.log(f"→ добавлена подписка «{sub['name']}» ({sub['id']}): "
-                 f"профилей {len(profiles)}")
-        return {"ok": True, "subscription": sub["id"], "profiles": len(profiles),
-                "tunnel": tid, "profile": pid}
+        if "added" in sub:
+            self.log(f"→ подписка «{sub['name']}» ({sub['id']}) дополнена: "
+                     f"новых профилей {sub['added']}")
+        else:
+            self.log(f"→ добавлена подписка «{sub['name']}» ({sub['id']}): "
+                     f"профилей {len(profiles)}")
+        reply = {"ok": True, "subscription": sub["id"],
+                 "profiles": len(profiles), "tunnel": tid, "profile": pid}
+        if "added" in sub:
+            reply["added"] = sub["added"]
+        return reply
 
     def _preview(self, link="", url="", name="", allow_private=False, kind="auto"):
         try:

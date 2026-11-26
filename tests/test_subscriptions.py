@@ -107,6 +107,148 @@ def test_подписка_без_совместимых_узлов_отклон�
     assert subscriptions.load() == subscriptions.empty()
 
 
+def test_повтор_add_после_исчерпания_транспорта_дополняет_подписку(monkeypatch):
+    original = netguard.open_https
+    _fake_open(monkeypatch, _link(name="A"))
+    sub = subscriptions.add("https://sub.example.test/sub")
+    before = subscriptions.load()
+    monkeypatch.setattr(netguard, "open_https", original)
+    body = "\n".join((_link(name="A"),
+                      _link(uuid=UUID2, name="B", path="/b")))
+    clock = _Clock()
+    calls = _real_open(monkeypatch, 2, body, clock=clock)
+
+    again = subscriptions.add("https://sub.example.test/sub")
+
+    assert again["id"] == sub["id"] and again["added"] == 1
+    data = subscriptions.load()
+    assert data["profiles"][:1] == before["profiles"]
+    assert [p["name"] for p in data["profiles"]] == ["A", "B"]
+    assert [(s["name"], s["url"], s["auto"]) for s in data["subscriptions"]] == [
+        (s["name"], s["url"], s["auto"]) for s in before["subscriptions"]]
+    assert calls[0] > 9.0 and len(calls) == 3
+    assert clock.slept == [1.0]
+
+
+def test_add_делает_пять_попыток_и_не_пишет(monkeypatch):
+    original = netguard.open_https
+    _fake_open(monkeypatch, _link(name="A"))
+    subscriptions.add("https://sub.example.test/sub")
+    before = subscriptions.load()
+    monkeypatch.setattr(netguard, "open_https", original)
+    clock = _Clock()
+    calls = _real_open(monkeypatch, 10 ** 6, "", clock=clock)
+
+    with pytest.raises(ValueError, match="недоступен по HTTPS"):
+        subscriptions.add("https://sub.example.test/sub")
+
+    assert subscriptions.load() == before
+    assert calls[0] > 9.0 and len(calls) == 10
+    assert clock.slept == [1.0, 2.0, 4.0, 8.0]
+
+
+def test_add_успех_на_пятой_попытке_с_паузами(monkeypatch):
+    clock = _Clock()
+    body = "\n".join((_link(name="A"),
+                      _link(uuid=UUID2, name="B", path="/b")))
+    calls = _real_open(monkeypatch, 8, body, clock=clock)
+
+    sub = subscriptions.add("https://sub.example.test/sub")
+
+    assert [p["name"] for p in subscriptions.list_profiles(sub["id"])] == ["A", "B"]
+    assert calls[0] > 9.0 and len(calls) == 9
+    assert clock.slept == [1.0, 2.0, 4.0, 8.0]
+
+
+def test_add_успех_сразу_не_спит(monkeypatch):
+    clock = _Clock()
+    calls = _real_open(monkeypatch, 0, _link(name="A"), clock=clock)
+
+    subscriptions.add("https://sub.example.test/sub")
+
+    assert calls == [10.0]
+    assert clock.slept == []
+
+
+def test_add_не_начинает_попытку_после_бюджета(monkeypatch):
+    clock = _Clock()
+    calls = _real_open(monkeypatch, 10 ** 6, "", clock=clock, cost=20.0)
+
+    with pytest.raises(ValueError, match="недоступен по HTTPS"):
+        subscriptions.add("https://sub.example.test/sub")
+
+    assert subscriptions.load() == subscriptions.empty()
+    assert calls == [10.0, 10.0, 10.0, 8.0]
+    assert clock.slept == [1.0, 2.0, 4.0]
+
+
+def test_add_не_повторяет_терминальные_ошибки(monkeypatch):
+    attempts = []
+    clock = _Clock()
+    monkeypatch.setattr(subscriptions, "time", clock, raising=False)
+
+    def certificate(url, allow_private=False, timeout=None, max_bytes=None,
+                    deadline=None):
+        attempts.append(url)
+        raise ValueError("сертификат источника не подтверждён")
+
+    monkeypatch.setattr(netguard, "open_https", certificate)
+
+    with pytest.raises(ValueError, match="сертификат"):
+        subscriptions.add("https://sub.example.test/sub")
+
+    assert len(attempts) == 1 and clock.slept == []
+
+    attempts.clear()
+
+    def http(url, allow_private=False, timeout=None, max_bytes=None,
+             deadline=None):
+        attempts.append(url)
+        raise ValueError("источник ответил HTTP 404")
+
+    monkeypatch.setattr(netguard, "open_https", http)
+
+    with pytest.raises(ValueError, match="HTTP 404"):
+        subscriptions.add("https://sub.example.test/sub")
+
+    assert len(attempts) == 1 and clock.slept == []
+
+
+def test_предпросмотр_и_обновление_не_повторяют_транспорт(monkeypatch):
+    original = netguard.open_https
+    _fake_open(monkeypatch, _link(name="A"))
+    sub = subscriptions.add("https://sub.example.test/sub")
+    before = subscriptions.load()
+    monkeypatch.setattr(netguard, "open_https", original)
+    clock = _Clock()
+    calls = _real_open(monkeypatch, 10 ** 6, "", clock=clock)
+
+    with pytest.raises(ValueError, match="недоступен по HTTPS"):
+        subscriptions.preview("https://sub.example.test/sub")
+
+    assert len(calls) == 2 and clock.slept == []
+    calls.clear()
+
+    with pytest.raises(ValueError, match="недоступен по HTTPS"):
+        subscriptions.refresh(sub["id"])
+
+    assert len(calls) == 2 and clock.slept == []
+    assert [p["id"] for p in subscriptions.load()["profiles"]] == [
+        p["id"] for p in before["profiles"]]
+
+
+def test_add_не_дробит_окно_медленного_ответа(monkeypatch):
+    clock = _Clock()
+    calls = _real_open(monkeypatch, 1, _link(name="Slow"),
+                       clock=clock, cost=9.0)
+
+    subscriptions.add("https://sub.example.test/sub")
+
+    assert calls == [10.0, 1.0]
+    assert clock.slept == []
+    assert [p["name"] for p in subscriptions.load()["profiles"]] == ["Slow"]
+
+
 def test_обновление_без_совместимых_узлов_сохраняет_профили(monkeypatch):
     sub = _add_subscription(monkeypatch, _link(name="A"))
     _fake_open(monkeypatch, "vless://not-a-uuid")
@@ -165,11 +307,49 @@ def _singbox(name="Node", uuid=UUID1, path="/ws"):
 def _fake_open(monkeypatch, body):
     calls = []
 
-    def fake(url, allow_private=False, timeout=None, max_bytes=None):
+    def fake(url, allow_private=False, timeout=None, max_bytes=None,
+             deadline=None):
         calls.append((url, allow_private))
         return body
 
     monkeypatch.setattr(netguard, "open_https", fake)
+    return calls
+
+
+class _Clock:
+    def __init__(self):
+        self.value = 0.0
+        self.slept = []
+
+    def monotonic(self):
+        return self.value
+
+    def sleep(self, seconds):
+        self.slept.append(seconds)
+        self.value += seconds
+
+
+def _real_open(monkeypatch, failures, body, clock=None, cost=0.0):
+    calls = []
+
+    def check(url, allow_private=False):
+        return {"url": url, "host": "sub.example.test", "port": 443,
+                "path": "/sub", "ips": ["93.184.216.34"]}
+
+    def exchange(info, ctx, timeout, max_bytes):
+        calls.append(timeout)
+        if clock is not None:
+            clock.value += cost
+        if len(calls) <= failures:
+            raise OSError("нет маршрута")
+        return 200, None, body.encode("utf-8")
+
+    monkeypatch.setattr(netguard, "check_url", check)
+    monkeypatch.setattr(netguard, "_tls_context", lambda cadata="": cadata)
+    monkeypatch.setattr(netguard, "_exchange", exchange)
+    if clock is not None:
+        monkeypatch.setattr(netguard, "time", clock)
+        monkeypatch.setattr(subscriptions, "time", clock, raising=False)
     return calls
 
 
@@ -214,8 +394,8 @@ def test_happ_подписка_сохраняет_исходную_ссылку_
     assert subscriptions.refresh(sub["id"])["total"] == 1
     assert decoded_links == [link, link, link]
     assert [url for url, _ in calls] == [decoded, decoded, decoded]
-    with pytest.raises(ValueError, match="уже добавлена"):
-        subscriptions.add(link)
+    assert subscriptions.add(link)["id"] == sub["id"]
+    assert len(subscriptions.list_profiles(sub["id"])) == 1
 
 
 def test_happ_расшифрованный_адрес_проверяется(monkeypatch):
@@ -449,7 +629,8 @@ def test_добавление_singbox_подписки(monkeypatch):
 def _fake_bodies(monkeypatch, bodies):
     calls = []
 
-    def fake(url, allow_private=False, timeout=None, max_bytes=None):
+    def fake(url, allow_private=False, timeout=None, max_bytes=None,
+             deadline=None):
         calls.append(url)
         return bodies[url]
 

@@ -241,6 +241,113 @@ def test_сеть_недоступна(monkeypatch):
         netguard._request(_info("https://sub.example.test/"), 10, 1024)
 
 
+def test_исчерпание_транспорта_отличается_классом(monkeypatch):
+    def exchange(info, ctx, timeout, max_bytes):
+        raise OSError("нет маршрута")
+
+    monkeypatch.setattr(netguard, "_exchange", exchange)
+
+    with pytest.raises(netguard.TransportError):
+        netguard._request(_info("https://sub.example.test/"), 10, 1024)
+
+
+def test_отказ_сертификата_не_считается_транспортом(monkeypatch):
+    def exchange(info, ctx, timeout, max_bytes):
+        raise _cert_error("certificate has expired")
+
+    monkeypatch.setattr(netguard, "_tls_context", lambda cadata="": cadata)
+    monkeypatch.setattr(netguard, "_exchange", exchange)
+    monkeypatch.setattr(netguard, "_completed_chain", lambda info, timeout: "")
+
+    with pytest.raises(ValueError) as caught:
+        netguard._request(_info("https://sub.example.test/"), 10, 1024)
+
+    assert not isinstance(caught.value, netguard.TransportError)
+
+
+class _ZeroClock:
+    def monotonic(self):
+        return 0.0
+
+
+def test_бюджет_не_начинает_следующий_hop(monkeypatch):
+    calls = _patch_http(monkeypatch, {
+        "https://sub.example.test/start": (302, "/next", b""),
+        "https://sub.example.test/next": (200, None, b"next"),
+    })
+    monkeypatch.setattr(netguard, "time", _ZeroClock())
+
+    with pytest.raises(netguard.TransportError):
+        netguard.open_https("https://sub.example.test/start", deadline=0.0)
+
+    assert calls == []
+
+
+class _SpendClock:
+    def __init__(self):
+        self.value = 0.0
+
+    def monotonic(self):
+        return self.value
+
+
+def test_бюджет_истёк_на_следующем_hop_не_делает_dns(monkeypatch):
+    clock = _SpendClock()
+    checked = []
+
+    def check(url, allow_private=False):
+        checked.append(url)
+        return _info(url)
+
+    def request(info, timeout, max_bytes):
+        clock.value = 4.0
+        return 302, "/next", b""
+
+    monkeypatch.setattr(netguard, "check_url", check)
+    monkeypatch.setattr(netguard, "_request", request)
+    monkeypatch.setattr(netguard, "time", clock)
+
+    with pytest.raises(netguard.TransportError):
+        netguard.open_https("https://sub.example.test/start", deadline=3.0)
+
+    assert checked == ["https://sub.example.test/start"]
+
+
+def test_бюджет_истёк_во_время_dns_не_начинает_http(monkeypatch):
+    clock = _SpendClock()
+    checked = []
+
+    def check(url, allow_private=False):
+        checked.append(url)
+        clock.value = 5.0
+        return _info(url)
+
+    def request(info, timeout, max_bytes):
+        raise AssertionError("HTTP не должен начинаться")
+
+    monkeypatch.setattr(netguard, "check_url", check)
+    monkeypatch.setattr(netguard, "_request", request)
+    monkeypatch.setattr(netguard, "time", clock)
+
+    with pytest.raises(netguard.TransportError):
+        netguard.open_https("https://sub.example.test/start", deadline=3.0)
+
+    assert checked == ["https://sub.example.test/start"]
+
+
+def test_бюджет_ограничивает_таймаут_hop(monkeypatch):
+    calls = _patch_http(monkeypatch, {
+        "https://sub.example.test/start": (200, None, b"ok"),
+    })
+    monkeypatch.setattr(netguard, "time", _ZeroClock())
+
+    assert netguard.open_https("https://sub.example.test/start",
+                               deadline=3.0) == b"ok"
+    assert netguard.open_https("https://sub.example.test/start") == b"ok"
+
+    assert [call[2] for call in calls if call[0] == "request"] == [3.0, 10.0]
+
+
 class _Clock:
     def __init__(self, values):
         self._values = iter(values)

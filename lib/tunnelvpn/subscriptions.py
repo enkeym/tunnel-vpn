@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 import threading
+import time
 import zlib
 from datetime import datetime, timezone
 from urllib.parse import unquote_plus, urlsplit, urlunsplit
@@ -25,6 +26,9 @@ HAPP_LINK_IS_SUB = ("Happ-ссылка — это подписка: вставь
 ADAPTIVE_KINDS = ("auto",) + KINDS
 NAME_MAX_LEN = 80
 MAX_IMPORT = 2000
+ADD_PAUSES = (1.0, 2.0, 4.0, 8.0)
+ADD_ATTEMPTS = len(ADD_PAUSES) + 1
+ADD_BUDGET = 75.0
 
 _SUB_ID = re.compile(r"^s_[0-9a-f]{16}$")
 _PROFILE_ID = re.compile(r"^p_[0-9a-f]{16}$")
@@ -519,14 +523,36 @@ def _replace(data, sub, profiles, source, detected, allow_private, name):
     sub["name"] = _name(name) or sub["name"]
 
 
+def _append_profiles(data, source, profiles):
+    taken = {p["id"] for p in data["profiles"]}
+    known = {p["fingerprint"] for p in data["profiles"]}
+    added = 0
+    for profile in profiles:
+        mark = proxy.fingerprint(profile)
+        if mark in known:
+            continue
+        known.add(mark)
+        data["profiles"].append(_record(profile, source, taken))
+        added += 1
+    return added
+
+
 def add(url, name="", allow_private=False, kind="auto"):
-    info, detected, profiles = fetch(url, allow_private, kind)
+    info, detected, profiles = fetch(url, allow_private, kind,
+                                     attempts=ADD_ATTEMPTS)
     with LOCK:
         data = load()
         source = url.strip()
         key = _url_key(source)
-        if any(_url_key(item["url"]) == key for item in data["subscriptions"]):
-            raise ValueError("такая подписка уже добавлена")
+        same = next((s for s in data["subscriptions"]
+                     if _url_key(s["url"]) == key), None)
+        if same is not None:
+            added = _append_profiles(
+                data, {"subscription": same["id"]}, profiles)
+            same["updated_at"] = _now()
+            same["last_error"] = ""
+            save(data)
+            return {**same, "added": added}
         candidate = _replace_target(data, info["host"], profiles)
         if candidate is not None:
             _replace(data, candidate, profiles, source, detected,
@@ -535,15 +561,7 @@ def add(url, name="", allow_private=False, kind="auto"):
             return candidate
         taken = {s["id"] for s in data["subscriptions"]}
         sid = _new_id("s_", taken)
-        profile_ids = {p["id"] for p in data["profiles"]}
-        known = {p["fingerprint"] for p in data["profiles"]}
-        for profile in profiles:
-            mark = proxy.fingerprint(profile)
-            if mark in known:
-                continue
-            known.add(mark)
-            data["profiles"].append(
-                _record(profile, {"subscription": sid}, profile_ids))
+        _append_profiles(data, {"subscription": sid}, profiles)
         sub = {"id": sid, "name": _name(name, "Happ" if happ.is_link(source) else info["host"]),
                "url": source,
                "kind": detected, "allow_private": allow_private, "auto": False,
@@ -553,7 +571,7 @@ def add(url, name="", allow_private=False, kind="auto"):
         return sub
 
 
-def fetch(url, allow_private=False, kind="auto"):
+def fetch(url, allow_private=False, kind="auto", attempts=1):
     if kind not in ADAPTIVE_KINDS:
         raise ValueError(f"вид подписки {kind!r}, ожидаю один из "
                          f"{', '.join(ADAPTIVE_KINDS)}")
@@ -562,8 +580,20 @@ def fetch(url, allow_private=False, kind="auto"):
     source = happ.decrypt(url) if happ.is_link(url) else url
     info = netguard.parse_url(source)
     _check_full_url(info)
-    body = netguard.open_https(_fetch_url(info["url"]),
-                               allow_private=allow_private)
+    target = _fetch_url(info["url"])
+    deadline = time.monotonic() + ADD_BUDGET if attempts > 1 else None
+    for attempt in range(attempts):
+        try:
+            body = netguard.open_https(target, allow_private=allow_private,
+                                       deadline=deadline)
+            break
+        except netguard.TransportError:
+            if attempt + 1 == attempts:
+                raise
+            pause = ADD_PAUSES[attempt]
+            if deadline is not None and deadline - time.monotonic() <= pause:
+                raise
+            time.sleep(pause)
     detected = detect_kind(body) if kind == "auto" else kind
     return info, detected, parse_body(detected, body, strict=False)
 
