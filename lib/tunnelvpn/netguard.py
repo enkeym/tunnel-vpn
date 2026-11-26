@@ -2,6 +2,7 @@ import http.client
 import ipaddress
 import socket
 import ssl
+import time
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from . import winchain
@@ -256,20 +257,32 @@ def _exchange(info, context, timeout, max_bytes):
 
 
 def _request(info, timeout, max_bytes):
-    try:
-        return _exchange(info, _tls_context(), timeout, max_bytes)
-    except ssl.SSLCertVerificationError as exc:
-        cadata = _completed_chain(info, timeout)
-        if not cadata:
-            raise ValueError(_cert_reason(exc)) from None
+    deadline = time.monotonic() + timeout
+    for _ in range(2):
+        left = deadline - time.monotonic()
+        if left <= 0:
+            break
         try:
-            return _exchange(info, _tls_context(cadata), timeout, max_bytes)
-        except ssl.SSLCertVerificationError as again:
-            raise ValueError(_cert_reason(again)) from None
+            return _exchange(info, _tls_context(), left, max_bytes)
+        except ssl.SSLCertVerificationError as exc:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise ValueError(_cert_reason(exc)) from None
+            cadata = _completed_chain(info, left)
+            if not cadata:
+                raise ValueError(_cert_reason(exc)) from None
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise ValueError(_cert_reason(exc)) from None
+            try:
+                return _exchange(info, _tls_context(cadata), left, max_bytes)
+            except ssl.SSLCertVerificationError as again:
+                raise ValueError(_cert_reason(again)) from None
+            except (OSError, ssl.SSLError, http.client.HTTPException):
+                raise ValueError("источник недоступен по HTTPS") from None
         except (OSError, ssl.SSLError, http.client.HTTPException):
-            raise ValueError("источник недоступен по HTTPS") from None
-    except (OSError, ssl.SSLError, http.client.HTTPException):
-        raise ValueError("источник недоступен по HTTPS") from None
+            continue
+    raise ValueError("источник недоступен по HTTPS")
 
 
 def open_https(url, allow_private=False, timeout=DEFAULT_TIMEOUT,

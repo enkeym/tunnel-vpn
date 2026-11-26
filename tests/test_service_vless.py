@@ -2,6 +2,7 @@
 import base64
 import os
 import shutil
+import threading
 import types
 from urllib.parse import quote, urlencode
 
@@ -93,6 +94,663 @@ def _clone_sub(sid, url, updated_at, uuid, serial):
                  **{record["proto"]: dict(record[record["proto"]], uuid=uuid)}))
     subscriptions.save(data)
     return new_id
+
+
+def _auto_core(monkeypatch, *links):
+    core = _core()
+    core.tunnel = types.SimpleNamespace(main_id=None, cancel=threading.Event())
+    core._human = core._round_human = 0
+    _serve(monkeypatch, "\n".join(links))
+    reply = core.handle("add-subscription", {"url": SUB}, True)
+    assert reply["ok"] is True, reply
+    return core, reply
+
+
+class _StartTunnel:
+    def __init__(self):
+        self.main = None
+        self.uplink = None
+        self.cancel = threading.Event()
+        self.sides = []
+        self.started = []
+
+    def start(self, profile=""):
+        self.started.append(profile)
+        self.uplink = ("iface", "gw")
+        return ""
+
+    def stop(self):
+        self.uplink = None
+
+    def out_now(self):
+        return ""
+
+
+def _start_core(monkeypatch, *links):
+    core, reply = _auto_core(monkeypatch, *links)
+    core.tunnel = _StartTunnel()
+    core.lock = threading.Lock()
+    core._cmd_lock = threading.Lock()
+    core._running = None
+    core._cmd = 0
+    core._human = core._round_human = 0
+    core._retry_left = 0
+    core._conf_checks = {}
+    core._tests_lock = threading.Lock()
+    core._kicked = ()
+    core._fallback_at = {}
+    core.prober = types.SimpleNamespace(
+        stop_event=threading.Event(), new_route=lambda: None,
+        set=lambda **_: None)
+    core._mark = lambda *args, **kwargs: None
+    core._probe_now = lambda: None
+    core._test_active = lambda tid: None
+    return core, reply
+
+
+def _prober(core, monkeypatch, up, calls=None, during=None):
+    def probe(t, name, **kwargs):
+        if calls is not None:
+            calls.append((name, kwargs.get("alone")))
+        if during is not None:
+            during(name)
+        return {"result": "up" if name in up else "down", "answer": ""}
+    monkeypatch.setattr(core, "_finish_test", probe)
+
+
+def test_включение_через_службу_выбирает_рабочий_профиль(monkeypatch):
+    core, reply = _start_core(monkeypatch, _link(),
+                              _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    dead, live = subscriptions.list_profiles(sid)
+    calls = []
+    _prober(core, monkeypatch, {live["id"]}, calls)
+
+    result = core.handle("start-only", {"tunnel": tid}, True)
+
+    assert result == {"ok": True}
+    assert _tunnel({"tunnel": tid})["active"] == live["id"]
+    assert calls == [(dead["id"], True), (live["id"], True), (dead["id"], True)]
+    assert core.tunnel.started == [""]
+
+
+def test_включение_через_службу_сохраняет_правила_и_kill_switch(monkeypatch):
+    core, reply = _start_core(monkeypatch, _link(),
+                              _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    data = tunnels.load()
+    t = tunnels.find(data, tid)
+    t["mode"] = "list"
+    t["include"] = ["corp.example"]
+    t["exclude"] = ["198.51.100.7/32"]
+    t["exclude_apps"] = ["C:\\Games\\Steam\\steam.exe"]
+    data["kill_switch"] = True
+    tunnels.save(data)
+    live = subscriptions.list_profiles(sid)[1]
+    _prober(core, monkeypatch, {live["id"]})
+
+    result = core.handle("start-only", {"tunnel": tid}, True)
+
+    assert result == {"ok": True}
+    data = tunnels.load()
+    t = tunnels.find(data, tid)
+    assert t["active"] == live["id"]
+    assert (t["mode"], t["include"], t["exclude"], t["exclude_apps"]) == (
+        "list", ["corp.example"], ["198.51.100.7/32"],
+        ["C:\\Games\\Steam\\steam.exe"])
+    assert data["kill_switch"] is True
+
+
+def test_включение_не_меняет_работающий_активный_профиль(monkeypatch):
+    core, reply = _start_core(monkeypatch, _link(),
+                              _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    active = _tunnel({"tunnel": tid})["active"]
+    calls = []
+    _prober(core, monkeypatch, {active}, calls)
+
+    result = core.handle("start-only", {"tunnel": tid}, True)
+
+    assert result == {"ok": True}
+    assert _tunnel({"tunnel": tid})["active"] == active
+    assert calls == [(active, True)]
+    assert core.tunnel.started == [""]
+
+
+def test_включение_без_рабочих_профилей_честно_отказывает(monkeypatch):
+    core, reply = _start_core(monkeypatch, _link(),
+                              _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    active = _tunnel({"tunnel": tid})["active"]
+    _prober(core, monkeypatch, set())
+
+    result = core.handle("start-only", {"tunnel": tid}, True)
+
+    assert result["ok"] is False
+    assert "рабочих профилей" in result["error"]
+    assert core.tunnel.started == []
+    assert _tunnel({"tunnel": tid})["active"] == active
+
+
+def test_включение_не_применяет_результат_после_бюджета(monkeypatch):
+    core, reply = _start_core(monkeypatch, _link(),
+                              _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    active = _tunnel({"tunnel": tid})["active"]
+    calls = []
+    _prober(core, monkeypatch, {active}, calls)
+    monkeypatch.setattr(service, "AUTO_BUDGET", -1.0)
+
+    result = core.handle("start-only", {"tunnel": tid}, True)
+
+    assert result["ok"] is False
+    assert _tunnel({"tunnel": tid})["active"] == active
+    assert calls == [(active, True)]
+
+
+def test_включение_возвращает_оживший_активный_профиль(monkeypatch):
+    core, reply = _start_core(monkeypatch, _link(),
+                              _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    active = _tunnel({"tunnel": tid})["active"]
+    live = subscriptions.list_profiles(sid)[1]
+    calls = []
+
+    def probe(t, name, **kwargs):
+        calls.append((name, kwargs.get("alone")))
+        if name == active:
+            return {"result": "down" if calls.count((active, True)) == 1 else "up",
+                    "answer": ""}
+        return {"result": "up", "answer": ""}
+    monkeypatch.setattr(core, "_finish_test", probe)
+
+    result = core.handle("start-only", {"tunnel": tid}, True)
+
+    assert result == {"ok": True}
+    assert _tunnel({"tunnel": tid})["active"] == active
+    assert [name for name, _ in calls] == [active, live["id"], active]
+    assert core.tunnel.started == [""]
+
+
+def test_включение_отбрасывает_результат_после_смены_поколения(monkeypatch):
+    core, reply = _start_core(monkeypatch, _link(),
+                              _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    active = _tunnel({"tunnel": tid})["active"]
+    live = subscriptions.list_profiles(sid)[1]
+
+    def during(name):
+        if name == live["id"]:
+            core._human += 1
+
+    _prober(core, monkeypatch, {live["id"]}, during=during)
+
+    result = core.handle("start-only", {"tunnel": tid}, True)
+
+    assert result["ok"] is False
+    assert _tunnel({"tunnel": tid})["active"] == active
+    assert core.tunnel.started == []
+
+
+def test_включение_отбрасывает_результат_после_отмены(monkeypatch):
+    core, reply = _start_core(monkeypatch, _link(),
+                              _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    active = _tunnel({"tunnel": tid})["active"]
+    live = subscriptions.list_profiles(sid)[1]
+
+    def during(name):
+        if name == live["id"]:
+            core.tunnel.cancel.set()
+
+    _prober(core, monkeypatch, {live["id"]}, during=during)
+
+    result = core.handle("start-only", {"tunnel": tid}, True)
+
+    assert result["ok"] is False
+    assert _tunnel({"tunnel": tid})["active"] == active
+    assert core.tunnel.started == []
+
+
+def test_включение_отбрасывает_результат_после_остановки_службы(monkeypatch):
+    core, reply = _start_core(monkeypatch, _link(),
+                              _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    active = _tunnel({"tunnel": tid})["active"]
+    live = subscriptions.list_profiles(sid)[1]
+
+    def during(name):
+        if name == live["id"]:
+            core.prober.stop_event.set()
+
+    _prober(core, monkeypatch, {live["id"]}, during=during)
+
+    result = core.handle("start-only", {"tunnel": tid}, True)
+
+    assert result["ok"] is False
+    assert _tunnel({"tunnel": tid})["active"] == active
+    assert core.tunnel.started == []
+
+
+def test_включение_отбрасывает_результат_после_обновления_подписки(monkeypatch):
+    core, reply = _start_core(monkeypatch, _link(),
+                              _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    active = _tunnel({"tunnel": tid})["active"]
+    live = subscriptions.list_profiles(sid)[1]
+
+    def during(name):
+        if name == live["id"]:
+            subscriptions.set_auto(sid, False)
+
+    _prober(core, monkeypatch, {live["id"]}, during=during)
+
+    result = core.handle("start-only", {"tunnel": tid}, True)
+
+    assert result["ok"] is False
+    assert "устарел" in result["error"]
+    assert _tunnel({"tunnel": tid})["active"] == active
+    assert core.tunnel.started == []
+
+
+def test_включение_не_берёт_больше_лимита_кандидатов(monkeypatch):
+    core, reply = _start_core(monkeypatch, _link(),
+                              _link(uuid=UUID2, name="Second", path="/b"),
+                              _link(uuid=UUID3, name="Third", path="/c"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    active = _tunnel({"tunnel": tid})["active"]
+    last = subscriptions.list_profiles(sid)[2]
+    monkeypatch.setattr(service, "AUTO_TRIES", 1)
+    calls = []
+    _prober(core, monkeypatch, {last["id"]}, calls)
+
+    result = core.handle("start-only", {"tunnel": tid}, True)
+
+    assert result["ok"] is False
+    assert _tunnel({"tunnel": tid})["active"] == active
+    assert [name for name, _ in calls] == [
+        active, subscriptions.list_profiles(sid)[1]["id"]]
+
+
+def test_включение_отбрасывает_результат_после_пропажи_кандидата(monkeypatch):
+    core, reply = _start_core(monkeypatch, _link(),
+                              _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    active = _tunnel({"tunnel": tid})["active"]
+    live = subscriptions.list_profiles(sid)[1]
+
+    def during(name):
+        if name == live["id"]:
+            subscriptions.remove_profile(live["id"])
+
+    _prober(core, monkeypatch, {live["id"]}, during=during)
+
+    result = core.handle("start-only", {"tunnel": tid}, True)
+
+    assert result["ok"] is False
+    assert "устарел" in result["error"]
+    assert _tunnel({"tunnel": tid})["active"] == active
+    assert core.tunnel.started == []
+
+
+def test_финальная_запись_авто_держит_замок_подписки(monkeypatch):
+    core, reply = _start_core(monkeypatch, _link(),
+                              _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    live = subscriptions.list_profiles(sid)[1]
+    _prober(core, monkeypatch, {live["id"]})
+    real_save = tunnels.save
+    entered, done = threading.Event(), threading.Event()
+
+    def save(data):
+        t = tunnels.find(data, tid)
+        if t["active"] == live["id"] and not entered.is_set():
+            entered.set()
+
+            def off():
+                core.handle("set-subscription-auto",
+                            {"id": sid, "on": False}, True)
+                done.set()
+            threading.Thread(target=off, daemon=True).start()
+            assert not done.wait(0.2)
+        return real_save(data)
+
+    monkeypatch.setattr(tunnels, "save", save)
+
+    result = core.handle("start-only", {"tunnel": tid}, True)
+
+    assert result == {"ok": True}
+    assert done.wait(2)
+    assert _tunnel({"tunnel": tid})["active"] == live["id"]
+    assert subscriptions.list_subscriptions()[0]["auto"] is False
+
+
+def test_неудача_запуска_после_зелёной_пробы_возвращает_прежний_профиль(monkeypatch):
+    core, reply = _start_core(monkeypatch, _link(),
+                              _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    active = _tunnel({"tunnel": tid})["active"]
+    live = subscriptions.list_profiles(sid)[1]
+    _prober(core, monkeypatch, {live["id"]})
+
+    def start(profile=""):
+        core.tunnel.started.append(profile)
+        return "sing-box завершился сам"
+    monkeypatch.setattr(core.tunnel, "start", start)
+
+    result = core.handle("start-only", {"tunnel": tid}, True)
+
+    assert result["ok"] is False and result["error"] == "sing-box завершился сам"
+    assert _tunnel({"tunnel": tid})["active"] == active
+    assert core.tunnel.uplink is None
+
+
+def test_автозапуск_при_неудачном_автоподборе_взводит_повторы(monkeypatch):
+    core, reply = _start_core(monkeypatch, _link(),
+                              _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    assert _tunnel({"tunnel": tid})["enabled"] is False
+    _prober(core, monkeypatch, set())
+
+    result = core._do_start(retries=service.RECONNECT_TRIES, wake=True, auto=True)
+
+    assert result["ok"] is False
+    assert core._retry_left == service.RECONNECT_TRIES
+    assert _tunnel({"tunnel": tid})["enabled"] is True
+    assert core.tunnel.started == []
+
+
+def test_плитка_при_неудачном_автоподборе_возвращает_флаги(monkeypatch):
+    core, reply = _start_core(monkeypatch, _link(),
+                              _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    _prober(core, monkeypatch, set())
+
+    result = core.handle("start-only", {"tunnel": tid}, True)
+
+    assert result["ok"] is False
+    assert _tunnel({"tunnel": tid})["enabled"] is False
+    assert core.tunnel.started == []
+
+
+def _fallback_core(monkeypatch, *links):
+    core, reply = _start_core(monkeypatch, *links)
+    side = types.SimpleNamespace(tid=reply["tunnel"], title="Основной",
+                                 alive=lambda: False)
+    monkeypatch.setattr(core, "_failover_main", lambda verify=False: None)
+    return core, reply, side
+
+
+def test_отказ_основного_не_берёт_запасной_после_выключения_авто(monkeypatch):
+    core, reply, side = _fallback_core(
+        monkeypatch, _link(), _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    live = subscriptions.list_profiles(sid)[1]
+    calls, taken = [], []
+
+    def probe(t, name, **kwargs):
+        calls.append(name)
+        subscriptions.set_auto(sid, False)
+        return {"result": "up", "answer": ""}
+    monkeypatch.setattr(core, "_finish_test", probe)
+    monkeypatch.setattr(core, "_take_spare",
+                        lambda *a, **k: taken.append((a, k)) or {"ok": True})
+
+    assert core._fallback(side) is False
+    assert calls == [live["id"]]
+    assert taken == []
+
+
+def test_отказ_основного_не_превышает_лимит_автопроб(monkeypatch):
+    links = [_link()] + [
+        _link(uuid=f"00000000-0000-4000-8000-00000000000{i}",
+              name=f"Node{i}", path=f"/{i}") for i in range(2, 7)]
+    core, reply, side = _fallback_core(monkeypatch, *links)
+    sid = reply["subscription"]
+    subscriptions.set_auto(sid, True)
+    monkeypatch.setattr(service, "AUTO_TRIES", 2)
+    calls, taken = [], []
+
+    def probe(t, name, **kwargs):
+        calls.append(name)
+        return {"result": "down", "answer": ""}
+    monkeypatch.setattr(core, "_finish_test", probe)
+    monkeypatch.setattr(core, "_take_spare",
+                        lambda *a, **k: taken.append((a, k)) or {"ok": True})
+
+    assert core._fallback(side) is False
+    assert len(calls) == 2
+    assert taken == []
+    assert "лимит" in core.last_error
+
+
+def test_отказ_основного_не_берёт_запасной_после_бюджета(monkeypatch):
+    core, reply, side = _fallback_core(
+        monkeypatch, _link(), _link(uuid=UUID2, name="Second", path="/b"))
+    sid = reply["subscription"]
+    subscriptions.set_auto(sid, True)
+    live = subscriptions.list_profiles(sid)[1]
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(service, "time",
+                        types.SimpleNamespace(monotonic=lambda: clock["t"]))
+    calls, taken = [], []
+
+    def probe(t, name, **kwargs):
+        calls.append(name)
+        clock["t"] += service.AUTO_BUDGET + 1
+        return {"result": "up", "answer": ""}
+    monkeypatch.setattr(core, "_finish_test", probe)
+    monkeypatch.setattr(core, "_take_spare",
+                        lambda *a, **k: taken.append((a, k)) or {"ok": True})
+
+    assert core._fallback(side) is False
+    assert calls == [live["id"]]
+    assert taken == []
+
+
+def test_запасной_не_берётся_если_авто_выключено_до_записи(monkeypatch):
+    core, reply = _start_core(monkeypatch, _link(),
+                              _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    dead, live = subscriptions.list_profiles(sid)
+    marks = core._auto_snapshot(tid)[1]
+    subscriptions.set_auto(sid, False)
+    applied = []
+    monkeypatch.setattr(core, "_apply_locked",
+                        lambda **kwargs: applied.append(kwargs))
+
+    result = core._take_spare(dead, live["id"], locked=True, auto=marks)
+
+    assert result["ok"] is False and result.get("cancelled") is True
+    assert applied == []
+    assert _tunnel({"tunnel": tid})["active"] == dead["id"]
+
+
+def test_ошибка_применения_резерва_возвращает_прежний_активный(monkeypatch):
+    core, reply, side = _fallback_core(
+        monkeypatch, _link(), _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    dead = _tunnel({"tunnel": tid})["active"]
+    monkeypatch.setattr(core, "_finish_test",
+                        lambda *a, **k: {"result": "up", "answer": ""})
+    monkeypatch.setattr(core, "_start_locked",
+                        lambda **k: {"ok": False, "error": "не поднялся"})
+
+    assert core._fallback(side) is False
+    assert _tunnel({"tunnel": tid})["active"] == dead
+    assert core.last_error == "не поднялся"
+
+
+def test_неподтверждённый_резерв_возвращает_прежний_активный(monkeypatch):
+    core, reply, side = _fallback_core(
+        monkeypatch, _link(), _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    dead = _tunnel({"tunnel": tid})["active"]
+    monkeypatch.setattr(core, "_finish_test",
+                        lambda *a, **k: {"result": "up", "answer": ""})
+    monkeypatch.setattr(core, "_spare_works", lambda tid: False)
+
+    assert core._fallback(side) is False
+    assert _tunnel({"tunnel": tid})["active"] == dead
+
+
+def test_отмена_резерва_не_затирает_ручной_выбор(monkeypatch):
+    core, reply = _start_core(monkeypatch, _link(),
+                              _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    dead, live = subscriptions.list_profiles(sid)
+    marks = core._auto_snapshot(tid)[1]
+    core.tunnel.uplink = ("iface", "gw")
+    monkeypatch.setattr(core, "_apply_locked",
+                        lambda **k: {"ok": True, "applied": "sides"})
+
+    def works(tid_):
+        data = tunnels.load()
+        tunnels.find(data, tid)["active"] = dead["id"]
+        tunnels.save(data)
+        core._cmd += 1
+        return True
+    monkeypatch.setattr(core, "_spare_works", works)
+
+    result = core._take_spare(dead, live["id"], locked=True, auto=marks)
+
+    assert result["ok"] is False and result.get("cancelled") is True
+    assert _tunnel({"tunnel": tid})["active"] == dead["id"]
+
+
+def test_выключение_авто_между_чтениями_не_снимает_guard(monkeypatch):
+    core, reply = _start_core(monkeypatch, _link(),
+                              _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    real_auto = core._auto_profiles
+    reads = {"n": 0}
+
+    def auto_profiles(t, data=None):
+        reads["n"] += 1
+        result = real_auto(t, data)
+        if reads["n"] == 1:
+            subscriptions.set_auto(sid, False)
+        return result
+    monkeypatch.setattr(core, "_auto_profiles", auto_profiles)
+    taken = []
+    monkeypatch.setattr(core, "_finish_test",
+                        lambda *a, **k: {"result": "up", "answer": ""})
+    monkeypatch.setattr(core, "_take_spare",
+                        lambda *a, **k: taken.append((a, k)) or {"ok": True})
+
+    result = core._try_spares(tid, core._take_spare, lambda: False)
+
+    assert result["ok"] is False and result.get("cancelled") is True
+    assert taken == []
+
+
+def test_применение_с_авто_не_запускает_автопроход(monkeypatch):
+    core, reply = _start_core(monkeypatch, _link(),
+                              _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    active = _tunnel({"tunnel": tid})["active"]
+    monkeypatch.setattr(core, "_finish_test",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("apply проверял профили")))
+    monkeypatch.setattr(core, "_spares",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("apply перебирал запасные")))
+
+    result = core._start_locked(failover=False)
+
+    assert result == {"ok": True}
+    assert core.tunnel.started == [""]
+    assert _tunnel({"tunnel": tid})["active"] == active
+
+
+def test_ручная_смена_профиля_с_авто_не_запускает_автопроход(monkeypatch):
+    core, reply = _start_core(monkeypatch, _link(),
+                              _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    live = subscriptions.list_profiles(sid)[1]
+    monkeypatch.setattr(core, "_finish_test",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("set-active проверял профили")))
+
+    result = core.handle("set-active", {"tunnel": tid, "name": live["id"]}, True)
+
+    assert result == {"ok": True, "tunnel": tid, "active": live["id"]}
+    assert _tunnel({"tunnel": tid})["active"] == live["id"]
+
+
+def test_переключатель_авто_только_записывает_настройку(monkeypatch):
+    core, reply = _auto_core(monkeypatch, _link(),
+                             _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    active = _tunnel({"tunnel": tid})["active"]
+    before = len(tunnels.load()["tunnels"])
+    monkeypatch.setattr(core, "_finish_test",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("переключатель проверял профили")))
+
+    result = core.handle("set-subscription-auto", {"id": sid, "on": True}, True)
+
+    assert result == {"ok": True, "auto": True}
+    assert subscriptions.list_subscriptions()[0]["auto"] is True
+    assert len(tunnels.load()["tunnels"]) == before
+    assert _tunnel({"tunnel": tid})["active"] == active
+
+
+def test_переключатель_авто_выключается_без_проверок(monkeypatch):
+    core, reply = _auto_core(monkeypatch, _link(),
+                             _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    subscriptions.set_auto(sid, True)
+    active = _tunnel({"tunnel": tid})["active"]
+    monkeypatch.setattr(core, "_finish_test",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("выключение проверяло профили")))
+
+    result = core.handle("set-subscription-auto", {"id": sid, "on": False}, True)
+
+    assert result == {"ok": True, "auto": False}
+    assert subscriptions.list_subscriptions()[0]["auto"] is False
+    assert _tunnel({"tunnel": tid})["active"] == active
+
+
+def test_ручной_режим_подписки_не_проверяет_при_включении(monkeypatch):
+    core, reply = _start_core(monkeypatch, _link(),
+                              _link(uuid=UUID2, name="Second", path="/b"))
+    sid, tid = reply["subscription"], reply["tunnel"]
+    active = _tunnel({"tunnel": tid})["active"]
+    monkeypatch.setattr(core, "_finish_test",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("ручной режим проверял профили")))
+
+    result = core.handle("start-only", {"tunnel": tid}, True)
+
+    assert result == {"ok": True}
+    assert _tunnel({"tunnel": tid})["active"] == active
+    assert core.tunnel.started == [""]
 
 
 def test_ссылка_делает_основной_vless_туннель():

@@ -361,6 +361,9 @@ class Api:
             return self._subscription_op("remove-profile", arg or {})
         elif name == "set_allow_private":
             return self._subscription_op("set-allow-private", arg or {}, apply=False)
+        elif name == "set_subscription_auto":
+            return self._subscription_op("set-subscription-auto", arg or {},
+                                         apply=False)
         elif name == "list_subscriptions":
             return self._admin_call("list-subscriptions")
         elif name == "links":
@@ -1080,7 +1083,7 @@ class Api:
         if op == "remove-profile" and arg.get("tunnel"):
             payload["tunnel"] = arg.get("tunnel", "")
             payload["drop_tunnel"] = arg.get("drop_tunnel") is True
-        if op == "set-allow-private":
+        if op in ("set-allow-private", "set-subscription-auto"):
             payload["on"] = bool(arg.get("on"))
         reply = self._admin_call(op, **payload)
         if not reply.get("ok"):

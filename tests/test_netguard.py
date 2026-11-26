@@ -241,6 +241,102 @@ def test_сеть_недоступна(monkeypatch):
         netguard._request(_info("https://sub.example.test/"), 10, 1024)
 
 
+class _Clock:
+    def __init__(self, values):
+        self._values = iter(values)
+
+    def monotonic(self):
+        return next(self._values)
+
+
+def _fake_clock(monkeypatch, values):
+    monkeypatch.setattr(netguard, "time", _Clock(values))
+
+
+def test_однократный_сбой_сети_повторяется(monkeypatch):
+    attempts = []
+    _fake_clock(monkeypatch, [0.0, 0.0, 4.0])
+
+    def exchange(info, ctx, timeout, max_bytes):
+        attempts.append(timeout)
+        if len(attempts) == 1:
+            raise OSError("нет маршрута")
+        return 200, None, b"body"
+
+    monkeypatch.setattr(netguard, "_exchange", exchange)
+
+    result = netguard._request(_info("https://sub.example.test/"), 10, 1024)
+
+    assert result == (200, None, b"body")
+    assert attempts == [10.0, 6.0]
+
+
+def test_повторный_сбой_сети_не_зацикливается(monkeypatch):
+    attempts = []
+    _fake_clock(monkeypatch, [0.0, 0.0, 0.0])
+
+    def exchange(info, ctx, timeout, max_bytes):
+        attempts.append(timeout)
+        raise OSError("нет маршрута")
+
+    monkeypatch.setattr(netguard, "_exchange", exchange)
+
+    with pytest.raises(ValueError, match="недоступен по HTTPS"):
+        netguard._request(_info("https://sub.example.test/"), 10, 1024)
+    assert len(attempts) == 2
+
+
+def test_истёкший_бюджет_не_начинает_повтор(monkeypatch):
+    attempts = []
+    _fake_clock(monkeypatch, [0.0, 0.0, 10.0])
+
+    def exchange(info, ctx, timeout, max_bytes):
+        attempts.append(timeout)
+        raise OSError("нет маршрута")
+
+    monkeypatch.setattr(netguard, "_exchange", exchange)
+
+    with pytest.raises(ValueError, match="недоступен по HTTPS"):
+        netguard._request(_info("https://sub.example.test/"), 10, 1024)
+    assert attempts == [10.0]
+
+
+def test_истёкший_бюджет_не_восстанавливает_сертификат(monkeypatch):
+    attempts, chains = [], []
+    _fake_clock(monkeypatch, [0.0, 0.0, 10.0])
+
+    def exchange(info, ctx, timeout, max_bytes):
+        attempts.append(timeout)
+        raise _cert_error("certificate has expired")
+
+    monkeypatch.setattr(netguard, "_exchange", exchange)
+    monkeypatch.setattr(netguard, "_completed_chain",
+                        lambda info, timeout: chains.append(timeout) or "ЦЕПОЧКА")
+
+    with pytest.raises(ValueError, match="истёк"):
+        netguard._request(_info("https://sub.example.test/"), 10, 1024)
+    assert attempts == [10.0]
+    assert chains == []
+
+
+def test_истёкший_бюджет_после_цепочки_не_подключается(monkeypatch):
+    attempts, chains = [], []
+    _fake_clock(monkeypatch, [0.0, 0.0, 0.0, 10.0])
+
+    def exchange(info, ctx, timeout, max_bytes):
+        attempts.append(timeout)
+        raise _cert_error("certificate has expired")
+
+    monkeypatch.setattr(netguard, "_exchange", exchange)
+    monkeypatch.setattr(netguard, "_completed_chain",
+                        lambda info, timeout: chains.append(timeout) or "ЦЕПОЧКА")
+
+    with pytest.raises(ValueError, match="истёк"):
+        netguard._request(_info("https://sub.example.test/"), 10, 1024)
+    assert attempts == [10.0]
+    assert chains == [10.0]
+
+
 @pytest.mark.parametrize("message, expected", [
     ("unable to get local issuer certificate", "промежуточный сертификат"),
     ("certificate has expired", "истёк"),

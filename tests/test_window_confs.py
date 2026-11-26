@@ -678,6 +678,19 @@ def test_профиль_и_флаг_источника_без_лишнего_п�
     assert applied == [True] and refreshed == [True]
 
 
+def test_переключатель_авто_подписки_не_перезапускает_vpn(monkeypatch):
+    api, admin, _ = _api(monkeypatch, [{"ok": True, "auto": True}])
+    applied, refreshed = [], []
+    monkeypatch.setattr(api, "_apply", lambda *a, **k: applied.append(True))
+    monkeypatch.setattr(api, "refresh", lambda full=False: refreshed.append(full))
+
+    assert api.send("set_subscription_auto", {"id": "s1", "on": True}) == {
+        "ok": True, "auto": True}
+
+    assert admin == [("set-subscription-auto", {"id": "s1", "on": True})]
+    assert applied == [] and refreshed == [True]
+
+
 def test_обновление_подписки_применяется(monkeypatch):
     api, admin, _ = _api(monkeypatch, [{"ok": True, "added": 1}])
     applied = []

@@ -137,7 +137,7 @@ def _core(monkeypatch):
     core.logged = []
     monkeypatch.setattr(core, "log", core.logged.append)
     # Запасных конфигов нет: иначе сторож читал бы tunnels.json других тестов.
-    monkeypatch.setattr(core, "_spares", lambda tid: (None, []))
+    monkeypatch.setattr(core, "_spares", lambda tid, *a, **k: (None, []))
     monkeypatch.setattr(core, "_any_conf", lambda enabled_only=False: True)
     # Автоподключение выключено, пока тест не скажет иначе: не флаг этой машины.
     monkeypatch.setattr(service.Core, "autostart_enabled", staticmethod(lambda: False))
@@ -377,7 +377,7 @@ def test_поднялся_на_повторе_повторы_прекращаю�
 def test_запасные_перебираются_после_ошибки_применения(monkeypatch):
     core = _core(monkeypatch)
     t = {"id": "home", "name": "Личный", "active": "old", "proto": "wg"}
-    monkeypatch.setattr(core, "_spares", lambda tid: (t, ["bad", "good"]))
+    monkeypatch.setattr(core, "_spares", lambda tid, *a, **k: (t, ["bad", "good"]))
     monkeypatch.setattr(core, "_finish_test",
                         lambda *args, **kwargs: {"result": "up"})
     attempted = []
@@ -703,6 +703,70 @@ def _failover_env(core, monkeypatch, data, confs=None, only_err=""):
 
     monkeypatch.setattr(core, "_only", only)
     return switched
+
+
+def test_авто_подписка_ограничивает_запасные_своими_профилями(monkeypatch):
+    core = service.Core.__new__(service.Core)
+    core._conf_checks = {}
+    data = {"tunnels": [{"id": "home", "name": "Первый", "mode": "all",
+                         "proto": "vless", "active": "p1", "enabled": True}]}
+    monkeypatch.setattr(service.tunnels, "load", lambda: data)
+    monkeypatch.setattr(service.tunnels, "list_confs",
+                        lambda tid, proto: ["manual", "p1", "p2", "p3"])
+    monkeypatch.setattr(core, "_auto_profiles",
+                        lambda t, data=None: [{"id": "p1"}, {"id": "p2"},
+                                              {"id": "p3"}])
+
+    t, names = core._spares("home")
+
+    assert t["id"] == "home"
+    assert names == ["p2", "p3"]
+
+
+def test_отказ_основного_берёт_другой_профиль_авто_подписки(monkeypatch):
+    core = _core(monkeypatch)
+    data = {"tunnels": [{"id": "home", "name": "Первый", "mode": "all",
+                         "proto": "vless", "active": "p1", "enabled": True}]}
+    monkeypatch.setattr(service.tunnels, "load", lambda: data)
+    t = data["tunnels"][0]
+    monkeypatch.setattr(core, "_spares", lambda tid, *a, **k: (t, ["p1", "p2"]))
+    monkeypatch.setattr(core, "_finish_test",
+                        lambda tt, name, **kw: {
+                            "result": "up" if name == "p2" else "down"})
+    taken = []
+
+    def take(tt, name):
+        taken.append(name)
+        return {"ok": True}
+    monkeypatch.setattr(core, "_take_spare", take)
+    core.last_error = "было"
+
+    assert core._fallback(core.tunnel.home) is True
+    assert taken == ["p2"]
+    assert core.last_error == ""
+
+
+def test_сбой_переподключения_после_пробы_не_даёт_ложного_успеха(monkeypatch):
+    core = _core(monkeypatch)
+    data = {"tunnels": [{"id": "home", "name": "Первый", "mode": "all",
+                         "proto": "vless", "active": "p1", "enabled": True}]}
+    monkeypatch.setattr(service.tunnels, "load", lambda: data)
+    t = data["tunnels"][0]
+    monkeypatch.setattr(core, "_spares", lambda tid, *a, **k: (t, ["p1", "p2"]))
+    monkeypatch.setattr(core, "_finish_test",
+                        lambda tt, name, **kw: {
+                            "result": "up" if name == "p2" else "down"})
+    monkeypatch.setattr(core, "_take_spare",
+                        lambda tt, name: {"ok": False, "retry": True})
+    fallback = []
+    monkeypatch.setattr(core, "_failover_main",
+                        lambda verify=False: fallback.append(verify) or None)
+    core.last_error = ""
+
+    assert core._fallback(core.tunnel.home) is False
+    assert core.last_error
+    assert fallback == [True]
+
 
 
 def test_основной_не_поднялся_основным_становится_следующий(monkeypatch):
@@ -1395,7 +1459,7 @@ def _spare_confs(monkeypatch, core, answers, during=None, t=HOME_T):
             during()
         return answers[name], ""
 
-    monkeypatch.setattr(core, "_spares", lambda tid: (t, list(answers)))
+    monkeypatch.setattr(core, "_spares", lambda tid, *a, **k: (t, list(answers)))
     monkeypatch.setattr(core, "_run_test", run_test)
     monkeypatch.setattr(core, "_conf_stamp", lambda tid, name, proto="wg": None)
     def set_active(name, tunnel=""):
@@ -2468,8 +2532,8 @@ def test_включение_не_перебирает_резервы_под_за
     core = _core(monkeypatch)
     checked = []
     monkeypatch.setattr(core, "_spares",
-                        lambda tid: ({"id": tid, "name": "Личный", "active": "a",
-                                      "proto": "wg"}, ["b"]))
+                        lambda tid, *a, **k: ({"id": tid, "name": "Личный",
+                                               "active": "a", "proto": "wg"}, ["b"]))
     monkeypatch.setattr(core, "_spare_works",
                         lambda tid: checked.append(("works", tid)) or True)
     monkeypatch.setattr(core, "_try_spares",
@@ -2485,8 +2549,8 @@ def test_переподключение_сторожа_резервы_не_пе�
     core._cmd = core._human = core._round_human = 0
     tried = []
     monkeypatch.setattr(core, "_spares",
-                        lambda tid: ({"id": tid, "name": "Личный", "active": "a",
-                                      "proto": "wg"}, ["b"]))
+                        lambda tid, *a, **k: ({"id": tid, "name": "Личный",
+                                               "active": "a", "proto": "wg"}, ["b"]))
     monkeypatch.setattr(core, "_spare_works", lambda tid: False)
     monkeypatch.setattr(core, "_try_spares",
                         lambda *args, **kwargs: tried.append("перебор")
@@ -2502,8 +2566,8 @@ def test_ручное_включение_резервы_перебирает(mon
     core._cmd = core._human = core._round_human = 0
     tried = []
     monkeypatch.setattr(core, "_spares",
-                        lambda tid: ({"id": tid, "name": "Личный", "active": "a",
-                                      "proto": "wg"}, ["b"]))
+                        lambda tid, *a, **k: ({"id": tid, "name": "Личный",
+                                               "active": "a", "proto": "wg"}, ["b"]))
     monkeypatch.setattr(core, "_spare_works", lambda tid: False)
     monkeypatch.setattr(core, "_try_spares",
                         lambda *args, **kwargs: tried.append("перебор")
@@ -2527,8 +2591,8 @@ def test_команда_start_включает_перебор(monkeypatch):
     assert core._handle("start", {}, False) == {"ok": True}
     assert core._handle("start-only", {"tunnel": "home"}, False) == {"ok": True}
 
-    assert seen == [("", {"wake": True, "failover": True}),
-                    ("", {"only": "home", "failover": True})]
+    assert seen == [("", {"wake": True, "failover": True, "auto": True}),
+                    ("", {"only": "home", "failover": True, "auto": True})]
 
 
 def test_фоновые_пути_не_включают_перебор_сами():

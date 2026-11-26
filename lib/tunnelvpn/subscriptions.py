@@ -118,9 +118,12 @@ def _check_sub(raw):
     last_error = raw.get("last_error", "")
     if not isinstance(last_error, str):
         raise ValueError(f"подписка {sid}: last_error должен быть строкой")
+    auto = raw.get("auto", False)
+    if not isinstance(auto, bool):
+        raise ValueError(f"подписка {sid}: auto должен быть true или false")
     return {"id": sid, "name": _name(raw.get("name"), host),
             "url": url, "kind": kind,
-            "allow_private": allow_private,
+            "allow_private": allow_private, "auto": auto,
             "updated_at": _check_time(raw.get("updated_at", ""), "updated_at"),
             "last_error": last_error}
 
@@ -318,9 +321,10 @@ def detect_kind(body):
     raise ValueError(NOT_A_SUBSCRIPTION)
 
 
-def _parse_uri(text):
+def _parse_uri(text, strict=True):
     profiles = []
     seen = set()
+    first_error = None
     for number, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -328,6 +332,10 @@ def _parse_uri(text):
         try:
             profile = proxy.parse_link(line)
         except ValueError as exc:
+            if not strict:
+                if first_error is None:
+                    first_error = f"строка {number}: {exc}"
+                continue
             raise ValueError(f"строка {number}: {exc}") from None
         mark = proxy.fingerprint(profile)
         if mark in seen:
@@ -335,11 +343,13 @@ def _parse_uri(text):
         seen.add(mark)
         profiles.append(profile)
     if not profiles:
+        if first_error is not None:
+            raise ValueError(first_error)
         raise ValueError("в подписке нет ссылок vless:// или hysteria2://")
     return profiles
 
 
-def parse_body(kind, body):
+def parse_body(kind, body, strict=True):
     text = _decode(body)
     if kind == "auto":
         kind = detect_kind(text)
@@ -353,7 +363,7 @@ def parse_body(kind, body):
         kind = "singbox" if text.strip().startswith("{") else "uri-list"
     if kind == "singbox":
         return vless.parse_singbox_json(text)
-    profiles = _parse_uri(text)
+    profiles = _parse_uri(text, strict)
     if len(profiles) > vless.MAX_PROFILES:
         raise ValueError(f"профилей больше {vless.MAX_PROFILES}")
     return profiles
@@ -536,7 +546,7 @@ def add(url, name="", allow_private=False, kind="auto"):
                 _record(profile, {"subscription": sid}, profile_ids))
         sub = {"id": sid, "name": _name(name, "Happ" if happ.is_link(source) else info["host"]),
                "url": source,
-               "kind": detected, "allow_private": allow_private,
+               "kind": detected, "allow_private": allow_private, "auto": False,
                "updated_at": _now(), "last_error": ""}
         data["subscriptions"].append(sub)
         save(data)
@@ -555,7 +565,7 @@ def fetch(url, allow_private=False, kind="auto"):
     body = netguard.open_https(_fetch_url(info["url"]),
                                allow_private=allow_private)
     detected = detect_kind(body) if kind == "auto" else kind
-    return info, detected, parse_body(detected, body)
+    return info, detected, parse_body(detected, body, strict=False)
 
 
 def preview(url, name="", allow_private=False, kind="auto"):
@@ -742,6 +752,20 @@ def set_allow_private(sub_id, value):
         if sub is None:
             raise ValueError(f"нет подписки {sub_id}")
         sub["allow_private"] = value
+        save(data)
+        return sub
+
+
+def set_auto(sub_id, value):
+    sub_id = _check_sub_id(sub_id)
+    if not isinstance(value, bool):
+        raise ValueError("auto должен быть true или false")
+    with LOCK:
+        data = load()
+        sub = find(data, sub_id)
+        if sub is None:
+            raise ValueError(f"нет подписки {sub_id}")
+        sub["auto"] = value
         save(data)
         return sub
 

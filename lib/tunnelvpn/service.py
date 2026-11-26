@@ -60,6 +60,8 @@ CONF_OPS = frozenset({
     "set-kill-switch", "remove-subscription", "remove-profile",
     "dedupe-subscriptions", "set-allow-private"})
 JOBS_KEPT = 20
+AUTO_TRIES = 8
+AUTO_BUDGET = 60.0
 AMNEZIA_TRIAL = "amnezia"
 # Сколько кругов пробера (по FAST_EVERY) новая сеть должна продержаться,
 # прежде чем переподключаться: Wi-Fi при смене точки и пробуждении моргает,
@@ -457,7 +459,8 @@ class Core:
             # красным, пока его не включили руками. Повторы сторож тратит, только
             # когда шлюз появился, — то есть ждёт сеть.
             threading.Thread(target=self._do_start,
-                             kwargs={"retries": RECONNECT_TRIES, "wake": True},
+                             kwargs={"retries": RECONNECT_TRIES, "wake": True,
+                                     "auto": True},
                              daemon=True).start()
 
     def shutdown(self):
@@ -514,9 +517,10 @@ class Core:
         if op == "howto":
             return {"ok": True, "howto": self._howto(trusted)}
         if op == "start":
-            return self._do_start(payload.get("profile", ""), wake=True, failover=True)
+            return self._do_start(payload.get("profile", ""), wake=True,
+                                  failover=True, auto=True)
         if op == "start-only":
-            return self._do_start(only=tid, failover=True)
+            return self._do_start(only=tid, failover=True, auto=True)
         if op == "stop":
             return self._do_stop()
         if op == "apply":
@@ -618,6 +622,9 @@ class Core:
         if op == "set-allow-private":
             return self._set_allow_private(payload.get("id", ""),
                                            payload.get("on") is True)
+        if op == "set-subscription-auto":
+            return self._set_subscription_auto(payload.get("id", ""),
+                                               payload.get("on") is True)
         if op == "log":
             return {"ok": True, "lines": self._tail_log(int(payload.get("lines", 200)))}
         return {"ok": False, "error": f"неизвестная команда: {op}"}
@@ -1186,7 +1193,7 @@ class Core:
         return cls._singbox_cached
 
     def _do_start(self, profile="", reconnect=False, retries=0, wake=False, only="",
-                  failover=False):
+                  failover=False, auto=False):
         """Поднимает туннель (_start_locked). Переподключение сторожа берёт
         замок без ожидания: занято — значит, человек или правка уже делают своё.
         Команда человека и автозапуск — через _command."""
@@ -1194,7 +1201,8 @@ class Core:
             return self._command(
                 ("start", profile, wake, only),
                 lambda: self._start_locked(profile, retries=retries, wake=wake,
-                                           only=only, failover=failover))
+                                           only=only, failover=failover,
+                                           auto=auto))
         if not self.lock.acquire(blocking=False):
             return {"ok": False, "error": f"уже идёт: {self.busy or 'операция'}"}
         try:
@@ -1250,7 +1258,7 @@ class Core:
             self.lock.release()
 
     def _start_locked(self, profile="", reconnect=False, retries=0, wake=False, only="",
-                      failover=False, keep_guard=False):
+                      failover=False, keep_guard=False, auto=False):
         """Поднимает туннель; замок уже взят. reconnect — сначала снять текущий:
         без этого start принял бы живой процесс за «уже работает» и ничего не
         сделал. retries — сколько повторов взвести, если не поднимется. Взводим
@@ -1285,10 +1293,24 @@ class Core:
                 self.tunnel.stop()
             began = time.monotonic()
             was = None
+            picked, auto_was = "", None
             if only:
                 was, err = self._only(only)
             else:
                 err = self._wake_all() if wake else ""
+            if (auto and not err and not profile and not reconnect
+                    and self.tunnel.uplink is None):
+                picked, auto_err, auto_was = self._auto_select(only)
+                if auto_err:
+                    self.last_error = auto_err
+                    self.log(f"!! автоподбор профиля: {auto_err}")
+                    if retries:
+                        self._retry_left = retries
+                    if was:
+                        self._restore_flags(was)
+                    return {"ok": False, "error": auto_err}
+                if picked:
+                    self.log(f"→ автоподбор профиля: «{picked}» отвечает")
             err = err or self.tunnel.start(profile)
             if not err and failover and self.tunnel.main is not None:
                 main = self.tunnel.main
@@ -1297,7 +1319,8 @@ class Core:
                     command = self._cmd
                     result = self._try_spares_marked(
                             main.tid,
-                            lambda t, name: self._take_spare(t, name, locked=True),
+                            lambda t, name, auto=None: self._take_spare(
+                                t, name, locked=True, auto=auto),
                             lambda: (command != self._cmd
                                      or self.tunnel.cancel.is_set()
                                      or self.prober.stop_event.is_set()),
@@ -1310,6 +1333,8 @@ class Core:
                 self.log(f"→ включение отменено через {took:.1f} с — убираю")
                 self.tunnel.stop()
                 guard_err = "" if was_up else self._release_guard()
+                if auto_was:
+                    self._restore_auto_active(auto_was, picked)
                 if was:
                     self._restore_flags(was)
                 if guard_err:
@@ -1325,6 +1350,8 @@ class Core:
                 # уже могли встать. Убираем за собой сразу, а не ждём человека.
                 self.tunnel.stop()
                 guard_err = "" if was_up else self._release_guard()
+                if auto_was:
+                    self._restore_auto_active(auto_was, picked)
                 if was:
                     self._restore_flags(was)
                 if guard_err:
@@ -1401,6 +1428,19 @@ class Core:
         r = self._save_tunnels(data, "VPN не поднялся — флаги туннелей как были")
         if not r["ok"]:
             self.log(f"!! флаги туннелей не вернуть: {r['error']}")
+
+    def _restore_auto_active(self, prev, picked):
+        tid, was = prev
+        try:
+            with tunnels.LOCK:
+                data = tunnels.load()
+                t = tunnels.find(data, tid)
+                if t is None or (t.get("active") or "") != picked:
+                    return
+                t["active"] = was
+                tunnels.save(data)
+        except (OSError, ValueError) as exc:
+            self.log(f"!! прежний профиль не вернуть: {exc}")
 
     def _wake_all(self):
         """Нет включённого туннеля с конфигом — включает все: выключенный
@@ -1602,7 +1642,7 @@ class Core:
         if self.tunnel.uplink or self.busy or not self.autostart_enabled():
             return
         self.log("→ автоподключение после сна: включаю")
-        self._do_start(retries=RECONNECT_TRIES, wake=True)
+        self._do_start(retries=RECONNECT_TRIES, wake=True, auto=True)
 
     def _watch_once(self, seen, streak, retry_at):
         """Один круг сторожа. Принимает и возвращает его состояние:
@@ -2247,28 +2287,61 @@ class Core:
         return result
 
     def _try_spares(self, tid, take, cancelled):
-        t, names = self._spares(tid)
+        try:
+            with tunnels.LOCK, subscriptions.LOCK:
+                data = tunnels.load()
+                sub_data = subscriptions.load()
+        except (OSError, ValueError):
+            return {"ok": False, "cancelled": True}
+        t, names = self._spares(tid, data, sub_data)
         if t is None:
             return {"ok": False, "cancelled": True}
         proto = t.get("proto", "wg")
         expected = dict(t)
         tests = self._tests_of(tid, names, proto)
+        try:
+            profiles = (self._auto_profiles(t, sub_data)
+                        if t.get("proto") == "vless" else [])
+        except (OSError, ValueError):
+            profiles = []
+        auto = {p["id"]: p["fingerprint"] for p in profiles} or None
+        deadline = time.monotonic() + AUTO_BUDGET
+        tries = 0
+
+        def policy():
+            now = self._auto_snapshot(tid)
+            return now[1] if now else None
+
+        def stale():
+            return auto is not None and (policy() != auto
+                                         or time.monotonic() >= deadline)
+
         for name in names:
             if cancelled():
                 return {"ok": False, "cancelled": True}
+            if auto is not None:
+                if policy() != auto:
+                    return {"ok": False, "cancelled": True}
+                if tries >= AUTO_TRIES or time.monotonic() >= deadline:
+                    return {"ok": False,
+                            "error": f"Автоподбор «{t['name']}» не уложился "
+                                     f"в лимит проверок"}
             current, _ = self._spares(tid)
             if current != expected:
                 return {"ok": False, "cancelled": True}
             stamp = self._conf_stamp(tid, name, proto)
             result = tests.get(name, {}).get("result")
             if result != "up":
+                tries += 1
                 result = self._finish_test(t, name, alone=True)["result"]
             current, _ = self._spares(tid)
             if (cancelled() or current != expected
-                    or stamp != self._conf_stamp(tid, name, proto)):
+                    or stamp != self._conf_stamp(tid, name, proto)
+                    or stale()):
                 return {"ok": False, "cancelled": True}
             if result == "up":
-                applied = take(current, name)
+                applied = (take(current, name, auto=auto) if auto is not None
+                           else take(current, name))
                 if applied["ok"] or not applied.get("retry"):
                     return applied
             current, _ = self._spares(tid)
@@ -2279,15 +2352,23 @@ class Core:
         return {"ok": False,
                 "error": f"Ни один конфиг туннеля «{t['name']}» не работает"}
 
-    def _spares(self, tid):
+    def _spares(self, tid, data=None, sub_data=None):
         """(туннель tid из tunnels.json, его конфиги кроме активного) или (None, []).
         По порядку списка, начиная со следующего за активным и по кругу: следующий
         увод с запасного пробует дальше по списку, а не те же с начала."""
         try:
-            t = Core._target(tunnels.load(), tid)
+            t = Core._target(data if data is not None else tunnels.load(), tid)
         except (OSError, ValueError):
             return None, []
         names = tunnels.list_confs(t["id"], t.get("proto", "wg"))
+        if t.get("proto") == "vless":
+            try:
+                auto = self._auto_profiles(t, sub_data)
+            except (OSError, ValueError):
+                auto = []
+            if auto:
+                keep = {p["id"] for p in auto}
+                names = [n for n in names if n in keep]
         at = names.index(t["active"]) if t["active"] in names else -1
         names = names[at + 1:] + names[:max(at, 0)]
         tests = self._tests_of(tid, names, t.get("proto", "wg"))
@@ -2372,7 +2453,7 @@ class Core:
             return False
         return self.prober.check_one(tid, self.tunnel.delay)[0] in ("up", "none")
 
-    def _take_spare(self, t, name, locked=False):
+    def _take_spare(self, t, name, locked=False, auto=None):
         """Ответивший запасной name — активным и на живой VPN как правка человека
         (_apply_locked), затем выход снова через основной (_try_back без паузы).
         Под замком без ожидания, как перезапуск сторожа: занято или человек уже
@@ -2386,38 +2467,67 @@ class Core:
                 return {"ok": False, "cancelled": True}
             proto = t.get("proto", "wg")
             stamp = self._conf_stamp(t["id"], name, proto)
-            r = self._set_active(name, tunnel=t["id"])
+            was = t.get("active") or ""
+            if auto is None:
+                r = self._set_active(name, tunnel=t["id"])
+            else:
+                r = {"ok": False, "cancelled": True}
+                try:
+                    with tunnels.LOCK, subscriptions.LOCK:
+                        data = tunnels.load()
+                        sub_data = subscriptions.load()
+                        nt = tunnels.find(data, t["id"])
+                        fresh = ({p["id"]: p["fingerprint"]
+                                  for p in self._auto_profiles(nt, sub_data)}
+                                 if nt is not None else {})
+                        if (nt is not None
+                                and (nt.get("active") or "") == (t.get("active") or "")
+                                and fresh == auto and name in fresh
+                                and name in tunnels.list_confs(nt["id"], proto)):
+                            nt["active"] = name
+                            tunnels.save(data)
+                            r = {"ok": True, "tunnel": nt["id"], "active": name}
+                except (OSError, ValueError):
+                    r = {"ok": False, "cancelled": True}
             if not r["ok"]:
+                if r.get("cancelled"):
+                    return r
                 self.log(f"!! запасной {name}.conf не сделать активным: {r['error']}")
                 return r
             self.log(f"→ «{t['name']}»: запасной {name}.conf отвечает — делаю его "
                      f"активным вместо {t['active']}.conf")
             human, command = self._human, self._cmd
             error, busy = self.last_error, self.busy
+            confirmed = False
             try:
-                r = (self._apply_locked(failover=False)
-                     if self.tunnel.uplink is not None
-                     else self._start_locked(failover=False))
+                try:
+                    r = (self._apply_locked(failover=False)
+                         if self.tunnel.uplink is not None
+                         else self._start_locked(failover=False))
+                finally:
+                    self.last_error, self.busy = error, busy
+                    if self._cmd == command and self._human == human + 1:
+                        self._round_human = self._human
+                if not r["ok"]:
+                    self.log(f"!! запасной {name}.conf не применить: {r.get('error', '')}")
+                    return {**r, "retry": r.get("applied") == "sides"}
+                works = self._spare_works(t["id"])
+                current, _ = self._spares(t["id"])
+                if (self._cmd != command or self.tunnel.cancel.is_set()
+                        or self.prober.stop_event.is_set()
+                        or current != {**t, "active": name}
+                        or stamp != self._conf_stamp(t["id"], name, proto)):
+                    return {"ok": False, "cancelled": True}
+                if not works:
+                    return {"ok": False, "retry": True}
+                confirmed = True
+                self._mark("селектор сменён", began, "резерв отвечает")
+                self.prober.set(out=self.tunnel.out_now())
+                self.prober.remeasure()
+                return {"ok": True}
             finally:
-                self.last_error, self.busy = error, busy
-                if self._cmd == command and self._human == human + 1:
-                    self._round_human = self._human
-            if not r["ok"]:
-                self.log(f"!! запасной {name}.conf не применить: {r.get('error', '')}")
-                return {**r, "retry": r.get("applied") == "sides"}
-            works = self._spare_works(t["id"])
-            current, _ = self._spares(t["id"])
-            if (self._cmd != command or self.tunnel.cancel.is_set()
-                    or self.prober.stop_event.is_set()
-                    or current != {**t, "active": name}
-                    or stamp != self._conf_stamp(t["id"], name, proto)):
-                return {"ok": False, "cancelled": True}
-            if not works:
-                return {"ok": False, "retry": True}
-            self._mark("селектор сменён", began, "резерв отвечает")
-            self.prober.set(out=self.tunnel.out_now())
-            self.prober.remeasure()
-            return {"ok": True}
+                if auto is not None and not confirmed:
+                    self._restore_auto_active((t["id"], was), name)
         finally:
             if not locked:
                 self.lock.release()
@@ -3228,6 +3338,113 @@ class Core:
         self.log(f"→ подписка {sid} обновлена: +{r['added']}, "
                  f"изменено {r['updated']}, пропало {r['missing']}")
         return {"ok": True, **r}
+
+    def _set_subscription_auto(self, sid, on):
+        try:
+            if on and not [p for p in subscriptions.list_profiles(sid)
+                           if not p.get("missing")
+                           and p.get("proto") in proxy.PROTOS]:
+                return {"ok": False, "auto": False,
+                        "error": "в подписке нет профилей для автоподбора"}
+            sub = subscriptions.set_auto(sid, on)
+        except (OSError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
+        self.log(f"→ подписка «{sub['name']}»: авто-выбор "
+                 f"{'включён' if on else 'выключен'}")
+        return {"ok": True, "auto": on}
+
+    def _auto_profiles(self, t, data=None):
+        active = t.get("active") or ""
+        if not active:
+            return []
+        data = data if data is not None else subscriptions.load()
+        profile = subscriptions.find_profile(data, active)
+        sid = (profile.get("source") or {}).get("subscription", "") if profile else ""
+        sub = subscriptions.find(data, sid) if sid else None
+        if sub is None or sub.get("auto") is not True:
+            return []
+        return [p for p in data["profiles"]
+                if p["source"] == {"subscription": sid}
+                and not p.get("missing") and p.get("proto") in proxy.PROTOS]
+
+    def _auto_snapshot(self, tid):
+        try:
+            data = tunnels.load()
+            sub_data = subscriptions.load()
+        except (OSError, ValueError):
+            return None
+        t = tunnels.find(data, tid) if tid else tunnels.main_tunnel(data)
+        if t is None or t.get("proto") != "vless":
+            return None
+        try:
+            profiles = self._auto_profiles(t, sub_data)
+        except (OSError, ValueError):
+            return None
+        if not profiles:
+            return None
+        return t, {p["id"]: p["fingerprint"] for p in profiles}
+
+    def _auto_select(self, tid=""):
+        snap = self._auto_snapshot(tid)
+        if snap is None:
+            return "", "", None
+        t, marks = snap
+        active = t.get("active") or ""
+        human = self._human
+        deadline = time.monotonic() + AUTO_BUDGET
+
+        def stale():
+            return (self._human != human or self.tunnel.cancel.is_set()
+                    or self.prober.stop_event.is_set()
+                    or time.monotonic() >= deadline)
+
+        def done(picked, err):
+            prev = (t["id"], active) if picked and active and picked != active else None
+            return picked, err, prev
+
+        def probe(name):
+            return self._finish_test(t, name, alone=True)["result"] == "up"
+
+        def commit(name):
+            try:
+                with tunnels.LOCK, subscriptions.LOCK:
+                    now = tunnels.load()
+                    sub_now = subscriptions.load()
+                    nt = tunnels.find(now, t["id"])
+                    if (nt is None or nt.get("proto") != "vless"
+                            or (nt.get("active") or "") != active):
+                        return False
+                    fresh = {p["id"]: p["fingerprint"]
+                             for p in self._auto_profiles(nt, sub_now)}
+                    if fresh != marks or name not in fresh:
+                        return False
+                    nt["active"] = name
+                    tunnels.save(now)
+            except (OSError, ValueError):
+                return False
+            return True
+
+        if active:
+            if probe(active):
+                if stale():
+                    return done("", "время автоподбора вышло")
+                return done(active, "")
+            if stale():
+                return done("", "время автоподбора вышло")
+        for name in [pid for pid in marks if pid != active][:AUTO_TRIES]:
+            if stale():
+                return done("", "время автоподбора вышло")
+            if not probe(name):
+                continue
+            if stale():
+                return done("", "время автоподбора вышло")
+            if active and probe(active):
+                return (done("", "время автоподбора вышло") if stale()
+                        else done(active, ""))
+            if not commit(name):
+                return done("", "результат автоподбора устарел")
+            return done(name, "")
+        return done("", "рабочих профилей не нашлось")
 
     def _list_subscriptions(self):
         try:

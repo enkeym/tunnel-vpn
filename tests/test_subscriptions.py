@@ -61,6 +61,64 @@ def test_смешанная_base64_подписка_сохраняет_оба_п
         "vless", "hysteria2"]
 
 
+def test_подписка_с_неподдерживаемой_строкой_сохраняет_рабочие_узлы(monkeypatch):
+    body = _b64("\n".join((_link(name="Рабочий"), "ss://unsupported",
+                           _hysteria2_link())))
+    _fake_open(monkeypatch, body)
+
+    sub = subscriptions.add("https://sub.example.test/sub")
+    profiles = subscriptions.load()["profiles"]
+
+    assert sub["kind"] == "base64"
+    assert [p["name"] for p in profiles] == ["Рабочий", "Hysteria2"]
+    assert [p["proto"] for p in profiles] == ["vless", "hysteria2"]
+
+
+def test_обновление_подписки_с_неподдерживаемой_строкой_не_теряет_узлы(monkeypatch):
+    clean = _b64("\n".join((_link(name="A"), _hysteria2_link())))
+    sub = _add_subscription(monkeypatch, clean)
+    _fake_open(monkeypatch, _b64("\n".join((_link(name="A"), _hysteria2_link(),
+                                            "ss://unsupported"))))
+
+    result = subscriptions.refresh(sub["id"])
+
+    assert result["total"] == 2
+    assert result["missing"] == 0
+    assert [p["missing"] for p in subscriptions.load()["profiles"]] == [False, False]
+
+
+def test_предпросмотр_смешанной_подписки_ничего_не_пишет(monkeypatch):
+    body = _b64("\n".join((_link(name="Рабочий"), "ss://unsupported",
+                           _hysteria2_link())))
+    _fake_open(monkeypatch, body)
+
+    got = subscriptions.preview("https://sub.example.test/sub")
+
+    assert got == {"kind": "base64", "name": "sub.example.test",
+                   "host": "sub.example.test", "port": 443, "profiles": 2}
+    assert subscriptions.load() == subscriptions.empty()
+
+
+def test_подписка_без_совместимых_узлов_отклоняется(monkeypatch):
+    _fake_open(monkeypatch, "vless://not-a-uuid")
+
+    with pytest.raises(ValueError, match="строка 1: в ссылке нет UUID"):
+        subscriptions.add("https://sub.example.test/sub")
+    assert subscriptions.load() == subscriptions.empty()
+
+
+def test_обновление_без_совместимых_узлов_сохраняет_профили(monkeypatch):
+    sub = _add_subscription(monkeypatch, _link(name="A"))
+    _fake_open(monkeypatch, "vless://not-a-uuid")
+
+    with pytest.raises(ValueError, match="строка 1: в ссылке нет UUID"):
+        subscriptions.refresh(sub["id"])
+
+    data = subscriptions.load()
+    assert [p["name"] for p in data["profiles"]] == ["A"]
+    assert data["subscriptions"][0]["last_error"]
+
+
 def test_неверный_reality_ключ_отклоняется():
     with pytest.raises(ValueError, match="public key"):
         subscriptions.parse_body("uri-list", _reality_link().replace("pbk=", "pbk=x"))
@@ -124,6 +182,17 @@ def _raw_sub():
     return {"id": "s_0123456789abcdef", "name": "S",
             "url": "https://sub.example.test/sub", "kind": "uri-list",
             "allow_private": False, "updated_at": "", "last_error": ""}
+
+
+def test_режим_авто_подписки_по_умолчанию_ручной_и_включается(monkeypatch):
+    sub = _add_subscription(monkeypatch, _link(name="A"))
+
+    assert subscriptions.list_subscriptions()[0].get("auto") is False
+    assert subscriptions.set_auto(sub["id"], True)["auto"] is True
+    assert subscriptions.list_subscriptions()[0]["auto"] is True
+    subscriptions.refresh(sub["id"])
+    assert subscriptions.list_subscriptions()[0]["auto"] is True
+    assert subscriptions.set_auto(sub["id"], False)["auto"] is False
 
 
 def test_happ_подписка_сохраняет_исходную_ссылку_и_обновляется(monkeypatch):
