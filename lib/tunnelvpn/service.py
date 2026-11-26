@@ -652,7 +652,7 @@ class Core:
             return "list"
         if st.get("out") == buildconfig.DIRECT_TAG or st.get("exit_state") == "direct":
             return "fallback"
-        if st.get("checking") or not self.prober.net_fresh(st.get("route_gen")):
+        if not self.prober.net_fresh(st.get("route_gen")):
             return "checking"
         if st.get("exit_state") == "tunnel" and st.get("exit_is_peer"):
             return "tunnel"

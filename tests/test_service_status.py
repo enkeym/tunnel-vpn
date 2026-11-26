@@ -450,7 +450,8 @@ def test_после_включения_снимок_уже_с_туннелем(m
     ({"up": True, "out": buildconfig.DIRECT_TAG,
       "tunnels": [{"enabled": True, "carries": True}]}, None, "list"),
     ({"up": True, "tunnels": [{"enabled": False, "carries": True}]}, None, "idle"),
-    ({"up": True, "checking": True}, {"id": "home"}, "checking"),
+    ({"up": True, "checking": True, "exit_state": "unknown"},
+     {"id": "home"}, "checking"),
     ({"up": True, "exit_state": "tunnel", "exit_is_peer": True},
      {"id": "home"}, "tunnel"),
     ({"up": True, "exit_state": "unknown"}, {"id": "home"}, "checking"),
@@ -476,6 +477,25 @@ def test_протухший_успех_не_остаётся_зелёным(monk
     assert core._link(st, {"id": "home"}) == "tunnel"
 
     clock[0] += 0.001
+    assert core._link(st, {"id": "home"}) == "checking"
+
+
+def test_плановая_проверка_не_красит_свежий_ответ_жёлтым(monkeypatch):
+    core = _core(monkeypatch, up=True)
+    core.prober.set(check_gen=core.prober.route_gen(),
+                    check_at=service.time.monotonic())
+    st = {"up": True, "checking": True,
+          "exit_state": "tunnel", "exit_is_peer": True}
+
+    assert core._link(st, {"id": "home"}) == "tunnel"
+
+
+def test_первая_проверка_без_прошлого_ответа_жёлтая(monkeypatch):
+    core = _core(monkeypatch, up=True)
+    core.prober.set(check_gen=core.prober.route_gen(), check_at=0.0)
+    st = {"up": True, "checking": True,
+          "exit_state": "tunnel", "exit_is_peer": True}
+
     assert core._link(st, {"id": "home"}) == "checking"
 
 
