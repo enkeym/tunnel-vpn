@@ -91,6 +91,14 @@ def test_своя_ошибка_без_номера_соединения(tmp_path
     assert tunnel._fatal_line(path, start) == "connection: другой отказ"
 
 
+def test_пустая_ошибка_не_даёт_пустой_причины(tmp_path):
+    path = str(tmp_path / "trial.log")
+    start = _block(path, "\n=== 2026-11-25 13:32:22 TunnelVPN ===\n")
+    _block(path, "+0300 2026-11-25 13:32:38 ERROR [2 5ms]\n")
+
+    assert tunnel._fatal_line(path, start) == f"подробности — в {path}"
+
+
 def test_старые_сверх_keep_logs_удаляются(logs):
     for day in range(1, tunnel.KEEP_LOGS + 2):
         path = os.path.join(paths.LOGS, f"{PREFIX}-2000-01-{day:02d}_000000.log")

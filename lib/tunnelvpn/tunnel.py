@@ -569,7 +569,7 @@ class Tunnel:
                 # Туннели без основного никому не нужны: в socks никто не зайдёт.
                 for side in self.sides:
                     self._stop_side(side)
-                return (f"sing-box упал на старте: "
+                return (f"sing-box упал на старте (pid {self.proc.pid}): "
                         f"{_fatal_line(log_path, self.log_start[1])}")
             tun_idx = winnet.tun_index(paths.TUN_IP)
             if tun_idx is not None:
@@ -1731,7 +1731,8 @@ def _fatal_line(log_path, start=0):
                     end = rest.find("]")
                     if end != -1:
                         rest = rest[end + 1:].lstrip()
-                return rest[:200]
+                if rest:
+                    return rest[:200]
     if not lines:
         return "sing-box ничего не напечатал"
     return f"подробности — в {log_path}"

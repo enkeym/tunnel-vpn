@@ -210,6 +210,8 @@ def env(monkeypatch, tmp_path):
             with open(paths.REAL_IP_FILE, encoding="utf-8") as fh:
                 seen["real_ip"] = fh.read()
             net.singbox_running = True
+            if seen.get("main_dies"):
+                proc.returncode = 1
         elif any(buildconfig.side_json(tid, slot) == cfg_path for tid in seen["dies"]
                  for slot in range(buildconfig.SLOTS)):
             proc.returncode = 1
@@ -610,6 +612,16 @@ def test_упавший_корп_не_срывает_включение(env):
     assert tun.proc is not None
     assert any("процесс «Работа» упал" in l and "туннель «Работа» недоступен" in l
                for l in seen["log"])
+
+
+def test_упавший_основной_называет_pid(env):
+    tun, _build, seen = env
+    seen["main_dies"] = True
+
+    err = tun.start()
+
+    assert err.startswith("sing-box упал на старте")
+    assert f"pid {seen['proc'].pid}" in err
 
 
 def test_упавший_личный_включает_выход_напрямую(env, monkeypatch):
